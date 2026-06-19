@@ -2,6 +2,7 @@
 openssl/1.1.1w
 yaml-cpp/0.7.0
 gtest/1.14.0
+nlohmann_json/3.11.3
 
 [generators]
 CMakeToolchain

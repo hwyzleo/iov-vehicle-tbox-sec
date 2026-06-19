@@ -35,6 +35,9 @@ include_directories(${YAML_CPP_INCLUDE_DIRS})
 find_package(GTest REQUIRED)
 include_directories(${GTEST_INCLUDE_DIRS})
 
+# nlohmann_json
+find_package(nlohmann_json REQUIRED)
+
 # Source files
 set(SOURCES
     src/main.cpp
@@ -47,13 +50,14 @@ set(SOURCES
     src/cert_validator.cpp
     src/cloud_client.cpp
     src/provision_state.cpp
+    src/error_codes.cpp
 )
 
 # Main executable
 add_executable(TboxSecService ${SOURCES})
 target_include_directories(TboxSecService PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_include_directories(TboxSecService PRIVATE ${PROJECT_SOURCE_DIR}/third_party/include)
-target_link_libraries(TboxSecService PRIVATE OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp)
+target_link_libraries(TboxSecService PRIVATE OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json)
 
 # Tests
 enable_testing()
@@ -66,5 +70,5 @@ add_executable(TboxSecTests
     ${SOURCES}
 )
 target_include_directories(TboxSecTests PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(TboxSecTests PRIVATE GTest::GTest GTest::Main OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp)
+target_link_libraries(TboxSecTests PRIVATE GTest::GTest GTest::Main OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json)
 add_test(NAME TboxSecTests COMMAND TboxSecTests)
