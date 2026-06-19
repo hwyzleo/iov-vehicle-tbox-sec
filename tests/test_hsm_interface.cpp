@@ -41,3 +41,20 @@ TEST_F(HsmInterfaceTest, ExportPublicKey) {
     EXPECT_EQ(hsm->export_public_key("test-key", public_key), ErrorCode::SUCCESS);
     EXPECT_FALSE(public_key.empty());
 }
+
+TEST_F(HsmInterfaceTest, KeyExistsBeforeGeneration) {
+    EXPECT_FALSE(hsm->key_exists("non-existent-key"));
+}
+
+TEST_F(HsmInterfaceTest, KeyExistsAfterGeneration) {
+    KeyPair key_pair;
+    hsm->generate_key_pair("test-key", "ecdsa-p256", key_pair);
+    EXPECT_TRUE(hsm->key_exists("test-key"));
+}
+
+TEST_F(HsmInterfaceTest, KeyDeleted) {
+    KeyPair key_pair;
+    hsm->generate_key_pair("test-key", "ecdsa-p256", key_pair);
+    EXPECT_EQ(hsm->delete_key("test-key"), ErrorCode::SUCCESS);
+    EXPECT_FALSE(hsm->key_exists("test-key"));
+}

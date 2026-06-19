@@ -1,5 +1,6 @@
 #include "hsm_interface.h"
 #include <stdexcept>
+#include <set>
 
 namespace tbox {
 namespace sec {
@@ -20,6 +21,7 @@ public:
         key_pair.created_at = std::chrono::system_clock::now();
         key_pair.private_key_exists = true;
         key_pair.public_key = {0x04, 0x01, 0x02, 0x03};
+        generated_keys_.insert(key_id);
         return ErrorCode::SUCCESS;
     }
 
@@ -45,10 +47,11 @@ public:
     }
 
     bool key_exists(const std::string& key_id) override {
-        return true;
+        return generated_keys_.find(key_id) != generated_keys_.end();
     }
 
     ErrorCode delete_key(const std::string& key_id) override {
+        generated_keys_.erase(key_id);
         return ErrorCode::SUCCESS;
     }
 
@@ -58,6 +61,7 @@ public:
 
 private:
     std::string storage_path_;
+    std::set<std::string> generated_keys_;
 };
 
 std::unique_ptr<HsmInterface> HsmFactory::create(HsmType type,
