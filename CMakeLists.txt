@@ -38,9 +38,8 @@ include_directories(${GTEST_INCLUDE_DIRS})
 # nlohmann_json
 find_package(nlohmann_json REQUIRED)
 
-# Source files
-set(SOURCES
-    src/main.cpp
+# Library source files (without main.cpp)
+set(LIB_SOURCES
     src/sec_service.cpp
     src/key_engine.cpp
     src/hsm_interface.cpp
@@ -54,7 +53,7 @@ set(SOURCES
 )
 
 # Main executable
-add_executable(TboxSecService ${SOURCES})
+add_executable(TboxSecService src/main.cpp ${LIB_SOURCES})
 target_include_directories(TboxSecService PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_include_directories(TboxSecService PRIVATE ${PROJECT_SOURCE_DIR}/third_party/include)
 target_link_libraries(TboxSecService PRIVATE OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json)
@@ -67,7 +66,8 @@ add_executable(TboxSecTests
     tests/test_cert_validator.cpp
     tests/test_sec_service.cpp
     tests/test_uds_handler.cpp
-    ${SOURCES}
+    tests/test_hsm_interface.cpp
+    ${LIB_SOURCES}
 )
 target_include_directories(TboxSecTests PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(TboxSecTests PRIVATE GTest::GTest GTest::Main OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json)
