@@ -53,7 +53,7 @@ set(SOURCES
 add_executable(TboxSecService ${SOURCES})
 target_include_directories(TboxSecService PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_include_directories(TboxSecService PRIVATE ${PROJECT_SOURCE_DIR}/third_party/include)
-target_link_libraries(TboxSecService PRIVATE OpenSSL::SSL OpenSSL::Crypto yaml-cpp)
+target_link_libraries(TboxSecService PRIVATE OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp)
 
 # Tests
 enable_testing()
@@ -66,5 +66,5 @@ add_executable(TboxSecTests
     ${SOURCES}
 )
 target_include_directories(TboxSecTests PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(TboxSecTests PRIVATE GTest::GTest GTest::Main OpenSSL::SSL OpenSSL::Crypto yaml-cpp)
+target_link_libraries(TboxSecTests PRIVATE GTest::GTest GTest::Main OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp)
 add_test(NAME TboxSecTests COMMAND TboxSecTests)
