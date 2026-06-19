@@ -3,6 +3,7 @@
 #include <string>
 #include <chrono>
 #include <map>
+#include <mutex>
 #include <nlohmann/json.hpp>
 
 namespace tbox {
@@ -46,8 +47,10 @@ public:
 private:
     std::string state_file_path_;
     std::map<std::string, ProvisionStatus> status_map_;
+    mutable std::mutex mutex_;
 
     std::string make_key(const std::string& vin, const std::string& ecu_uid) const;
+    bool save_state_unlocked() const;
 };
 
 } // namespace sec

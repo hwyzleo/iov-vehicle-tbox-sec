@@ -37,8 +37,10 @@ nlohmann::json ProvisionStatus::to_json() const {
     j["retry_count"] = retry_count;
 
     auto time_t = std::chrono::system_clock::to_time_t(last_updated);
+    std::tm tm_buf{};
+    localtime_r(&time_t, &tm_buf);
     std::stringstream ss;
-    ss << std::put_time(std::localtime(&time_t), "%Y-%m-%dT%H:%M:%S");
+    ss << std::put_time(&tm_buf, "%Y-%m-%dT%H:%M:%S");
     j["last_updated"] = ss.str();
 
     return j;
@@ -65,6 +67,7 @@ ProvisionStateManager::ProvisionStateManager(const std::string& state_file_path)
     : state_file_path_(state_file_path) {}
 
 bool ProvisionStateManager::load_state() {
+    std::lock_guard<std::mutex> lock(mutex_);
     try {
         std::ifstream file(state_file_path_);
         if (!file.is_open()) {
@@ -86,6 +89,11 @@ bool ProvisionStateManager::load_state() {
 }
 
 bool ProvisionStateManager::save_state() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return save_state_unlocked();
+}
+
+bool ProvisionStateManager::save_state_unlocked() const {
     try {
         nlohmann::json j;
         for (const auto& [key, status] : status_map_) {
@@ -105,6 +113,7 @@ bool ProvisionStateManager::save_state() const {
 }
 
 ProvisionStatus ProvisionStateManager::get_status(const std::string& vin, const std::string& ecu_uid) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     std::string key = make_key(vin, ecu_uid);
     auto it = status_map_.find(key);
     if (it != status_map_.end()) {
@@ -121,15 +130,17 @@ ProvisionStatus ProvisionStateManager::get_status(const std::string& vin, const 
 }
 
 bool ProvisionStateManager::update_status(const ProvisionStatus& status) {
+    std::lock_guard<std::mutex> lock(mutex_);
     std::string key = make_key(status.vin, status.ecu_uid);
     status_map_[key] = status;
-    return save_state();
+    return save_state_unlocked();
 }
 
 bool ProvisionStateManager::reset_status(const std::string& vin, const std::string& ecu_uid) {
+    std::lock_guard<std::mutex> lock(mutex_);
     std::string key = make_key(vin, ecu_uid);
     status_map_.erase(key);
-    return save_state();
+    return save_state_unlocked();
 }
 
 std::string ProvisionStateManager::make_key(const std::string& vin, const std::string& ecu_uid) const {
