@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 #include <thread>
 #include <chrono>
+#include <mutex>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/buffer.h>
@@ -11,6 +12,8 @@ namespace tbox {
 namespace sec {
 
 namespace {
+
+std::once_flag g_curl_init_flag;
 
 std::string base64_encode(const std::vector<uint8_t>& data) {
     BIO* b64 = BIO_new(BIO_f_base64());
@@ -57,15 +60,18 @@ CloudClient::CloudClient(const CloudConfig& config)
     : config_(config), initialized_(false), connected_(false) {}
 
 ErrorCode CloudClient::initialize() {
-    CURLcode res = curl_global_init(CURL_GLOBAL_ALL);
-    if (res != CURLE_OK) {
-        last_error_ = "Failed to initialize CURL";
-        return ErrorCode::PKI_CONNECTION_FAILED;
-    }
+    std::call_once(g_curl_init_flag, []() {
+        curl_global_init(CURL_GLOBAL_ALL);
+    });
 
     initialized_ = true;
     connected_ = true;
     return ErrorCode::SUCCESS;
+}
+
+void CloudClient::set_last_error(const std::string& error) {
+    std::lock_guard<std::mutex> lock(error_mutex_);
+    last_error_ = error;
 }
 
 ErrorCode CloudClient::submit_csr(const CertificateRequest& request,
@@ -79,26 +85,36 @@ ErrorCode CloudClient::submit_csr(const CertificateRequest& request,
     payload["vin"] = request.vin;
     payload["ecu_uid"] = request.ecu_uid;
 
-    std::string response_str;
-    ErrorCode result = send_http_request(config_.oapi_endpoint + "/api/v1/certificates",
+    int max_attempts = config_.retry_count > 0 ? config_.retry_count : 1;
+    ErrorCode last_result = ErrorCode::PKI_CONNECTION_FAILED;
+
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        if (attempt > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(config_.retry_delay_ms));
+        }
+
+        std::string response_str;
+        last_result = send_http_request(config_.oapi_endpoint + "/api/v1/certificates",
                                         payload.dump(),
                                         response_str);
 
-    if (result != ErrorCode::SUCCESS) {
-        return result;
+        if (last_result == ErrorCode::SUCCESS) {
+            return parse_certificate_response(response_str, response);
+        }
     }
 
-    return parse_certificate_response(response_str, response);
+    return last_result;
 }
 
 ErrorCode CloudClient::submit_csr_async(const CertificateRequest& request,
                                        CertificateCallback callback) {
-    std::thread([this, request, callback]() {
+    auto self = shared_from_this();
+    async_task_ = std::async(std::launch::async, [self, request, callback]() {
         CertificateResponse response;
-        ErrorCode result = submit_csr(request, response);
+        ErrorCode result = self->submit_csr(request, response);
         response.error_code = result;
         callback(response);
-    }).detach();
+    });
 
     return ErrorCode::SUCCESS;
 }
@@ -108,6 +124,7 @@ bool CloudClient::is_connected() const {
 }
 
 std::string CloudClient::get_last_error() const {
+    std::lock_guard<std::mutex> lock(error_mutex_);
     return last_error_;
 }
 
@@ -116,7 +133,7 @@ ErrorCode CloudClient::send_http_request(const std::string& endpoint,
                                         std::string& response) {
     CURL* curl = curl_easy_init();
     if (!curl) {
-        last_error_ = "Failed to create CURL handle";
+        set_last_error("Failed to create CURL handle");
         return ErrorCode::PKI_CONNECTION_FAILED;
     }
 
@@ -128,6 +145,8 @@ ErrorCode CloudClient::send_http_request(const std::string& endpoint,
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, config_.timeout_ms);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
 
     std::string response_data;
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
@@ -136,7 +155,7 @@ ErrorCode CloudClient::send_http_request(const std::string& endpoint,
     CURLcode res = curl_easy_perform(curl);
 
     if (res != CURLE_OK) {
-        last_error_ = curl_easy_strerror(res);
+        set_last_error(curl_easy_strerror(res));
         curl_easy_cleanup(curl);
         curl_slist_free_all(headers);
         return ErrorCode::PKI_CONNECTION_FAILED;
@@ -176,35 +195,35 @@ ErrorCode CloudClient::parse_certificate_response(const std::string& response,
 
         return ErrorCode::SUCCESS;
     } catch (const std::exception& e) {
-        last_error_ = "Failed to parse response: " + std::string(e.what());
+        set_last_error("Failed to parse response: " + std::string(e.what()));
         return ErrorCode::PKI_INVALID_RESPONSE;
     }
 }
 
 ErrorCode CloudClient::handle_http_error(int http_code, const std::string& response) {
     if (http_code == 400) {
-        last_error_ = "Bad request: " + response;
+        set_last_error("Bad request: " + response);
         return ErrorCode::PKI_REJECTED;
     } else if (http_code == 401) {
-        last_error_ = "Unauthorized";
+        set_last_error("Unauthorized");
         return ErrorCode::PKI_CONNECTION_FAILED;
     } else if (http_code == 403) {
-        last_error_ = "Forbidden";
+        set_last_error("Forbidden");
         return ErrorCode::PKI_CONNECTION_FAILED;
     } else if (http_code == 404) {
-        last_error_ = "Not found";
+        set_last_error("Not found");
         return ErrorCode::PKI_CONNECTION_FAILED;
     } else if (http_code == 408) {
-        last_error_ = "Request timeout";
+        set_last_error("Request timeout");
         return ErrorCode::PKI_TIMEOUT;
     } else if (http_code == 500) {
-        last_error_ = "Internal server error";
+        set_last_error("Internal server error");
         return ErrorCode::PKI_CONNECTION_FAILED;
     } else if (http_code == 503) {
-        last_error_ = "Service unavailable";
+        set_last_error("Service unavailable");
         return ErrorCode::PKI_CONNECTION_FAILED;
     } else {
-        last_error_ = "HTTP error " + std::to_string(http_code) + ": " + response;
+        set_last_error("HTTP error " + std::to_string(http_code) + ": " + response);
         return ErrorCode::PKI_CONNECTION_FAILED;
     }
 }

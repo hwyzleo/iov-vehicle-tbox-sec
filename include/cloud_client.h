@@ -3,6 +3,9 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <future>
+#include <memory>
+#include <mutex>
 #include "error_codes.h"
 
 namespace tbox {
@@ -28,7 +31,7 @@ struct CertificateResponse {
     ErrorCode error_code;
 };
 
-class CloudClient {
+class CloudClient : public std::enable_shared_from_this<CloudClient> {
 public:
     CloudClient(const CloudConfig& config);
 
@@ -50,6 +53,10 @@ private:
     bool initialized_;
     bool connected_;
     std::string last_error_;
+    mutable std::mutex error_mutex_;
+    std::future<void> async_task_;
+
+    void set_last_error(const std::string& error);
 
     ErrorCode send_http_request(const std::string& endpoint,
                                const std::string& payload,
