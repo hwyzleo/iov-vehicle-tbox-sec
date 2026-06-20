@@ -1,0 +1,44 @@
+# TBOX Security Service Configuration
+tbox:
+  # Device identification
+  vin: "TESTVIN1234567890"
+  ecu_uid: "TBOX-ECU-001"
+
+  # HSM/Secure Element configuration
+  hsm:
+    type: "software"  # software, pkcs11, trustzone
+    library_path: "/usr/lib/softhsm/libsofthsm2.so"
+    slot_id: 0
+    pin: "123456"
+
+  # Security storage paths
+  storage:
+    key_store: "/var/lib/tbox/sec/keys"
+    cert_store: "/var/lib/tbox/sec/certs"
+    state_file: "/var/lib/tbox/sec/provision_state.json"
+
+  # Cloud communication
+  cloud:
+    oapi_endpoint: "https://oapi.example.com:10805"
+    timeout_ms: 30000
+    retry_count: 3
+    retry_delay_ms: 1000
+
+  # UDS configuration
+  uds:
+    security_access_level: 0x29
+    session_timeout_ms: 5000
+
+  # Certificate settings
+  certificate:
+    key_algorithm: "ecdsa-p256"
+    validity_years: 10
+    key_usage: "digitalSignature"
+    extended_key_usage: "clientAuth"
+
+  # Logging
+  logging:
+    level: "INFO"  # DEBUG, INFO, WARN, ERROR
+    file: "/var/log/tbox/sec_service.log"
+    max_size_mb: 10
+    max_files: 5
