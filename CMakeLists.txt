@@ -38,6 +38,10 @@ include_directories(${GTEST_INCLUDE_DIRS})
 # nlohmann_json
 find_package(nlohmann_json REQUIRED)
 
+# CURL
+find_package(CURL REQUIRED)
+include_directories(${CURL_INCLUDE_DIRS})
+
 # Library source files (without main.cpp)
 set(LIB_SOURCES
     src/sec_service.cpp
@@ -56,7 +60,7 @@ set(LIB_SOURCES
 add_executable(TboxSecService src/main.cpp ${LIB_SOURCES})
 target_include_directories(TboxSecService PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_include_directories(TboxSecService PRIVATE ${PROJECT_SOURCE_DIR}/third_party/include)
-target_link_libraries(TboxSecService PRIVATE OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json)
+target_link_libraries(TboxSecService PRIVATE OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json CURL::libcurl)
 
 # Tests
 enable_testing()
@@ -70,5 +74,5 @@ add_executable(TboxSecTests
     ${LIB_SOURCES}
 )
 target_include_directories(TboxSecTests PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(TboxSecTests PRIVATE GTest::GTest GTest::Main OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json)
+target_link_libraries(TboxSecTests PRIVATE GTest::GTest GTest::Main OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json CURL::libcurl)
 add_test(NAME TboxSecTests COMMAND TboxSecTests)
