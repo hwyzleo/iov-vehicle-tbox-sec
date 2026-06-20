@@ -23,7 +23,7 @@ struct CertificateInfo {
 
 class CertValidator {
 public:
-    CertValidator(std::shared_ptr<KeyEngine> key_engine);
+    CertValidator(KeyEngine* key_engine);
 
     // Validate certificate against device key
     ErrorCode validate_certificate(const std::string& vin,
@@ -43,7 +43,7 @@ public:
                                         bool& valid);
 
 private:
-    std::shared_ptr<KeyEngine> key_engine_;
+    KeyEngine* key_engine_;
 
     // Internal validation methods
     ErrorCode verify_certificate_signature(const std::vector<uint8_t>& cert_der,

@@ -1,0 +1,35 @@
+# Dockerfile for cross-compiling TBOX Security Service to aarch64
+FROM multiarch/debian-debootstrap:arm64-buster
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    libssl-dev \
+    libyaml-cpp-dev \
+    libcurl4-openssl-dev \
+    nlohmann-json3-dev \
+    libgtest-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /build
+
+# Copy source code
+COPY . /build
+
+# Build
+RUN mkdir -p build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local && \
+    make -j$(nproc) && \
+    ctest --output-on-failure
+
+# Create output directory
+RUN mkdir -p /output && \
+    cp build/TboxSecService /output/ && \
+    cp config/config.yaml /output/config.yaml.example && \
+    ldd build/TboxSecService | grep "=> /" | awk '{print $3}' | sort -u | xargs -I {} cp {} /output/lib/ 2>/dev/null || true
+
+# Default command: copy output to mounted volume
+CMD ["sh", "-c", "cp -r /output/* /dest/ 2>/dev/null || echo 'Mount a volume to /dest to get the build output'"]

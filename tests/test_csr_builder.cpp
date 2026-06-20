@@ -21,11 +21,11 @@ protected:
         std::system(cmd.c_str());
 
         auto hsm = HsmFactory::create(HsmFactory::HsmType::SOFTWARE, test_dir);
-        auto key_engine = std::make_shared<KeyEngine>(std::move(hsm));
+        key_engine = std::make_unique<KeyEngine>(std::move(hsm));
         key_engine->initialize();
         key_engine->generate_device_key(test_vin, test_ecu_uid, key_pair_);
 
-        builder = std::make_unique<CsrBuilder>(key_engine);
+        builder = std::make_unique<CsrBuilder>(key_engine.get());
     }
 
     void TearDown() override {
@@ -33,6 +33,7 @@ protected:
         std::system(cmd.c_str());
     }
 
+    std::unique_ptr<KeyEngine> key_engine;
     std::unique_ptr<CsrBuilder> builder;
     KeyPair key_pair_;
     std::string test_vin = "TESTVIN1234567890";
@@ -44,8 +45,6 @@ TEST_F(CsrBuilderTest, BuildCsrSubjectCN) {
     config.common_name = "ECU:TBOX-ECU-001";
     config.vin = test_vin;
     config.ecu_uid = test_ecu_uid;
-    config.key_usage = "digitalSignature";
-    config.extended_key_usage = "clientAuth";
 
     std::vector<uint8_t> csr_der;
     ASSERT_EQ(builder->build_csr(config, csr_der), ErrorCode::SUCCESS);
@@ -70,8 +69,6 @@ TEST_F(CsrBuilderTest, BuildCsrSAN) {
     config.common_name = "ECU:TBOX-ECU-001";
     config.vin = test_vin;
     config.ecu_uid = test_ecu_uid;
-    config.key_usage = "digitalSignature";
-    config.extended_key_usage = "clientAuth";
 
     std::vector<uint8_t> csr_der;
     ASSERT_EQ(builder->build_csr(config, csr_der), ErrorCode::SUCCESS);
@@ -96,14 +93,14 @@ TEST_F(CsrBuilderTest, BuildCsrSAN) {
             bool has_vin = false, has_ecu = false;
             for (int j = 0; j < sk_GENERAL_NAME_num(gens); j++) {
                 GENERAL_NAME* gn = sk_GENERAL_NAME_value(gens, j);
-                if (gn->type == GEN_EMAIL) {
-                    std::string email(
+                if (gn->type == GEN_URI) {
+                    std::string uri(
                         reinterpret_cast<const char*>(
-                            ASN1_STRING_get0_data(gn->d.rfc822Name)),
-                        ASN1_STRING_length(gn->d.rfc822Name));
-                    if (email.find(test_vin) != std::string::npos)
+                            ASN1_STRING_get0_data(gn->d.uniformResourceIdentifier)),
+                        ASN1_STRING_length(gn->d.uniformResourceIdentifier));
+                    if (uri.find(test_vin) != std::string::npos)
                         has_vin = true;
-                    if (email.find(test_ecu_uid) != std::string::npos)
+                    if (uri.find(test_ecu_uid) != std::string::npos)
                         has_ecu = true;
                 }
             }
@@ -124,8 +121,6 @@ TEST_F(CsrBuilderTest, BuildCsrKeyUsage) {
     config.common_name = "ECU:TBOX-ECU-001";
     config.vin = test_vin;
     config.ecu_uid = test_ecu_uid;
-    config.key_usage = "digitalSignature";
-    config.extended_key_usage = "clientAuth";
 
     std::vector<uint8_t> csr_der;
     ASSERT_EQ(builder->build_csr(config, csr_der), ErrorCode::SUCCESS);
@@ -164,8 +159,6 @@ TEST_F(CsrBuilderTest, BuildCsrExtendedKeyUsage) {
     config.common_name = "ECU:TBOX-ECU-001";
     config.vin = test_vin;
     config.ecu_uid = test_ecu_uid;
-    config.key_usage = "digitalSignature";
-    config.extended_key_usage = "clientAuth";
 
     std::vector<uint8_t> csr_der;
     ASSERT_EQ(builder->build_csr(config, csr_der), ErrorCode::SUCCESS);
@@ -208,8 +201,6 @@ TEST_F(CsrBuilderTest, BuildCsrPublicKey) {
     config.common_name = "ECU:TBOX-ECU-001";
     config.vin = test_vin;
     config.ecu_uid = test_ecu_uid;
-    config.key_usage = "digitalSignature";
-    config.extended_key_usage = "clientAuth";
 
     std::vector<uint8_t> csr_der;
     ASSERT_EQ(builder->build_csr(config, csr_der), ErrorCode::SUCCESS);
@@ -236,8 +227,6 @@ TEST_F(CsrBuilderTest, BuildCsrSignature) {
     config.common_name = "ECU:TBOX-ECU-001";
     config.vin = test_vin;
     config.ecu_uid = test_ecu_uid;
-    config.key_usage = "digitalSignature";
-    config.extended_key_usage = "clientAuth";
 
     std::vector<uint8_t> csr_der;
     ASSERT_EQ(builder->build_csr(config, csr_der), ErrorCode::SUCCESS);
@@ -274,8 +263,6 @@ TEST_F(CsrBuilderTest, BuildCsrWithMissingKey) {
     config.common_name = "ECU:NONEXISTENT";
     config.vin = "NONEXISTENTVIN";
     config.ecu_uid = "NONEXISTENTECU";
-    config.key_usage = "digitalSignature";
-    config.extended_key_usage = "clientAuth";
 
     std::vector<uint8_t> csr_der;
     EXPECT_EQ(builder->build_csr(config, csr_der), ErrorCode::KEY_NOT_FOUND);

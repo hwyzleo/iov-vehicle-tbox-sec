@@ -14,18 +14,18 @@ struct CsrConfig {
     std::string vin;              // SAN: VIN
     std::string ecu_uid;          // SAN: ECU_UID
     std::string key_usage;        // digitalSignature
-    std::string extended_key_usage; // clientAuth (OID 1.3.6.1.5.5.7.3.2)
+    std::string extended_key_usage; // clientAuth
 };
 
 class CsrBuilder {
 public:
-    CsrBuilder(std::shared_ptr<KeyEngine> key_engine);
+    CsrBuilder(KeyEngine* key_engine);
 
     ErrorCode build_csr(const CsrConfig& config,
                        std::vector<uint8_t>& csr_der);
 
 private:
-    std::shared_ptr<KeyEngine> key_engine_;
+    KeyEngine* key_engine_;
 
     ErrorCode marshal_ec_pubkey_info(const std::vector<uint8_t>& raw_pubkey,
                                      std::vector<uint8_t>& out_der);

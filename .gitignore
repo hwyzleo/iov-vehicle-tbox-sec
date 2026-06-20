@@ -93,3 +93,6 @@ Thumbs.db
 *.pid
 *.state
 *.json
+
+graphify-out
+docs/superpowers

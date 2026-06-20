@@ -4,7 +4,6 @@
 #include <openssl/obj_mac.h>
 #include <openssl/bn.h>
 #include <stdexcept>
-#include <set>
 #include <map>
 
 namespace tbox {
@@ -59,9 +58,7 @@ public:
                   std::vector<uint8_t>& signature) override {
         auto it = keys_.find(key_id);
         if (it == keys_.end()) {
-            // Fallback: return a dummy signature for test compatibility
-            signature = {0x30, 0x06, 0x01, 0x02, 0x03, 0x04};
-            return ErrorCode::SUCCESS;
+            return ErrorCode::KEY_NOT_FOUND;
         }
 
         // Reconstruct EC_KEY for signing
@@ -108,9 +105,7 @@ public:
                                std::vector<uint8_t>& public_key) override {
         auto it = keys_.find(key_id);
         if (it == keys_.end()) {
-            // Fallback: return a dummy public key for test compatibility
-            public_key = {0x04, 0x01, 0x02, 0x03};
-            return ErrorCode::SUCCESS;
+            return ErrorCode::KEY_NOT_FOUND;
         }
         public_key = it->second.pub;
         return ErrorCode::SUCCESS;

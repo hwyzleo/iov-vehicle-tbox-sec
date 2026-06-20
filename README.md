@@ -28,22 +28,57 @@ This service handles the complete security identity initialization flow for TBOX
 - CMake 3.10+
 - OpenSSL 1.1+
 - yaml-cpp
+- libcurl
+- nlohmann-json
 - Google Test (for tests)
+
+### Quick Start (macOS)
+
+```bash
+# Setup development environment
+./scripts/setup-dev.sh
+
+# Build and test
+./scripts/build-local.sh default --test
+```
 
 ### Build Commands
 
 ```bash
-mkdir build
-cd build
+mkdir build && cd build
 cmake ..
-make
+make -j$(nproc)
+ctest  # Run tests
 ```
 
-### Running Tests
+### Cross Compilation (for TBOX ARM Linux)
 
 ```bash
-cd build
-./TboxSecTests
+# Option 1: Using Docker (recommended)
+docker build -f Dockerfile.cross -t tbox-sec-builder .
+docker run --rm -v $(pwd)/output:/output tbox-sec-builder
+
+# Option 2: Using toolchain
+mkdir build-aarch64 && cd build-aarch64
+cmake .. -DCMAKE_TOOLCHAIN_FILE=../toolchain-aarch64-linux-gnu.cmake
+make -j$(nproc)
+```
+
+## Deployment
+
+See `docs/deployment.md` for detailed deployment instructions.
+
+### Quick Deploy
+
+```bash
+# Deploy to TBOX
+./scripts/deploy.sh 192.168.1.100 root
+
+# Start service
+ssh root@192.168.1.100 "systemctl start tbox-sec"
+
+# Check status
+ssh root@192.168.1.100 "systemctl status tbox-sec"
 ```
 
 ## Configuration

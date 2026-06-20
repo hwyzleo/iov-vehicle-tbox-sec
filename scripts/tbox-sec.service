@@ -1,0 +1,26 @@
+[Unit]
+Description=TBOX Security Service
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/tbox-sec/TboxSecService /opt/tbox-sec/config/config.yaml
+WorkingDirectory=/opt/tbox-sec
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security settings
+User=tbox
+Group=tbox
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/tbox /var/log/tbox
+
+# Environment
+Environment="LD_LIBRARY_PATH=/opt/tbox-sec/lib"
+
+[Install]
+WantedBy=multi-user.target

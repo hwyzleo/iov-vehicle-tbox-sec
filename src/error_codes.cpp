@@ -33,6 +33,7 @@ std::string error_code_to_string(ErrorCode code) {
         case ErrorCode::INVALID_PARAMETER: return "INVALID_PARAMETER";
         case ErrorCode::NOT_INITIALIZED: return "NOT_INITIALIZED";
         case ErrorCode::OPERATION_IN_PROGRESS: return "OPERATION_IN_PROGRESS";
+        case ErrorCode::NOT_IMPLEMENTED: return "NOT_IMPLEMENTED";
         case ErrorCode::INTERNAL_ERROR: return "INTERNAL_ERROR";
         default: return "UNKNOWN";
     }
@@ -68,6 +69,7 @@ std::string error_code_to_description(ErrorCode code) {
         case ErrorCode::INVALID_PARAMETER: return "Invalid parameter provided";
         case ErrorCode::NOT_INITIALIZED: return "Service not initialized";
         case ErrorCode::OPERATION_IN_PROGRESS: return "Another operation is already in progress";
+        case ErrorCode::NOT_IMPLEMENTED: return "Operation not implemented";
         case ErrorCode::INTERNAL_ERROR: return "Internal error";
         default: return "Unknown error";
     }

@@ -2,12 +2,14 @@
 #include <openssl/x509.h>
 #include <openssl/pem.h>
 #include <openssl/err.h>
+#include <openssl/x509v3.h>
 #include <chrono>
+#include <ctime>
 
 namespace tbox {
 namespace sec {
 
-CertValidator::CertValidator(std::shared_ptr<KeyEngine> key_engine)
+CertValidator::CertValidator(KeyEngine* key_engine)
     : key_engine_(key_engine) {}
 
 ErrorCode CertValidator::validate_certificate(const std::string& vin,
@@ -68,42 +70,128 @@ ErrorCode CertValidator::extract_certificate_info(const std::vector<uint8_t>& ce
 
     // Extract serial number
     ASN1_INTEGER* serial = X509_get_serialNumber(cert);
+    if (!serial) {
+        X509_free(cert);
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
     BIGNUM* bn_serial = ASN1_INTEGER_to_BN(serial, NULL);
+    if (!bn_serial) {
+        X509_free(cert);
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
     char* serial_str = BN_bn2hex(bn_serial);
+    if (!serial_str) {
+        BN_free(bn_serial);
+        X509_free(cert);
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
     info.serial_number = serial_str;
     OPENSSL_free(serial_str);
     BN_free(bn_serial);
 
     // Extract issuer
     X509_NAME* issuer_name = X509_get_issuer_name(cert);
+    if (!issuer_name) {
+        X509_free(cert);
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
     char issuer[256];
     X509_NAME_oneline(issuer_name, issuer, sizeof(issuer));
     info.issuer = issuer;
 
     // Extract subject
     X509_NAME* subject_name = X509_get_subject_name(cert);
+    if (!subject_name) {
+        X509_free(cert);
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
     char subject[256];
     X509_NAME_oneline(subject_name, subject, sizeof(subject));
     info.subject = subject;
 
-    // Extract validity period
+    // Extract validity period using ASN1_TIME_to_tm
     const ASN1_TIME* not_before = X509_get0_notBefore(cert);
     const ASN1_TIME* not_after = X509_get0_notAfter(cert);
 
-    // Convert ASN1_TIME to time_point (simplified)
-    info.not_before = std::chrono::system_clock::now();
-    info.not_after = std::chrono::system_clock::now() + std::chrono::hours(24 * 365 * 10);
+    if (!not_before || !not_after) {
+        X509_free(cert);
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
+
+    struct tm tm_before = {};
+    struct tm tm_after = {};
+    if (!ASN1_TIME_to_tm(not_before, &tm_before) ||
+        !ASN1_TIME_to_tm(not_after, &tm_after)) {
+        X509_free(cert);
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
+
+    // Convert tm to time_point
+    time_t time_before = timegm(&tm_before);
+    time_t time_after = timegm(&tm_after);
+    if (time_before == -1 || time_after == -1) {
+        X509_free(cert);
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
+    info.not_before = std::chrono::system_clock::from_time_t(time_before);
+    info.not_after = std::chrono::system_clock::from_time_t(time_after);
 
     // Extract public key
     EVP_PKEY* pkey = X509_get_pubkey(cert);
-    if (pkey) {
-        int len = i2d_PublicKey(pkey, NULL);
-        if (len > 0) {
-            info.public_key.resize(len);
-            unsigned char* pub_key_ptr = info.public_key.data();
-            i2d_PublicKey(pkey, &pub_key_ptr);
-        }
+    if (!pkey) {
+        X509_free(cert);
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
+    int len = i2d_PublicKey(pkey, NULL);
+    if (len <= 0) {
         EVP_PKEY_free(pkey);
+        X509_free(cert);
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
+    info.public_key.resize(len);
+    unsigned char* pub_key_ptr = info.public_key.data();
+    i2d_PublicKey(pkey, &pub_key_ptr);
+    EVP_PKEY_free(pkey);
+
+    // Extract key usage
+    ASN1_BIT_STRING* usage = (ASN1_BIT_STRING*)X509_get_ext_d2i(cert, NID_key_usage, NULL, NULL);
+    if (usage) {
+        if (usage->length > 0) {
+            std::string usage_str;
+            if (usage->data[0] & KU_DIGITAL_SIGNATURE) usage_str += "digitalSignature,";
+            if (usage->data[0] & KU_NON_REPUDIATION) usage_str += "nonRepudiation,";
+            if (usage->data[0] & KU_KEY_ENCIPHERMENT) usage_str += "keyEncipherment,";
+            if (usage->data[0] & KU_DATA_ENCIPHERMENT) usage_str += "dataEncipherment,";
+            if (usage->data[0] & KU_KEY_AGREEMENT) usage_str += "keyAgreement,";
+            if (usage->data[0] & KU_KEY_CERT_SIGN) usage_str += "keyCertSign,";
+            if (usage->data[0] & KU_CRL_SIGN) usage_str += "cRLSign,";
+            if (usage->data[0] & KU_ENCIPHER_ONLY) usage_str += "encipherOnly,";
+            if (usage->data[0] & KU_DECIPHER_ONLY) usage_str += "decipherOnly,";
+            if (!usage_str.empty()) {
+                usage_str.pop_back(); // Remove trailing comma
+            }
+            info.key_usage = usage_str;
+        }
+        ASN1_BIT_STRING_free(usage);
+    }
+
+    // Extract extended key usage
+    EXTENDED_KEY_USAGE* ext_usage = (EXTENDED_KEY_USAGE*)X509_get_ext_d2i(cert, NID_ext_key_usage, NULL, NULL);
+    if (ext_usage) {
+        std::string ext_usage_str;
+        for (int i = 0; i < sk_ASN1_OBJECT_num(ext_usage); i++) {
+            ASN1_OBJECT* obj = sk_ASN1_OBJECT_value(ext_usage, i);
+            if (obj) {
+                char obj_txt[80];
+                OBJ_obj2txt(obj_txt, sizeof(obj_txt), obj, 0);
+                if (!ext_usage_str.empty()) {
+                    ext_usage_str += ",";
+                }
+                ext_usage_str += obj_txt;
+            }
+        }
+        info.extended_key_usage = ext_usage_str;
+        EXTENDED_KEY_USAGE_free(ext_usage);
     }
 
     X509_free(cert);
@@ -143,10 +231,9 @@ ErrorCode CertValidator::validate_certificate_chain(const std::vector<std::vecto
 
 ErrorCode CertValidator::verify_certificate_signature(const std::vector<uint8_t>& cert_der,
                                                      bool& valid) {
-    // In real implementation, verify signature using issuer's public key
-    // For now, assume valid
-    valid = true;
-    return ErrorCode::SUCCESS;
+    // Signature verification requires issuer's public key which is not available here
+    valid = false;
+    return ErrorCode::NOT_IMPLEMENTED;
 }
 
 ErrorCode CertValidator::check_certificate_validity(const std::vector<uint8_t>& cert_der,

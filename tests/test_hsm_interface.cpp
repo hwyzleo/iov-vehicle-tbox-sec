@@ -25,6 +25,9 @@ TEST_F(HsmInterfaceTest, GenerateKeyPair) {
 }
 
 TEST_F(HsmInterfaceTest, SignAndVerify) {
+    KeyPair key_pair;
+    ASSERT_EQ(hsm->generate_key_pair("test-key", "ecdsa-p256", key_pair), ErrorCode::SUCCESS);
+
     std::vector<uint8_t> data = {0x01, 0x02, 0x03, 0x04};
     std::vector<uint8_t> signature;
 
@@ -37,6 +40,9 @@ TEST_F(HsmInterfaceTest, SignAndVerify) {
 }
 
 TEST_F(HsmInterfaceTest, ExportPublicKey) {
+    KeyPair key_pair;
+    ASSERT_EQ(hsm->generate_key_pair("test-key", "ecdsa-p256", key_pair), ErrorCode::SUCCESS);
+
     std::vector<uint8_t> public_key;
     EXPECT_EQ(hsm->export_public_key("test-key", public_key), ErrorCode::SUCCESS);
     EXPECT_FALSE(public_key.empty());

@@ -5,16 +5,13 @@
 #include <openssl/err.h>
 #include <openssl/ec.h>
 #include <openssl/obj_mac.h>
-#include <openssl/asn1.h>
-#include <openssl/asn1t.h>
-#include <algorithm>
-#include <cstring>
+
 
 namespace tbox {
 namespace sec {
 
-CsrBuilder::CsrBuilder(std::shared_ptr<KeyEngine> key_engine)
-    : key_engine_(std::move(key_engine)) {}
+CsrBuilder::CsrBuilder(KeyEngine* key_engine)
+    : key_engine_(key_engine) {}
 
 // --- ASN.1 DER encoding helpers ---
 
@@ -168,17 +165,17 @@ ErrorCode CsrBuilder::marshal_san_extension(
 
     std::vector<uint8_t> san_entries;
 
-    // rfc822Name for VIN
-    std::string vin_email = vin + "@vehicle.example.com";
-    san_entries.push_back(0x81);  // [1] rfc822Name IMPLICIT
-    der_encode_length(static_cast<uint16_t>(vin_email.size()), san_entries);
-    san_entries.insert(san_entries.end(), vin_email.begin(), vin_email.end());
+    // URI for VIN
+    std::string vin_uri = "URI:VIN:" + vin;
+    san_entries.push_back(0x86);  // [6] URI IMPLICIT
+    der_encode_length(static_cast<uint16_t>(vin_uri.size()), san_entries);
+    san_entries.insert(san_entries.end(), vin_uri.begin(), vin_uri.end());
 
-    // rfc822Name for ECU_UID
-    std::string ecu_email = ecu_uid + "@ecu.example.com";
-    san_entries.push_back(0x81);  // [1] rfc822Name IMPLICIT
-    der_encode_length(static_cast<uint16_t>(ecu_email.size()), san_entries);
-    san_entries.insert(san_entries.end(), ecu_email.begin(), ecu_email.end());
+    // URI for ECU_UID
+    std::string ecu_uri = "URI:ECU_UID:" + ecu_uid;
+    san_entries.push_back(0x86);  // [6] URI IMPLICIT
+    der_encode_length(static_cast<uint16_t>(ecu_uri.size()), san_entries);
+    san_entries.insert(san_entries.end(), ecu_uri.begin(), ecu_uri.end());
 
     std::vector<uint8_t> san_seq;
     der_wrap_sequence(san_entries, san_seq);
