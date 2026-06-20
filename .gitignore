@@ -23,7 +23,6 @@
 *.dll
 *.so.*
 
-
 # Fortran module files
 *.mod
 *.smod
@@ -43,6 +42,8 @@
 build/
 Build/
 build-*/
+cmake-build-*/
+cmake_build_*/
 
 # CMake generated files
 CMakeFiles/
@@ -52,11 +53,17 @@ Makefile
 install_manifest.txt
 compile_commands.json
 
-# Temporary files
-*.tmp
-*.log
-*.bak
+# IDE files
+.idea/
+.vscode/
 *.swp
+*.swo
+*~
+
+# Conan files
+conaninfo.txt
+conanbuildinfo.*
+conan.lock
 
 # vcpkg
 vcpkg_installed/
@@ -67,3 +74,22 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Test files
+*.test
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Runtime files
+*.pid
+*.state
+*.json
