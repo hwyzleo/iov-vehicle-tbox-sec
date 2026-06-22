@@ -71,6 +71,7 @@ add_executable(TboxSecTests
     tests/test_sec_service.cpp
     tests/test_uds_handler.cpp
     tests/test_hsm_interface.cpp
+    tests/test_diag_service_interface.cpp
     ${LIB_SOURCES}
 )
 target_include_directories(TboxSecTests PRIVATE ${PROJECT_SOURCE_DIR}/include)
