@@ -217,7 +217,7 @@ std::string SecService::get_device_info() const {
     ss << "ECU UID: " << config_.ecu_uid << "\n";
     ss << "HSM Type: " << config_.hsm_type << "\n";
     ss << "Initialized: " << (initialized_ ? "Yes" : "No") << "\n";
-    ss << "DIAG Service: " << (diag_service_ ? "Connected" : "Not available") << "\n";
+    ss << "DIAG Service: " << (diag_service_ ? (diag_service_->is_connected() ? "Connected" : "Disconnected") : "Not available") << "\n";
 
     if (initialized_) {
         ProvisionStatus status = get_provision_status();
