@@ -34,6 +34,7 @@ std::string error_code_to_string(ErrorCode code) {
         case ErrorCode::NOT_INITIALIZED: return "NOT_INITIALIZED";
         case ErrorCode::OPERATION_IN_PROGRESS: return "OPERATION_IN_PROGRESS";
         case ErrorCode::NOT_IMPLEMENTED: return "NOT_IMPLEMENTED";
+        case ErrorCode::CONNECTION_FAILED: return "CONNECTION_FAILED";
         case ErrorCode::INTERNAL_ERROR: return "INTERNAL_ERROR";
         default: return "UNKNOWN";
     }
@@ -70,6 +71,7 @@ std::string error_code_to_description(ErrorCode code) {
         case ErrorCode::NOT_INITIALIZED: return "Service not initialized";
         case ErrorCode::OPERATION_IN_PROGRESS: return "Another operation is already in progress";
         case ErrorCode::NOT_IMPLEMENTED: return "Operation not implemented";
+        case ErrorCode::CONNECTION_FAILED: return "Failed to connect to service";
         case ErrorCode::INTERNAL_ERROR: return "Internal error";
         default: return "Unknown error";
     }
