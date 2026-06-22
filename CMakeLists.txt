@@ -54,6 +54,7 @@ set(LIB_SOURCES
     src/cloud_client.cpp
     src/provision_state.cpp
     src/error_codes.cpp
+    src/diag_service_adapter.cpp
 )
 
 # Main executable
