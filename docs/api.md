@@ -39,15 +39,27 @@ Inject certificate into device after validation.
 
 **Returns:** `ErrorCode::SUCCESS` on success, `ErrorCode::CERT_KEY_MISMATCH` if key doesn't match
 
-### UdsHandler
+## DIAG服务接口
 
-#### handle_request()
-Handle UDS diagnostic request.
+### DiagServiceInterface
 
-**Parameters:**
-- `request`: UDS request structure
+抽象接口，定义SEC服务需要消费的诊断服务标准能力。
 
-**Returns:** UDS response structure
+#### 方法
+
+- `initialize()` - 初始化DIAG服务连接
+- `send_request()` - 异步发送请求
+- `send_request_sync()` - 同步发送请求
+- `is_connected()` - 检查连接状态
+- `get_service_status()` - 获取服务状态
+
+### 请求类型
+
+- `GENERATE_KEY_PAIR` - 生成密钥对
+- `READ_CSR` - 读取CSR
+- `SUBMIT_CSR` - 提交CSR
+- `INJECT_CERTIFICATE` - 注入证书
+- `READ_PROVISION_STATE` - 读取Provision状态
 
 ## Error Codes
 

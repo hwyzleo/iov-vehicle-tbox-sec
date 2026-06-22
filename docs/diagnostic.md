@@ -2,7 +2,24 @@
 
 ## Overview
 
-This document describes diagnostic procedures for the TBOX Security Service.
+This document describes diagnostic procedures for the TBOX Security Service. With the implementation of TBOX-SEC-DSN-CR-002, the SEC module now consumes DIAG service interfaces rather than directly handling UDS protocol.
+
+## DIAG Service Architecture
+
+The SEC service now uses `DiagServiceInterface` to interact with diagnostic services. This change:
+- Separates SEC logic from UDS protocol handling
+- Enables easier testing with mock DIAG services
+- Provides a standard interface for diagnostic operations
+
+### DiagRequestType
+
+| Type | Description |
+|------|-------------|
+| `GENERATE_KEY_PAIR` | Generate device key pair |
+| `READ_CSR` | Read Certificate Signing Request |
+| `SUBMIT_CSR` | Submit CSR to PKI |
+| `INJECT_CERTIFICATE` | Inject certificate into device |
+| `READ_PROVISION_STATE` | Read current provision state |
 
 ## Prerequisites
 
