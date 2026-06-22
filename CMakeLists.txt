@@ -56,11 +56,14 @@ set(LIB_SOURCES
     src/diag_service_adapter.cpp
 )
 
+# Static library for other modules to link against
+add_library(TboxSecLib STATIC ${LIB_SOURCES})
+target_include_directories(TboxSecLib PUBLIC ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(TboxSecLib PUBLIC OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json CURL::libcurl)
+
 # Main executable
-add_executable(TboxSecService src/main.cpp ${LIB_SOURCES})
-target_include_directories(TboxSecService PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_include_directories(TboxSecService PRIVATE ${PROJECT_SOURCE_DIR}/third_party/include)
-target_link_libraries(TboxSecService PRIVATE OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json CURL::libcurl)
+add_executable(TboxSecService src/main.cpp)
+target_link_libraries(TboxSecService PRIVATE TboxSecLib)
 
 # Tests
 enable_testing()
@@ -72,8 +75,6 @@ add_executable(TboxSecTests
     tests/test_sec_service_with_diag.cpp
     tests/test_hsm_interface.cpp
     tests/test_diag_service_interface.cpp
-    ${LIB_SOURCES}
 )
-target_include_directories(TboxSecTests PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(TboxSecTests PRIVATE GTest::GTest GTest::Main OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json CURL::libcurl)
+target_link_libraries(TboxSecTests PRIVATE TboxSecLib GTest::GTest GTest::Main)
 add_test(NAME TboxSecTests COMMAND TboxSecTests)
