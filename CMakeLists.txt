@@ -48,7 +48,6 @@ set(LIB_SOURCES
     src/key_engine.cpp
     src/hsm_interface.cpp
     src/secure_storage.cpp
-    src/uds_handler.cpp
     src/csr_builder.cpp
     src/cert_validator.cpp
     src/cloud_client.cpp
@@ -71,7 +70,6 @@ add_executable(TboxSecTests
     tests/test_cert_validator.cpp
     tests/test_sec_service.cpp
     tests/test_sec_service_with_diag.cpp
-    tests/test_uds_handler.cpp
     tests/test_hsm_interface.cpp
     tests/test_diag_service_interface.cpp
     ${LIB_SOURCES}
