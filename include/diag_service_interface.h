@@ -12,7 +12,8 @@ enum class DiagRequestType : uint8_t {
     GENERATE_KEY_PAIR = 0x01,
     READ_CSR = 0x02,
     INJECT_CERTIFICATE = 0x03,
-    READ_PROVISION_STATE = 0x04
+    READ_PROVISION_STATE = 0x04,
+    SUBMIT_CSR = 0x05
 };
 
 struct DiagResponse {

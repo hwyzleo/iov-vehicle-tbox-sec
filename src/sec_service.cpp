@@ -132,6 +132,20 @@ ErrorCode SecService::submit_csr() {
         return ErrorCode::INVALID_PARAMETER;
     }
 
+    if (diag_service_) {
+        DiagResponse response;
+        ErrorCode result = handle_diag_request(DiagRequestType::SUBMIT_CSR, {}, response);
+        if (result != ErrorCode::SUCCESS) {
+            handle_error(result, "CSR submission via DIAG failed");
+            return result;
+        }
+        
+        if (response.error_code == ErrorCode::SUCCESS) {
+            update_provision_state(ProvisionState::CSR_SUBMITTED);
+        }
+        return response.error_code;
+    }
+
     ErrorCode result = submit_csr_to_cloud();
     if (result != ErrorCode::SUCCESS) {
         handle_error(result, "CSR submission failed");
