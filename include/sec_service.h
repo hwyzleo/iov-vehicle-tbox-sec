@@ -29,23 +29,25 @@ public:
     SecService(const SecServiceConfig& config, 
                std::shared_ptr<DiagServiceInterface> diag_service);
 
-    ErrorCode initialize();
+    virtual ~SecService() = default;
 
-    ErrorCode generate_key_pair();
+    virtual ErrorCode initialize();
 
-    ErrorCode get_csr(std::vector<uint8_t>& csr_der);
+    virtual ErrorCode generate_key_pair();
 
-    ErrorCode submit_csr();
+    virtual ErrorCode get_csr(std::vector<uint8_t>& csr_der);
 
-    ErrorCode inject_certificate(const std::vector<uint8_t>& cert_der);
+    virtual ErrorCode submit_csr();
 
-    ProvisionStatus get_provision_status() const;
+    virtual ErrorCode inject_certificate(const std::vector<uint8_t>& cert_der);
 
-    ErrorCode reset_provision_status();
+    virtual ProvisionStatus get_provision_status() const;
 
-    std::string get_device_info() const;
+    virtual ErrorCode reset_provision_status();
 
-    bool is_initialized() const;
+    virtual std::string get_device_info() const;
+
+    virtual bool is_initialized() const;
 
     void set_diag_service(std::shared_ptr<DiagServiceInterface> diag_service);
 
