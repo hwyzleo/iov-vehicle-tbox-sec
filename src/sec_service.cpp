@@ -11,6 +11,10 @@ SecService::SecService() : initialized_(false) {}
 SecService::SecService(const SecServiceConfig& config)
     : config_(config), initialized_(false) {}
 
+SecService::SecService(const SecServiceConfig& config,
+                      std::shared_ptr<DiagServiceInterface> diag_service)
+    : config_(config), initialized_(false), diag_service_(diag_service) {}
+
 ErrorCode SecService::initialize() {
     ErrorCode result = initialize_hsm();
     if (result != ErrorCode::SUCCESS) {
@@ -27,6 +31,13 @@ ErrorCode SecService::initialize() {
         return result;
     }
 
+    if (diag_service_) {
+        result = diag_service_->initialize();
+        if (result != ErrorCode::SUCCESS) {
+            return result;
+        }
+    }
+
     initialized_ = true;
     return ErrorCode::SUCCESS;
 }
@@ -41,6 +52,20 @@ ErrorCode SecService::generate_key_pair() {
     if (status.state != ProvisionState::NONE &&
         status.state != ProvisionState::FAILED) {
         return ErrorCode::KEY_ALREADY_EXISTS;
+    }
+
+    if (diag_service_) {
+        DiagResponse response;
+        ErrorCode result = handle_diag_request(DiagRequestType::GENERATE_KEY_PAIR, {}, response);
+        if (result != ErrorCode::SUCCESS) {
+            handle_error(result, "Key pair generation via DIAG failed");
+            return result;
+        }
+        
+        if (response.error_code == ErrorCode::SUCCESS) {
+            update_provision_state(ProvisionState::KEY_GENERATED);
+        }
+        return response.error_code;
     }
 
     ErrorCode result = generate_and_store_key_pair();
@@ -62,6 +87,24 @@ ErrorCode SecService::get_csr(std::vector<uint8_t>& csr_der) {
 
     if (status.state == ProvisionState::NONE) {
         return ErrorCode::KEY_NOT_FOUND;
+    }
+
+    if (diag_service_) {
+        DiagResponse response;
+        ErrorCode result = handle_diag_request(DiagRequestType::READ_CSR, {}, response);
+        if (result != ErrorCode::SUCCESS) {
+            handle_error(result, "Read CSR via DIAG failed");
+            return result;
+        }
+        
+        if (response.error_code == ErrorCode::SUCCESS) {
+            csr_der = response.data;
+            
+            if (status.state == ProvisionState::KEY_GENERATED) {
+                update_provision_state(ProvisionState::CSR_BUILT);
+            }
+        }
+        return response.error_code;
     }
 
     if (status.state == ProvisionState::KEY_GENERATED) {
@@ -110,6 +153,21 @@ ErrorCode SecService::inject_certificate(const std::vector<uint8_t>& cert_der) {
         return ErrorCode::INVALID_PARAMETER;
     }
 
+    if (diag_service_) {
+        DiagResponse response;
+        ErrorCode result = handle_diag_request(DiagRequestType::INJECT_CERTIFICATE, 
+                                              cert_der, response);
+        if (result != ErrorCode::SUCCESS) {
+            handle_error(result, "Certificate injection via DIAG failed");
+            return result;
+        }
+        
+        if (response.error_code == ErrorCode::SUCCESS) {
+            update_provision_state(ProvisionState::CERT_INSTALLED);
+        }
+        return response.error_code;
+    }
+
     ErrorCode result = validate_and_store_certificate(cert_der);
     if (result != ErrorCode::SUCCESS) {
         handle_error(result, "Certificate injection failed");
@@ -145,6 +203,7 @@ std::string SecService::get_device_info() const {
     ss << "ECU UID: " << config_.ecu_uid << "\n";
     ss << "HSM Type: " << config_.hsm_type << "\n";
     ss << "Initialized: " << (initialized_ ? "Yes" : "No") << "\n";
+    ss << "DIAG Service: " << (diag_service_ ? "Connected" : "Not available") << "\n";
 
     if (initialized_) {
         ProvisionStatus status = get_provision_status();
@@ -260,6 +319,24 @@ void SecService::update_provision_state(ProvisionState state, const std::string&
 
 void SecService::handle_error(ErrorCode error, const std::string& context) {
     update_provision_state(ProvisionState::FAILED, context + ": " + error_code_to_string(error));
+}
+
+void SecService::set_diag_service(std::shared_ptr<DiagServiceInterface> diag_service) {
+    diag_service_ = diag_service;
+}
+
+ErrorCode SecService::handle_diag_request(DiagRequestType request_type,
+                                         const std::vector<uint8_t>& request_data,
+                                         DiagResponse& response) {
+    if (!diag_service_) {
+        return ErrorCode::NOT_INITIALIZED;
+    }
+    
+    if (!diag_service_->is_connected()) {
+        return ErrorCode::CONNECTION_FAILED;
+    }
+    
+    return diag_service_->send_request_sync(request_type, request_data, response);
 }
 
 } // namespace sec

@@ -8,6 +8,7 @@
 #include "cloud_client.h"
 #include "provision_state.h"
 #include "error_codes.h"
+#include "diag_service_interface.h"
 
 namespace tbox {
 namespace sec {
@@ -25,6 +26,8 @@ class SecService {
 public:
     SecService();
     SecService(const SecServiceConfig& config);
+    SecService(const SecServiceConfig& config, 
+               std::shared_ptr<DiagServiceInterface> diag_service);
 
     ErrorCode initialize();
 
@@ -44,9 +47,12 @@ public:
 
     bool is_initialized() const;
 
+    void set_diag_service(std::shared_ptr<DiagServiceInterface> diag_service);
+
 private:
     SecServiceConfig config_;
     bool initialized_;
+    std::shared_ptr<DiagServiceInterface> diag_service_;
 
     std::unique_ptr<KeyEngine> key_engine_;
     std::unique_ptr<CsrBuilder> csr_builder_;
@@ -65,6 +71,10 @@ private:
 
     void update_provision_state(ProvisionState state, const std::string& error = "");
     void handle_error(ErrorCode error, const std::string& context);
+    
+    ErrorCode handle_diag_request(DiagRequestType request_type,
+                                 const std::vector<uint8_t>& request_data,
+                                 DiagResponse& response);
 };
 
 } // namespace sec
