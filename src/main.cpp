@@ -4,13 +4,11 @@
 #include <signal.h>
 #include <unistd.h>
 #include "sec_service.h"
-#include "uds_handler.h"
 #include "yaml-cpp/yaml.h"
 
 using namespace tbox::sec;
 
 std::shared_ptr<SecService> g_sec_service;
-std::unique_ptr<UdsHandler> g_uds_handler;
 std::atomic<bool> g_running{true};
 
 void signal_handler(int signal) {
@@ -97,15 +95,6 @@ int main(int argc, char* argv[]) {
 
         if (result != ErrorCode::SUCCESS) {
             std::cerr << "Failed to initialize SEC service: "
-                      << error_code_to_string(result) << std::endl;
-            return 1;
-        }
-
-        g_uds_handler = std::make_unique<UdsHandler>(g_sec_service);
-        result = g_uds_handler->initialize();
-
-        if (result != ErrorCode::SUCCESS) {
-            std::cerr << "Failed to initialize UDS handler: "
                       << error_code_to_string(result) << std::endl;
             return 1;
         }
