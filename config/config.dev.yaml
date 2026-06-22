@@ -11,11 +11,15 @@ tbox:
     slot_id: 0
     pin: "123456"
 
-  # Security storage paths
+  # Security storage paths (local development)
+  # Production paths:
+  #   key_store: "/var/lib/tbox/sec/keys"
+  #   cert_store: "/var/lib/tbox/sec/certs"
+  #   state_file: "/var/lib/tbox/sec/provision_state.json"
   storage:
-    key_store: "/var/lib/tbox/sec/keys"
-    cert_store: "/var/lib/tbox/sec/certs"
-    state_file: "/var/lib/tbox/sec/provision_state.json"
+    key_store: "./data/keys"
+    cert_store: "./data/certs"
+    state_file: "./data/provision_state.json"
 
   # Cloud communication
   cloud:
