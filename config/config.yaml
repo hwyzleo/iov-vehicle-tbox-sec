@@ -12,10 +12,11 @@ tbox:
     pin: "123456"
 
   # Security storage paths
+  # Production: /var/lib/tbox/sec/
   storage:
-    key_store: "/var/lib/tbox/sec/keys"
-    cert_store: "/var/lib/tbox/sec/certs"
-    state_file: "/var/lib/tbox/sec/provision_state.json"
+    key_store: "./data/keys"
+    cert_store: "./data/certs"
+    state_file: "./data/provision_state.json"
 
   # Cloud communication
   cloud:
