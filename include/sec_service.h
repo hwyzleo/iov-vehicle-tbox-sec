@@ -9,25 +9,27 @@
 #include "provision_state.h"
 #include "error_codes.h"
 #include "diag_service_interface.h"
+#include "prov_service_interface.h"
 
 namespace tbox {
 namespace sec {
 
 struct SecServiceConfig {
-    std::string vin;
-    std::string ecu_uid;
     std::string hsm_type;
     std::string hsm_config_path;
     std::string state_file_path;
     CloudConfig cloud_config;
 };
 
-class SecService {
+class SecService : public std::enable_shared_from_this<SecService> {
 public:
     SecService();
     SecService(const SecServiceConfig& config);
     SecService(const SecServiceConfig& config, 
                std::shared_ptr<DiagServiceInterface> diag_service);
+    SecService(const SecServiceConfig& config,
+               std::shared_ptr<DiagServiceInterface> diag_service,
+               std::shared_ptr<ProvServiceInterface> prov_service);
 
     virtual ~SecService() = default;
 
@@ -41,6 +43,12 @@ public:
 
     virtual ErrorCode inject_certificate(const std::vector<uint8_t>& cert_der);
 
+    virtual ErrorCode apply_certificate();
+
+    virtual ErrorCode get_seed(uint8_t level, std::vector<uint8_t>& seed);
+
+    virtual ErrorCode verify_key(uint8_t level, const std::vector<uint8_t>& key);
+
     virtual ProvisionStatus get_provision_status() const;
 
     virtual ErrorCode reset_provision_status();
@@ -50,11 +58,16 @@ public:
     virtual bool is_initialized() const;
 
     void set_diag_service(std::shared_ptr<DiagServiceInterface> diag_service);
+    void set_prov_service(std::shared_ptr<ProvServiceInterface> prov_service);
 
 private:
     SecServiceConfig config_;
     bool initialized_;
     std::shared_ptr<DiagServiceInterface> diag_service_;
+    std::shared_ptr<ProvServiceInterface> prov_service_;
+
+    std::string vin_;
+    std::string ecu_uid_;
 
     std::unique_ptr<KeyEngine> key_engine_;
     std::unique_ptr<CsrBuilder> csr_builder_;
@@ -62,9 +75,12 @@ private:
     std::unique_ptr<CloudClient> cloud_client_;
     std::unique_ptr<ProvisionStateManager> state_manager_;
 
+    std::vector<uint8_t> csr_der_;  // 存储构建的 CSR
+
     ErrorCode initialize_hsm();
     ErrorCode initialize_cloud_client();
     ErrorCode load_provision_state();
+    ErrorCode fetch_vehicle_info();
 
     ErrorCode generate_and_store_key_pair();
     ErrorCode build_and_store_csr();
@@ -77,6 +93,35 @@ private:
     ErrorCode handle_diag_request(DiagRequestType request_type,
                                  const std::vector<uint8_t>& request_data,
                                  DiagResponse& response);
+
+    // Seed-Key security parameters
+    static constexpr size_t SEED_KEY_SIZE = 16;
+    static constexpr int MAX_FAILED_ATTEMPTS = 3;
+    static constexpr int LOCKOUT_DURATION_SEC = 10;
+
+    // Seed state management
+    struct SeedState {
+        std::vector<uint8_t> seed;
+        uint8_t security_level = 0;  // UDS security level used for requestSeed
+        bool generated = false;
+        bool consumed = false;
+        std::chrono::steady_clock::time_point generated_at;
+    };
+    
+    SeedState current_seed_;
+    std::mutex seed_mutex_;
+    int failed_attempts_ = 0;
+    std::chrono::steady_clock::time_point lockout_until_;
+    bool in_lockout_ = false;
+
+    // Seed-Key helper methods
+    ErrorCode generate_random_seed(std::vector<uint8_t>& seed);
+    ErrorCode compute_expected_key(const std::vector<uint8_t>& seed, std::vector<uint8_t>& expected_key);
+    bool is_seed_valid() const;
+    void invalidate_seed();
+    bool is_in_lockout() const;
+    void increment_failed_attempts();
+    void reset_failed_attempts();
 };
 
 } // namespace sec

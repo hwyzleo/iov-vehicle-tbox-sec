@@ -119,9 +119,6 @@ ssh root@192.168.1.100 "vi /opt/tbox-sec/config/config.yaml"
 关键配置项：
 ```yaml
 tbox:
-  vin: "实际VIN码"           # 从MES获取
-  ecu_uid: "实际ECU UID"     # 从硬件读取
-  
   hsm:
     type: "pkcs11"           # 生产环境使用pkcs11
     library_path: "/usr/lib/softhsm2/libsofthsm2.so"
@@ -129,6 +126,8 @@ tbox:
   cloud:
     oapi_endpoint: "https://实际OAPI地址:10805"
 ```
+
+**注意**：VIN和ECU UID现在从PROV服务获取，不再需要在配置文件中配置。
 
 ### 4.2 创建必要目录
 

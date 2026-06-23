@@ -47,6 +47,10 @@ enum class ErrorCode : uint32_t {
     UDS_SECURITY_DENIED = 7002,
     UDS_INVALID_REQUEST = 7003,
 
+    // Seed-Key errors (SEC-1007, SEC-1008)
+    SEED_GENERATION_FAILED = 7007,
+    KEY_VERIFICATION_FAILED = 7008,
+
     // General errors
     INVALID_PARAMETER = 8001,
     NOT_INITIALIZED = 8002,

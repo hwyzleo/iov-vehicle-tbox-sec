@@ -2,6 +2,10 @@
 #include "hsm_interface.h"
 #include <sstream>
 #include <iomanip>
+#include <random>
+#include <chrono>
+#include <iostream>
+#include <openssl/rand.h>
 
 namespace tbox {
 namespace sec {
@@ -15,8 +19,18 @@ SecService::SecService(const SecServiceConfig& config,
                       std::shared_ptr<DiagServiceInterface> diag_service)
     : config_(config), initialized_(false), diag_service_(diag_service) {}
 
+SecService::SecService(const SecServiceConfig& config,
+                      std::shared_ptr<DiagServiceInterface> diag_service,
+                      std::shared_ptr<ProvServiceInterface> prov_service)
+    : config_(config), initialized_(false), diag_service_(diag_service), prov_service_(prov_service) {}
+
 ErrorCode SecService::initialize() {
-    ErrorCode result = initialize_hsm();
+    ErrorCode result = fetch_vehicle_info();
+    if (result != ErrorCode::SUCCESS) {
+        return result;
+    }
+
+    result = initialize_hsm();
     if (result != ErrorCode::SUCCESS) {
         return result;
     }
@@ -49,9 +63,16 @@ ErrorCode SecService::generate_key_pair() {
 
     ProvisionStatus status = get_provision_status();
 
+    // 检查密钥是否真正存在于 HSM 中
     if (status.state != ProvisionState::NONE &&
         status.state != ProvisionState::FAILED) {
-        return ErrorCode::KEY_ALREADY_EXISTS;
+        // 检查 HSM 中是否真的有密钥
+        if (key_engine_ && key_engine_->device_key_exists(vin_, ecu_uid_)) {
+            // 密钥确实存在，静默返回成功
+            return ErrorCode::SUCCESS;
+        }
+        // 状态说有密钥但 HSM 中没有，继续生成
+        std::cout << "[SEC] State says key exists but not in HSM, regenerating..." << std::endl;
     }
 
     if (diag_service_) {
@@ -84,30 +105,16 @@ ErrorCode SecService::get_csr(std::vector<uint8_t>& csr_der) {
     }
 
     ProvisionStatus status = get_provision_status();
+    std::cout << "[SEC] get_csr: state=" << static_cast<int>(status.state) << std::endl;
 
     if (status.state == ProvisionState::NONE) {
         return ErrorCode::KEY_NOT_FOUND;
     }
 
-    if (diag_service_) {
-        DiagResponse response;
-        ErrorCode result = handle_diag_request(DiagRequestType::READ_CSR, {}, response);
-        if (result != ErrorCode::SUCCESS) {
-            handle_error(result, "Read CSR via DIAG failed");
-            return result;
-        }
-        
-        if (response.error_code == ErrorCode::SUCCESS) {
-            csr_der = response.data;
-            
-            if (status.state == ProvisionState::KEY_GENERATED) {
-                update_provision_state(ProvisionState::CSR_BUILT);
-            }
-        }
-        return response.error_code;
-    }
-
-    if (status.state == ProvisionState::KEY_GENERATED) {
+    // 如果 CSR 尚未构建或 csr_der_ 为空，重新构建
+    if (status.state == ProvisionState::KEY_GENERATED || csr_der_.empty()) {
+        std::cout << "[SEC] Building CSR (state=" << static_cast<int>(status.state)
+                  << " csr_der_.empty()=" << csr_der_.empty() << ")..." << std::endl;
         ErrorCode result = build_and_store_csr();
         if (result != ErrorCode::SUCCESS) {
             handle_error(result, "CSR building failed");
@@ -117,7 +124,8 @@ ErrorCode SecService::get_csr(std::vector<uint8_t>& csr_der) {
         update_provision_state(ProvisionState::CSR_BUILT);
     }
 
-    csr_der = {0x30, 0x82, 0x01, 0x00};
+    csr_der = csr_der_;
+    std::cout << "[SEC] get_csr: returning csr_der_.size()=" << csr_der_.size() << std::endl;
     return ErrorCode::SUCCESS;
 }
 
@@ -163,7 +171,11 @@ ErrorCode SecService::inject_certificate(const std::vector<uint8_t>& cert_der) {
 
     ProvisionStatus status = get_provision_status();
 
-    if (status.state != ProvisionState::CSR_SUBMITTED) {
+    // 允许在 CSR_BUILT 或 CSR_SUBMITTED 状态下注入证书
+    // CSR_BUILT: 工位自己走 MES→OAPI→PKI 提交 CSR，不经过 DIAG
+    // CSR_SUBMITTED: 通过 DIAG 提交了 CSR
+    if (status.state != ProvisionState::CSR_BUILT &&
+        status.state != ProvisionState::CSR_SUBMITTED) {
         return ErrorCode::INVALID_PARAMETER;
     }
 
@@ -192,6 +204,190 @@ ErrorCode SecService::inject_certificate(const std::vector<uint8_t>& cert_der) {
     return ErrorCode::SUCCESS;
 }
 
+ErrorCode SecService::apply_certificate() {
+    if (!initialized_) {
+        std::cerr << "[SEC] apply_certificate: not initialized" << std::endl;
+        return ErrorCode::NOT_INITIALIZED;
+    }
+
+    ProvisionStatus status = get_provision_status();
+    std::cerr << "[SEC] apply_certificate: state=" << static_cast<int>(status.state) << std::endl;
+
+    // 如果已经完成，直接返回
+    if (status.state == ProvisionState::CERT_INSTALLED) {
+        return ErrorCode::SUCCESS;
+    }
+
+    // 如果是失败状态，重置为NONE重新开始
+    if (status.state == ProvisionState::FAILED) {
+        status.state = ProvisionState::NONE;
+        status.retry_count = 0;
+        status.last_error.clear();
+        state_manager_->update_status(status);
+    }
+
+    // 如果有DIAG服务，通过DIAG服务执行整个流程
+    if (diag_service_) {
+        std::cerr << "[SEC] apply_certificate: using diag_service" << std::endl;
+        DiagResponse response;
+        ErrorCode result = handle_diag_request(DiagRequestType::APPLY_CERTIFICATE, {}, response);
+        if (result != ErrorCode::SUCCESS) {
+            handle_error(result, "Certificate application via DIAG failed");
+            return result;
+        }
+        return response.error_code;
+    }
+
+    // 步骤1：生成密钥对
+    if (status.state == ProvisionState::NONE) {
+        std::cerr << "[SEC] apply_certificate: generating key pair" << std::endl;
+        ErrorCode result = generate_key_pair();
+        if (result != ErrorCode::SUCCESS) {
+            std::cerr << "[SEC] apply_certificate: generate_key_pair failed: " << static_cast<int>(result) << std::endl;
+            return result;
+        }
+        status.state = ProvisionState::KEY_GENERATED;
+    }
+
+    // 步骤2：构建CSR
+    if (status.state == ProvisionState::KEY_GENERATED) {
+        std::vector<uint8_t> csr_der;
+        ErrorCode result = get_csr(csr_der);
+        if (result != ErrorCode::SUCCESS) {
+            return result;
+        }
+        status.state = ProvisionState::CSR_BUILT;
+    }
+
+    // 步骤3：提交CSR到云端
+    if (status.state == ProvisionState::CSR_BUILT) {
+        std::cerr << "[SEC] apply_certificate: submitting CSR" << std::endl;
+        ErrorCode result = submit_csr();
+        if (result != ErrorCode::SUCCESS) {
+            std::cerr << "[SEC] apply_certificate: submit_csr failed: " << static_cast<int>(result) << std::endl;
+            return result;
+        }
+        status.state = ProvisionState::CSR_SUBMITTED;
+    }
+
+    // 步骤4：注入证书（这里需要外部提供证书，或者等待云端返回）
+    // 注意：在实际流程中，证书可能需要从云端异步获取
+    // 这里暂时返回SUCCESS，表示CSR已提交成功
+    // 证书注入需要通过inject_certificate()单独调用
+    std::cerr << "[SEC] apply_certificate: success" << std::endl;
+    return ErrorCode::SUCCESS;
+}
+
+ErrorCode SecService::get_seed(uint8_t level, std::vector<uint8_t>& seed) {
+    if (!initialized_) {
+        return ErrorCode::NOT_INITIALIZED;
+    }
+
+    // UDS security level validation:
+    // - requestSeed uses odd security levels (0x01, 0x03, 0x05, ..., 0x27, etc.)
+    // - sendKey uses even security levels (0x02, 0x04, 0x06, ..., 0x28, etc.)
+    // - requestSeed level must be odd (bit 0 = 1)
+    if ((level & 0x01) == 0 || level == 0) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
+    std::lock_guard<std::mutex> lock(seed_mutex_);
+
+    // Check if in lockout period
+    if (is_in_lockout()) {
+        return ErrorCode::UDS_SECURITY_DENIED;
+    }
+
+    // Generate new seed
+    ErrorCode result = generate_random_seed(seed);
+    if (result != ErrorCode::SUCCESS) {
+        handle_error(result, "Seed generation failed");
+        return ErrorCode::SEED_GENERATION_FAILED;
+    }
+
+    // Store seed state with security level
+    current_seed_.seed = seed;
+    current_seed_.security_level = level;
+    current_seed_.generated = true;
+    current_seed_.consumed = false;
+    current_seed_.generated_at = std::chrono::steady_clock::now();
+
+    return ErrorCode::SUCCESS;
+}
+
+ErrorCode SecService::verify_key(uint8_t level, const std::vector<uint8_t>& key) {
+    if (!initialized_) {
+        return ErrorCode::NOT_INITIALIZED;
+    }
+
+    // UDS security level validation:
+    // - sendKey uses even security levels (0x02, 0x04, 0x06, ..., 0x28, etc.)
+    // - sendKey level must be even (bit 0 = 0)
+    if ((level & 0x01) != 0 || level == 0) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
+    std::lock_guard<std::mutex> lock(seed_mutex_);
+
+    // Check if in lockout period
+    if (is_in_lockout()) {
+        return ErrorCode::UDS_SECURITY_DENIED;
+    }
+
+    // Check if seed is valid
+    if (!is_seed_valid()) {
+        std::cerr << "[SEC] verify_key: seed not valid" << std::endl;
+        return ErrorCode::KEY_VERIFICATION_FAILED;
+    }
+
+    // Validate that sendKey level = requestSeed level + 1
+    if (level != current_seed_.security_level + 1) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
+    // Compute expected key
+    std::vector<uint8_t> expected_key;
+    ErrorCode result = compute_expected_key(current_seed_.seed, expected_key);
+    if (result != ErrorCode::SUCCESS) {
+        handle_error(result, "Key computation failed");
+        return ErrorCode::KEY_VERIFICATION_FAILED;
+    }
+
+    // Debug logging
+    std::cerr << "[SEC] verify_key debug:" << std::endl;
+    std::cerr << "  seed(" << current_seed_.seed.size() << "): ";
+    for (auto b : current_seed_.seed) std::cerr << std::hex << (int)b << " ";
+    std::cerr << std::endl;
+    std::cerr << "  expected(" << expected_key.size() << "): ";
+    for (auto b : expected_key) std::cerr << std::hex << (int)b << " ";
+    std::cerr << std::endl;
+    std::cerr << "  received(" << key.size() << "): ";
+    for (auto b : key) std::cerr << std::hex << (int)b << " ";
+    std::cerr << std::endl;
+
+    // Compare keys (constant-time comparison to prevent timing attacks)
+    bool key_valid = (key.size() == expected_key.size());
+    if (key_valid) {
+        volatile uint8_t diff = 0;
+        for (size_t i = 0; i < key.size(); ++i) {
+            diff |= key[i] ^ expected_key[i];
+        }
+        key_valid = (diff == 0);
+    }
+
+    if (key_valid) {
+        // Key verification successful
+        invalidate_seed();
+        reset_failed_attempts();
+        return ErrorCode::SUCCESS;
+    } else {
+        // Key verification failed
+        increment_failed_attempts();
+        invalidate_seed();
+        return ErrorCode::KEY_VERIFICATION_FAILED;
+    }
+}
+
 ProvisionStatus SecService::get_provision_status() const {
     if (!state_manager_) {
         ProvisionStatus status;
@@ -199,7 +395,7 @@ ProvisionStatus SecService::get_provision_status() const {
         return status;
     }
 
-    return state_manager_->get_status(config_.vin, config_.ecu_uid);
+    return state_manager_->get_status(vin_, ecu_uid_);
 }
 
 ErrorCode SecService::reset_provision_status() {
@@ -207,17 +403,18 @@ ErrorCode SecService::reset_provision_status() {
         return ErrorCode::NOT_INITIALIZED;
     }
 
-    return state_manager_->reset_status(config_.vin, config_.ecu_uid)
+    return state_manager_->reset_status(vin_, ecu_uid_)
         ? ErrorCode::SUCCESS : ErrorCode::STORAGE_WRITE_FAILED;
 }
 
 std::string SecService::get_device_info() const {
     std::stringstream ss;
-    ss << "VIN: " << config_.vin << "\n";
-    ss << "ECU UID: " << config_.ecu_uid << "\n";
+    ss << "VIN: " << vin_ << "\n";
+    ss << "ECU UID: " << ecu_uid_ << "\n";
     ss << "HSM Type: " << config_.hsm_type << "\n";
     ss << "Initialized: " << (initialized_ ? "Yes" : "No") << "\n";
     ss << "DIAG Service: " << (diag_service_ ? (diag_service_->is_connected() ? "Connected" : "Disconnected") : "Not available") << "\n";
+    ss << "PROV Service: " << (prov_service_ ? (prov_service_->is_connected() ? "Connected" : "Disconnected") : "Not available") << "\n";
 
     if (initialized_) {
         ProvisionStatus status = get_provision_status();
@@ -264,9 +461,26 @@ ErrorCode SecService::load_provision_state() {
     return state_manager_->load_state() ? ErrorCode::SUCCESS : ErrorCode::STORAGE_READ_FAILED;
 }
 
+ErrorCode SecService::fetch_vehicle_info() {
+    if (!prov_service_) {
+        return ErrorCode::NOT_INITIALIZED;
+    }
+
+    VehicleInfo info;
+    ErrorCode result = prov_service_->get_vehicle_info(info);
+    if (result != ErrorCode::SUCCESS) {
+        return result;
+    }
+
+    vin_ = info.vin;
+    ecu_uid_ = info.ecu_uid;
+    return ErrorCode::SUCCESS;
+}
+
 ErrorCode SecService::generate_and_store_key_pair() {
     KeyPair key_pair;
-    return key_engine_->generate_device_key(config_.vin, config_.ecu_uid, key_pair);
+    std::cout << "[SEC] Generating key pair with vin=" << vin_ << " ecu_uid=" << ecu_uid_ << std::endl;
+    return key_engine_->generate_device_key(vin_, ecu_uid_, key_pair);
 }
 
 ErrorCode SecService::build_and_store_csr() {
@@ -275,20 +489,23 @@ ErrorCode SecService::build_and_store_csr() {
     }
 
     CsrConfig csr_config;
-    csr_config.common_name = "ECU:" + config_.ecu_uid;
-    csr_config.vin = config_.vin;
-    csr_config.ecu_uid = config_.ecu_uid;
+    csr_config.common_name = "ECU:" + ecu_uid_;
+    csr_config.vin = vin_;
+    csr_config.ecu_uid = ecu_uid_;
     csr_config.key_usage = "digitalSignature";
     csr_config.extended_key_usage = "clientAuth";
 
-    std::vector<uint8_t> csr_der;
-    return csr_builder_->build_csr(csr_config, csr_der);
+    std::cout << "[SEC] Building CSR with vin=" << vin_ << " ecu_uid=" << ecu_uid_ << std::endl;
+    ErrorCode result = csr_builder_->build_csr(csr_config, csr_der_);
+    std::cout << "[SEC] build_csr result=" << static_cast<int>(result)
+              << " csr_der_.size()=" << csr_der_.size() << std::endl;
+    return result;
 }
 
 ErrorCode SecService::submit_csr_to_cloud() {
     CertificateRequest request;
-    request.vin = config_.vin;
-    request.ecu_uid = config_.ecu_uid;
+    request.vin = vin_;
+    request.ecu_uid = ecu_uid_;
     request.csr_der = {0x30, 0x82, 0x01, 0x00};
 
     CertificateResponse response;
@@ -301,7 +518,7 @@ ErrorCode SecService::validate_and_store_certificate(const std::vector<uint8_t>&
     }
 
     bool valid = false;
-    ErrorCode result = cert_validator_->validate_certificate(config_.vin, config_.ecu_uid, cert_der, valid);
+    ErrorCode result = cert_validator_->validate_certificate(vin_, ecu_uid_, cert_der, valid);
 
     if (result != ErrorCode::SUCCESS) {
         return result;
@@ -337,6 +554,91 @@ void SecService::handle_error(ErrorCode error, const std::string& context) {
 
 void SecService::set_diag_service(std::shared_ptr<DiagServiceInterface> diag_service) {
     diag_service_ = diag_service;
+}
+
+void SecService::set_prov_service(std::shared_ptr<ProvServiceInterface> prov_service) {
+    prov_service_ = prov_service;
+}
+
+ErrorCode SecService::generate_random_seed(std::vector<uint8_t>& seed) {
+    seed.resize(SEED_KEY_SIZE);
+    
+    // Use OpenSSL for cryptographically secure random generation
+    if (RAND_bytes(seed.data(), SEED_KEY_SIZE) != 1) {
+        return ErrorCode::SEED_GENERATION_FAILED;
+    }
+    
+    return ErrorCode::SUCCESS;
+}
+
+ErrorCode SecService::compute_expected_key(const std::vector<uint8_t>& seed, std::vector<uint8_t>& expected_key) {
+    if (seed.size() != SEED_KEY_SIZE) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
+    // UDS standard XOR-based key computation
+    // key = seed XOR shared_secret
+    // In production, shared_secret should come from HSM/secure element
+    
+    // Shared secret (placeholder - in production from HSM)
+    std::vector<uint8_t> shared_secret(SEED_KEY_SIZE, 0x01);
+    
+    expected_key.resize(SEED_KEY_SIZE);
+    
+    // XOR-based computation (common UDS algorithm)
+    for (size_t i = 0; i < SEED_KEY_SIZE; i++) {
+        expected_key[i] = seed[i] ^ shared_secret[i];
+    }
+    
+    return ErrorCode::SUCCESS;
+}
+
+bool SecService::is_seed_valid() const {
+    if (!current_seed_.generated || current_seed_.consumed) {
+        return false;
+    }
+    
+    // Check if seed has expired (e.g., after 30 seconds)
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - current_seed_.generated_at);
+    
+    return elapsed.count() < 30; // 30 second validity
+}
+
+void SecService::invalidate_seed() {
+    current_seed_.consumed = true;
+    // Clear seed from memory
+    std::fill(current_seed_.seed.begin(), current_seed_.seed.end(), 0);
+}
+
+bool SecService::is_in_lockout() const {
+    if (!in_lockout_) {
+        return false;
+    }
+    
+    auto now = std::chrono::steady_clock::now();
+    if (now >= lockout_until_) {
+        // Lockout period has expired
+        return false;
+    }
+    
+    return true;
+}
+
+void SecService::increment_failed_attempts() {
+    failed_attempts_++;
+    
+    if (failed_attempts_ >= MAX_FAILED_ATTEMPTS) {
+        in_lockout_ = true;
+        lockout_until_ = std::chrono::steady_clock::now() + 
+                        std::chrono::seconds(LOCKOUT_DURATION_SEC);
+        failed_attempts_ = 0; // Reset counter after lockout
+    }
+}
+
+void SecService::reset_failed_attempts() {
+    failed_attempts_ = 0;
+    in_lockout_ = false;
 }
 
 ErrorCode SecService::handle_diag_request(DiagRequestType request_type,

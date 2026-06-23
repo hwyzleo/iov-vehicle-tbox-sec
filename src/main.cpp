@@ -8,6 +8,34 @@
 
 using namespace tbox::sec;
 
+class DefaultProvService : public ProvServiceInterface {
+public:
+    DefaultProvService(const std::string& vin, const std::string& ecu_uid)
+        : vin_(vin), ecu_uid_(ecu_uid) {}
+
+    ErrorCode initialize() override {
+        return ErrorCode::SUCCESS;
+    }
+
+    ErrorCode get_vehicle_info(VehicleInfo& info) override {
+        info.vin = vin_;
+        info.ecu_uid = ecu_uid_;
+        return ErrorCode::SUCCESS;
+    }
+
+    bool is_connected() const override {
+        return true;
+    }
+
+    std::string get_service_status() const override {
+        return "Default PROV Service";
+    }
+
+private:
+    std::string vin_;
+    std::string ecu_uid_;
+};
+
 std::shared_ptr<SecService> g_sec_service;
 std::atomic<bool> g_running{true};
 
@@ -46,8 +74,6 @@ SecServiceConfig load_config(const std::string& config_file) {
     }
 
     SecServiceConfig sec_config;
-    sec_config.vin = get_config_value<std::string>(tbox, "vin", "tbox");
-    sec_config.ecu_uid = get_config_value<std::string>(tbox, "ecu_uid", "tbox");
     sec_config.state_file_path = get_config_value<std::string>(
         tbox["storage"], "state_file", "tbox.storage");
 
@@ -90,7 +116,22 @@ int main(int argc, char* argv[]) {
     try {
         SecServiceConfig config = load_config(config_file);
 
-        g_sec_service = std::make_shared<SecService>(config);
+        // 读取VIN和ECU UID配置（用于默认PROV服务）
+        YAML::Node yaml_config = YAML::LoadFile(config_file);
+        YAML::Node tbox = yaml_config["tbox"];
+        std::string vin = "DEFAULT_VIN";
+        std::string ecu_uid = "DEFAULT_ECU_UID";
+        if (tbox && tbox["vin"]) {
+            vin = tbox["vin"].as<std::string>();
+        }
+        if (tbox && tbox["ecu_uid"]) {
+            ecu_uid = tbox["ecu_uid"].as<std::string>();
+        }
+
+        // 创建默认PROV服务实例
+        auto prov_service = std::make_shared<DefaultProvService>(vin, ecu_uid);
+
+        g_sec_service = std::make_shared<SecService>(config, nullptr, prov_service);
         ErrorCode result = g_sec_service->initialize();
 
         if (result != ErrorCode::SUCCESS) {

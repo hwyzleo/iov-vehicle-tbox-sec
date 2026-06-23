@@ -14,6 +14,8 @@ TEST_F(DiagServiceInterfaceTest, RequestTypeEnumeration) {
     EXPECT_EQ(static_cast<uint8_t>(DiagRequestType::READ_CSR), 0x02);
     EXPECT_EQ(static_cast<uint8_t>(DiagRequestType::INJECT_CERTIFICATE), 0x03);
     EXPECT_EQ(static_cast<uint8_t>(DiagRequestType::READ_PROVISION_STATE), 0x04);
+    EXPECT_EQ(static_cast<uint8_t>(DiagRequestType::SUBMIT_CSR), 0x05);
+    EXPECT_EQ(static_cast<uint8_t>(DiagRequestType::APPLY_CERTIFICATE), 0x06);
 }
 
 TEST_F(DiagServiceInterfaceTest, ResponseStructure) {

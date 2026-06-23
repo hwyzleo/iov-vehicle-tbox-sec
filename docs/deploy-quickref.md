@@ -53,9 +53,6 @@ ssh root@<TBOX_IP> "journalctl -u tbox-sec -f"
 
 ```yaml
 tbox:
-  vin: "实际VIN"              # 必须修改
-  ecu_uid: "实际ECU_UID"      # 必须修改
-  
   hsm:
     type: "pkcs11"            # 生产环境用pkcs11
     library_path: "/usr/lib/softhsm2/libsofthsm2.so"
@@ -66,6 +63,8 @@ tbox:
   storage:
     state_file: "/var/lib/tbox/sec/provision_state.json"
 ```
+
+**注意**：VIN和ECU UID现在从PROV服务获取，不再需要在配置文件中配置。
 
 ## 诊断仪测试命令
 

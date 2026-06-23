@@ -13,7 +13,10 @@ enum class DiagRequestType : uint8_t {
     READ_CSR = 0x02,
     INJECT_CERTIFICATE = 0x03,
     READ_PROVISION_STATE = 0x04,
-    SUBMIT_CSR = 0x05
+    SUBMIT_CSR = 0x05,
+    APPLY_CERTIFICATE = 0x06,
+    GET_SEED = 0x07,
+    VERIFY_KEY = 0x08
 };
 
 struct DiagResponse {

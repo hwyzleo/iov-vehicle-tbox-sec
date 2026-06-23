@@ -6,6 +6,27 @@
 
 using namespace tbox::sec;
 
+class MockProvService : public ProvServiceInterface {
+public:
+    ErrorCode initialize() override {
+        return ErrorCode::SUCCESS;
+    }
+
+    ErrorCode get_vehicle_info(VehicleInfo& info) override {
+        info.vin = "TESTVIN1234567890";
+        info.ecu_uid = "TBOX-ECU-001";
+        return ErrorCode::SUCCESS;
+    }
+
+    bool is_connected() const override {
+        return true;
+    }
+
+    std::string get_service_status() const override {
+        return "Mock PROV Service";
+    }
+};
+
 class MockDiagService : public DiagServiceInterface {
 public:
     ErrorCode initialize() override {
@@ -60,8 +81,6 @@ protected:
         state_file.close();
 
         SecServiceConfig config;
-        config.vin = "TESTVIN1234567890";
-        config.ecu_uid = "TBOX-ECU-001";
         config.hsm_type = "software";
         config.hsm_config_path = "/tmp/test_sec_diag";
         config.state_file_path = "/tmp/test_sec_diag_state.json";
@@ -71,7 +90,8 @@ protected:
         config.cloud_config.retry_delay_ms = 1000;
 
         mock_diag_service = std::make_shared<MockDiagService>();
-        service = std::make_unique<SecService>(config, mock_diag_service);
+        auto prov_service = std::make_shared<MockProvService>();
+        service = std::make_unique<SecService>(config, mock_diag_service, prov_service);
     }
 
     void TearDown() override {
@@ -185,6 +205,15 @@ TEST_F(SecServiceWithDiagTest, FullProvisioningFlowViaDiag) {
     EXPECT_GE(mock_diag_service->get_request_count(), 4);
 }
 
+TEST_F(SecServiceWithDiagTest, ApplyCertificateViaDiag) {
+    ErrorCode result = service->initialize();
+    ASSERT_EQ(result, ErrorCode::SUCCESS);
+    
+    result = service->apply_certificate();
+    EXPECT_EQ(result, ErrorCode::SUCCESS);
+    EXPECT_EQ(mock_diag_service->get_last_request_type(), DiagRequestType::APPLY_CERTIFICATE);
+}
+
 class FailingDiagService : public DiagServiceInterface {
 public:
     ErrorCode initialize() override {
@@ -273,8 +302,6 @@ protected:
         state_file.close();
 
         SecServiceConfig config;
-        config.vin = "TESTVIN1234567890";
-        config.ecu_uid = "TBOX-ECU-001";
         config.hsm_type = "software";
         config.hsm_config_path = "/tmp/test_sec_diag_fail";
         config.state_file_path = "/tmp/test_sec_diag_fail_state.json";
@@ -284,7 +311,8 @@ protected:
         config.cloud_config.retry_delay_ms = 1000;
 
         selective_diag_service = std::make_shared<SelectiveFailureDiagService>();
-        service = std::make_unique<SecService>(config, selective_diag_service);
+        auto prov_service = std::make_shared<MockProvService>();
+        service = std::make_unique<SecService>(config, selective_diag_service, prov_service);
     }
 
     void TearDown() override {
@@ -335,6 +363,24 @@ TEST_F(SecServiceDiagFailureTest, DeviceInfoShowsDisconnected) {
     EXPECT_NE(info.find("DIAG Service: Disconnected"), std::string::npos);
 }
 
+TEST_F(SecServiceDiagFailureTest, ApplyCertificateFailsWhenDisconnected) {
+    selective_diag_service->set_connected(false);
+    ErrorCode result = service->initialize();
+    ASSERT_EQ(result, ErrorCode::SUCCESS);
+    
+    result = service->apply_certificate();
+    EXPECT_EQ(result, ErrorCode::CONNECTION_FAILED);
+}
+
+TEST_F(SecServiceDiagFailureTest, ApplyCertificateFailsOnRequestError) {
+    selective_diag_service->set_fail_on(DiagRequestType::APPLY_CERTIFICATE);
+    ErrorCode result = service->initialize();
+    ASSERT_EQ(result, ErrorCode::SUCCESS);
+    
+    result = service->apply_certificate();
+    EXPECT_EQ(result, ErrorCode::CONNECTION_FAILED);
+}
+
 class SecServiceFallbackTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -343,8 +389,6 @@ protected:
         state_file.close();
 
         SecServiceConfig config;
-        config.vin = "TESTVIN1234567890";
-        config.ecu_uid = "TBOX-ECU-001";
         config.hsm_type = "software";
         config.hsm_config_path = "/tmp/test_sec_fallback";
         config.state_file_path = "/tmp/test_sec_fallback_state.json";
@@ -353,7 +397,8 @@ protected:
         config.cloud_config.retry_count = 1;
         config.cloud_config.retry_delay_ms = 1000;
 
-        service = std::make_unique<SecService>(config);
+        auto prov_service = std::make_shared<MockProvService>();
+        service = std::make_unique<SecService>(config, nullptr, prov_service);
     }
 
     void TearDown() override {
@@ -386,4 +431,13 @@ TEST_F(SecServiceFallbackTest, GetCsrWithoutDiagService) {
 TEST_F(SecServiceFallbackTest, DeviceInfoShowsNoDiagService) {
     std::string info = service->get_device_info();
     EXPECT_NE(info.find("DIAG Service: Not available"), std::string::npos);
+}
+
+TEST_F(SecServiceFallbackTest, ApplyCertificateWithoutDiagService) {
+    ErrorCode result = service->initialize();
+    ASSERT_EQ(result, ErrorCode::SUCCESS);
+    
+    result = service->apply_certificate();
+    // 在没有DIAG服务的情况下，会尝试提交CSR到云端，但云端连接会失败
+    EXPECT_EQ(result, ErrorCode::PKI_CONNECTION_FAILED);
 }

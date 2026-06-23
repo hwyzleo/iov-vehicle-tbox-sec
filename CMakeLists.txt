@@ -54,6 +54,7 @@ set(LIB_SOURCES
     src/provision_state.cpp
     src/error_codes.cpp
     src/diag_service_adapter.cpp
+    src/service_dispatcher.cpp
 )
 
 # Static library for other modules to link against
@@ -75,6 +76,8 @@ add_executable(TboxSecTests
     tests/test_sec_service_with_diag.cpp
     tests/test_hsm_interface.cpp
     tests/test_diag_service_interface.cpp
+    tests/test_seed_key.cpp
+    tests/test_service_dispatcher.cpp
 )
 target_link_libraries(TboxSecTests PRIVATE TboxSecLib GTest::GTest GTest::Main)
 add_test(NAME TboxSecTests COMMAND TboxSecTests)

@@ -30,6 +30,8 @@ std::string error_code_to_string(ErrorCode code) {
         case ErrorCode::UDS_SESSION_TIMEOUT: return "UDS_SESSION_TIMEOUT";
         case ErrorCode::UDS_SECURITY_DENIED: return "UDS_SECURITY_DENIED";
         case ErrorCode::UDS_INVALID_REQUEST: return "UDS_INVALID_REQUEST";
+        case ErrorCode::SEED_GENERATION_FAILED: return "SEED_GENERATION_FAILED";
+        case ErrorCode::KEY_VERIFICATION_FAILED: return "KEY_VERIFICATION_FAILED";
         case ErrorCode::INVALID_PARAMETER: return "INVALID_PARAMETER";
         case ErrorCode::NOT_INITIALIZED: return "NOT_INITIALIZED";
         case ErrorCode::OPERATION_IN_PROGRESS: return "OPERATION_IN_PROGRESS";
@@ -67,6 +69,8 @@ std::string error_code_to_description(ErrorCode code) {
         case ErrorCode::UDS_SESSION_TIMEOUT: return "UDS diagnostic session timed out";
         case ErrorCode::UDS_SECURITY_DENIED: return "UDS security access denied";
         case ErrorCode::UDS_INVALID_REQUEST: return "Invalid UDS request";
+        case ErrorCode::SEED_GENERATION_FAILED: return "Failed to generate security seed";
+        case ErrorCode::KEY_VERIFICATION_FAILED: return "Security key verification failed";
         case ErrorCode::INVALID_PARAMETER: return "Invalid parameter provided";
         case ErrorCode::NOT_INITIALIZED: return "Service not initialized";
         case ErrorCode::OPERATION_IN_PROGRESS: return "Another operation is already in progress";

@@ -127,6 +127,22 @@ DiagResponse DiagServiceAdapter::process_request_internal(DiagRequestType reques
             response.data = {0x00};
             break;
 
+        case DiagRequestType::APPLY_CERTIFICATE:
+            response.error_code = ErrorCode::SUCCESS;
+            response.data = {0x01};
+            break;
+
+        case DiagRequestType::GET_SEED:
+            response.error_code = ErrorCode::SUCCESS;
+            response.data = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                           0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10};
+            break;
+
+        case DiagRequestType::VERIFY_KEY:
+            response.error_code = ErrorCode::SUCCESS;
+            response.data = {0x01};
+            break;
+
         default:
             response.error_code = ErrorCode::INVALID_PARAMETER;
             response.error_message = "Unknown request type";

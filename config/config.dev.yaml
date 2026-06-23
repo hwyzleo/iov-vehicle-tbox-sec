@@ -1,6 +1,6 @@
 # TBOX Security Service Configuration
 tbox:
-  # Device identification
+  # Device identification (optional, for default PROV service)
   vin: "TESTVIN1234567890"
   ecu_uid: "TBOX-ECU-001"
 
