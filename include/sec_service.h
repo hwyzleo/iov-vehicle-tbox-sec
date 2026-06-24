@@ -18,6 +18,8 @@ struct SecServiceConfig {
     std::string hsm_type;
     std::string hsm_config_path;
     std::string state_file_path;
+    std::string ca_cert_path;     // CA certificate path for signature verification
+    std::string cert_store_path;  // Directory to store device certificates
     CloudConfig cloud_config;
 };
 
@@ -60,6 +62,9 @@ public:
     void set_diag_service(std::shared_ptr<DiagServiceInterface> diag_service);
     void set_prov_service(std::shared_ptr<ProvServiceInterface> prov_service);
 
+    // Set CA certificate for signature verification
+    ErrorCode set_ca_certificate(const std::vector<uint8_t>& ca_cert_der);
+
 private:
     SecServiceConfig config_;
     bool initialized_;
@@ -86,6 +91,7 @@ private:
     ErrorCode build_and_store_csr();
     ErrorCode submit_csr_to_cloud();
     ErrorCode validate_and_store_certificate(const std::vector<uint8_t>& cert_der);
+    ErrorCode store_certificate_to_file(const std::vector<uint8_t>& cert_der);
 
     void update_provision_state(ProvisionState state, const std::string& error = "");
     void handle_error(ErrorCode error, const std::string& context);
@@ -122,6 +128,10 @@ private:
     bool is_in_lockout() const;
     void increment_failed_attempts();
     void reset_failed_attempts();
+
+    // CA certificate loading helper
+    std::string find_ca_cert_from_config();
+    std::string find_cert_store_from_config();
 };
 
 } // namespace sec

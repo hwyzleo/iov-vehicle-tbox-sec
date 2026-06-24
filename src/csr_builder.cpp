@@ -165,14 +165,14 @@ ErrorCode CsrBuilder::marshal_san_extension(
 
     std::vector<uint8_t> san_entries;
 
-    // URI for VIN
-    std::string vin_uri = "URI:VIN:" + vin;
+    // URI for VIN — use URN scheme to avoid URI:URI: duplication
+    std::string vin_uri = "urn:vin:" + vin;
     san_entries.push_back(0x86);  // [6] URI IMPLICIT
     der_encode_length(static_cast<uint16_t>(vin_uri.size()), san_entries);
     san_entries.insert(san_entries.end(), vin_uri.begin(), vin_uri.end());
 
     // URI for ECU_UID
-    std::string ecu_uri = "URI:ECU_UID:" + ecu_uid;
+    std::string ecu_uri = "urn:ecu-uid:" + ecu_uid;
     san_entries.push_back(0x86);  // [6] URI IMPLICIT
     der_encode_length(static_cast<uint16_t>(ecu_uri.size()), san_entries);
     san_entries.insert(san_entries.end(), ecu_uri.begin(), ecu_uri.end());

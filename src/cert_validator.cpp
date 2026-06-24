@@ -1,4 +1,5 @@
 #include "cert_validator.h"
+#include <iostream>
 #include <openssl/x509.h>
 #include <openssl/pem.h>
 #include <openssl/err.h>
@@ -231,9 +232,102 @@ ErrorCode CertValidator::validate_certificate_chain(const std::vector<std::vecto
 
 ErrorCode CertValidator::verify_certificate_signature(const std::vector<uint8_t>& cert_der,
                                                      bool& valid) {
-    // Signature verification requires issuer's public key which is not available here
-    valid = false;
-    return ErrorCode::NOT_IMPLEMENTED;
+    std::cerr << "[CERT] verify_certificate_signature called, cert_der size=" << cert_der.size() << std::endl;
+
+    if (cert_der.empty()) {
+        valid = false;
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
+    // Parse DER-encoded certificate
+    const unsigned char* p = cert_der.data();
+    X509* cert = d2i_X509(NULL, &p, cert_der.size());
+    if (!cert) {
+        std::cerr << "[CERT] Failed to parse certificate DER" << std::endl;
+        valid = false;
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
+
+    // Check if self-signed by comparing issuer and subject
+    X509_NAME* issuer = X509_get_issuer_name(cert);
+    X509_NAME* subject = X509_get_subject_name(cert);
+
+    bool is_self_signed = (X509_NAME_cmp(issuer, subject) == 0);
+    std::cerr << "[CERT] is_self_signed=" << is_self_signed << std::endl;
+
+    if (is_self_signed) {
+        // For self-signed certificates, use the certificate's own public key
+        EVP_PKEY* pubkey = X509_get_pubkey(cert);
+        if (!pubkey) {
+            std::cerr << "[CERT] Failed to get public key from self-signed cert" << std::endl;
+            X509_free(cert);
+            valid = false;
+            return ErrorCode::CERT_VALIDATION_FAILED;
+        }
+
+        // Verify signature using OpenSSL
+        int verify_result = X509_verify(cert, pubkey);
+        EVP_PKEY_free(pubkey);
+
+        valid = (verify_result == 1);
+        std::cerr << "[CERT] Self-signed verify_result=" << verify_result << " valid=" << valid << std::endl;
+        X509_free(cert);
+        return ErrorCode::SUCCESS;
+    } else {
+        // For CA-signed certificates, use the CA certificate's public key
+        std::cerr << "[CERT] CA-signed cert, ca_cert_der_.empty()=" << ca_cert_der_.empty() << std::endl;
+
+        if (ca_cert_der_.empty()) {
+            // No CA certificate available for verification
+            std::cerr << "[CERT] No CA certificate available for verification" << std::endl;
+            X509_free(cert);
+            valid = false;
+            return ErrorCode::CERT_VALIDATION_FAILED;
+        }
+
+        // Parse CA certificate (try DER first, then PEM)
+        const unsigned char* ca_p = ca_cert_der_.data();
+        X509* ca_cert = d2i_X509(NULL, &ca_p, ca_cert_der_.size());
+        if (!ca_cert) {
+            // Try PEM format
+            std::cerr << "[CERT] DER parse failed, trying PEM format" << std::endl;
+            BIO* bio = BIO_new_mem_buf(ca_cert_der_.data(), ca_cert_der_.size());
+            if (bio) {
+                ca_cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+                BIO_free(bio);
+            }
+        }
+        if (!ca_cert) {
+            std::cerr << "[CERT] Failed to parse CA certificate (DER or PEM)" << std::endl;
+            X509_free(cert);
+            valid = false;
+            return ErrorCode::CERT_VALIDATION_FAILED;
+        }
+
+        // Get CA certificate's public key
+        EVP_PKEY* ca_pubkey = X509_get_pubkey(ca_cert);
+        X509_free(ca_cert);
+
+        if (!ca_pubkey) {
+            std::cerr << "[CERT] Failed to get public key from CA cert" << std::endl;
+            X509_free(cert);
+            valid = false;
+            return ErrorCode::CERT_VALIDATION_FAILED;
+        }
+
+        // Verify certificate signature using CA's public key
+        int verify_result = X509_verify(cert, ca_pubkey);
+        EVP_PKEY_free(ca_pubkey);
+
+        valid = (verify_result == 1);
+        std::cerr << "[CERT] CA-signed verify_result=" << verify_result << " valid=" << valid << std::endl;
+        X509_free(cert);
+        return ErrorCode::SUCCESS;
+    }
+}
+
+void CertValidator::set_ca_certificate(const std::vector<uint8_t>& ca_cert_der) {
+    ca_cert_der_ = ca_cert_der;
 }
 
 ErrorCode CertValidator::check_certificate_validity(const std::vector<uint8_t>& cert_der,

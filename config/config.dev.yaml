@@ -16,10 +16,12 @@ tbox:
   #   key_store: "/var/lib/tbox/sec/keys"
   #   cert_store: "/var/lib/tbox/sec/certs"
   #   state_file: "/var/lib/tbox/sec/provision_state.json"
+  #   ca_cert: "/var/lib/tbox/sec/certs/ca.crt"
   storage:
     key_store: "./data/keys"
     cert_store: "./data/certs"
     state_file: "./data/provision_state.json"
+    ca_cert: "/Users/hwyz_leo/Docker/step/certs/intermediate_ca.crt"  # CA certificate (DER format) for signature verification
 
   # Cloud communication
   cloud:

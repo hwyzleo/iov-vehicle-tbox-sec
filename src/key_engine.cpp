@@ -1,5 +1,6 @@
 #include "key_engine.h"
 #include "constants.h"
+#include <iostream>
 #include <stdexcept>
 
 namespace tbox {
@@ -31,7 +32,12 @@ ErrorCode KeyEngine::generate_device_key(const std::string& vin,
     
     // Check if key already exists
     if (hsm_->key_exists(key_id)) {
-        return ErrorCode::KEY_ALREADY_EXISTS;
+        // Key already exists, return success and export existing key
+        std::cerr << "[SEC] Key already exists for " << key_id << ", returning existing key" << std::endl;
+        key_pair.key_id = key_id;
+        key_pair.algorithm = KEY_ALGORITHM_ECDSA_P256;
+        key_pair.private_key_exists = true;
+        return hsm_->export_public_key(key_id, key_pair.public_key);
     }
     
     // Generate key pair in HSM

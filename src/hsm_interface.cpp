@@ -3,6 +3,7 @@
 #include <openssl/evp.h>
 #include <openssl/obj_mac.h>
 #include <openssl/bn.h>
+#include <openssl/sha.h>
 #include <stdexcept>
 #include <map>
 
@@ -80,10 +81,16 @@ public:
         EC_KEY_set_private_key(ec, priv_bn);
         BN_free(priv_bn);
 
-        // Sign with SHA256
+        // SHA-256 hash the data first, then sign the digest.
+        // ECDSA_sign does NOT hash internally — it signs the raw bytes passed.
+        // OpenSSL's X509_REQ_verify does SHA256(TBS) then ECDSA_verify,
+        // so we must match: hash first, then sign the 32-byte digest.
+        uint8_t digest[SHA256_DIGEST_LENGTH];
+        SHA256(data.data(), data.size(), digest);
+
         unsigned int sig_len = ECDSA_size(ec);
         signature.resize(sig_len);
-        if (ECDSA_sign(0, data.data(), static_cast<int>(data.size()),
+        if (ECDSA_sign(0, digest, SHA256_DIGEST_LENGTH,
                        signature.data(), &sig_len, ec) != 1) {
             EC_KEY_free(ec);
             return ErrorCode::HSM_SIGN_FAILED;

@@ -1,11 +1,17 @@
 #include "sec_service.h"
 #include "hsm_interface.h"
+#include "constants.h"
 #include <sstream>
 #include <iomanip>
 #include <random>
 #include <chrono>
 #include <iostream>
+#include <fstream>
 #include <openssl/rand.h>
+
+#ifdef USE_YAML_CPP
+#include <yaml-cpp/yaml.h>
+#endif
 
 namespace tbox {
 namespace sec {
@@ -43,6 +49,43 @@ ErrorCode SecService::initialize() {
     result = load_provision_state();
     if (result != ErrorCode::SUCCESS) {
         return result;
+    }
+
+    // Load CA certificate
+    std::string ca_cert_path = config_.ca_cert_path;
+
+    std::cerr << "[SEC] Initializing CA cert, config_.ca_cert_path='" << config_.ca_cert_path << "'" << std::endl;
+
+    // If ca_cert_path is empty, try to load from default config
+    if (ca_cert_path.empty()) {
+        ca_cert_path = find_ca_cert_from_config();
+        std::cerr << "[SEC] find_ca_cert_from_config returned: '" << ca_cert_path << "'" << std::endl;
+    }
+
+    if (!ca_cert_path.empty()) {
+        std::ifstream ca_file(ca_cert_path, std::ios::binary);
+        if (ca_file.is_open()) {
+            std::vector<uint8_t> ca_cert_der(
+                (std::istreambuf_iterator<char>(ca_file)),
+                std::istreambuf_iterator<char>());
+            ca_file.close();
+
+            if (!ca_cert_der.empty()) {
+                result = set_ca_certificate(ca_cert_der);
+                if (result != ErrorCode::SUCCESS) {
+                    std::cerr << "[SEC] Failed to load CA certificate from: "
+                              << ca_cert_path << std::endl;
+                    // Continue initialization - CA cert is optional for self-signed certs
+                } else {
+                    std::cerr << "[SEC] CA certificate loaded from: "
+                              << ca_cert_path << std::endl;
+                }
+            }
+        } else {
+            std::cerr << "[SEC] Cannot open CA certificate file: "
+                      << ca_cert_path << std::endl;
+            // Continue initialization - CA cert is optional
+        }
     }
 
     if (diag_service_) {
@@ -489,7 +532,7 @@ ErrorCode SecService::build_and_store_csr() {
     }
 
     CsrConfig csr_config;
-    csr_config.common_name = "ECU:" + ecu_uid_;
+    csr_config.common_name = CSR_SUBJECT_CN_PREFIX + ecu_uid_;
     csr_config.vin = vin_;
     csr_config.ecu_uid = ecu_uid_;
     csr_config.key_usage = "digitalSignature";
@@ -528,7 +571,83 @@ ErrorCode SecService::validate_and_store_certificate(const std::vector<uint8_t>&
         return ErrorCode::CERT_KEY_MISMATCH;
     }
 
+    // Store certificate to file system
+    result = store_certificate_to_file(cert_der);
+    if (result != ErrorCode::SUCCESS) {
+        std::cerr << "[SEC] Failed to store certificate" << std::endl;
+        return result;
+    }
+
+    std::cout << "[SEC] Certificate validated and stored successfully" << std::endl;
     return ErrorCode::SUCCESS;
+}
+
+ErrorCode SecService::store_certificate_to_file(const std::vector<uint8_t>& cert_der) {
+    // Determine certificate store path
+    std::string cert_dir = config_.cert_store_path;
+    if (cert_dir.empty()) {
+        // Try to find from config file
+        cert_dir = find_cert_store_from_config();
+    }
+    if (cert_dir.empty()) {
+        cert_dir = "./data/certs";  // Default path
+    }
+
+    // Create directory if it doesn't exist
+    std::string mkdir_cmd = "mkdir -p " + cert_dir;
+    if (std::system(mkdir_cmd.c_str()) != 0) {
+        std::cerr << "[SEC] Failed to create cert directory: " << cert_dir << std::endl;
+        return ErrorCode::STORAGE_WRITE_FAILED;
+    }
+
+    // Generate certificate filename: {vin}_{ecu_uid}.der
+    std::string cert_path = cert_dir + "/" + vin_ + "_" + ecu_uid_ + ".der";
+
+    // Write certificate to file
+    std::ofstream cert_file(cert_path, std::ios::binary);
+    if (!cert_file.is_open()) {
+        std::cerr << "[SEC] Failed to open cert file for writing: " << cert_path << std::endl;
+        return ErrorCode::STORAGE_WRITE_FAILED;
+    }
+
+    cert_file.write(reinterpret_cast<const char*>(cert_der.data()), cert_der.size());
+    cert_file.close();
+
+    if (!cert_file.good()) {
+        std::cerr << "[SEC] Failed to write certificate to file: " << cert_path << std::endl;
+        return ErrorCode::STORAGE_WRITE_FAILED;
+    }
+
+    std::cout << "[SEC] Certificate stored at: " << cert_path << std::endl;
+    return ErrorCode::SUCCESS;
+}
+
+std::string SecService::find_cert_store_from_config() {
+    std::vector<std::string> config_paths = {
+        "config/config.yaml",
+        "config/config.dev.yaml",
+        "/etc/tbox/config.yaml",
+        "/var/lib/tbox/config.yaml"
+    };
+
+#ifdef USE_YAML_CPP
+    for (const auto& config_path : config_paths) {
+        try {
+            YAML::Node config = YAML::LoadFile(config_path);
+            YAML::Node tbox = config["tbox"];
+            if (tbox && tbox["storage"] && tbox["storage"]["cert_store"]) {
+                std::string cert_store = tbox["storage"]["cert_store"].as<std::string>();
+                if (!cert_store.empty()) {
+                    return cert_store;
+                }
+            }
+        } catch (const std::exception&) {
+            continue;
+        }
+    }
+#endif
+
+    return "";
 }
 
 void SecService::update_provision_state(ProvisionState state, const std::string& error) {
@@ -558,6 +677,19 @@ void SecService::set_diag_service(std::shared_ptr<DiagServiceInterface> diag_ser
 
 void SecService::set_prov_service(std::shared_ptr<ProvServiceInterface> prov_service) {
     prov_service_ = prov_service;
+}
+
+ErrorCode SecService::set_ca_certificate(const std::vector<uint8_t>& ca_cert_der) {
+    if (ca_cert_der.empty()) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
+    // Create or update cert validator with CA certificate
+    if (!cert_validator_) {
+        cert_validator_ = std::make_unique<CertValidator>(key_engine_.get());
+    }
+    cert_validator_->set_ca_certificate(ca_cert_der);
+    return ErrorCode::SUCCESS;
 }
 
 ErrorCode SecService::generate_random_seed(std::vector<uint8_t>& seed) {
@@ -653,6 +785,38 @@ ErrorCode SecService::handle_diag_request(DiagRequestType request_type,
     }
     
     return diag_service_->send_request_sync(request_type, request_data, response);
+}
+
+std::string SecService::find_ca_cert_from_config() {
+    // Default config paths to search
+    std::vector<std::string> config_paths = {
+        "config/config.yaml",
+        "config/config.dev.yaml",
+        "/etc/tbox/config.yaml",
+        "/var/lib/tbox/config.yaml"
+    };
+
+#ifdef USE_YAML_CPP
+    for (const auto& config_path : config_paths) {
+        try {
+            YAML::Node config = YAML::LoadFile(config_path);
+            YAML::Node tbox = config["tbox"];
+            if (tbox && tbox["storage"] && tbox["storage"]["ca_cert"]) {
+                std::string ca_cert_path = tbox["storage"]["ca_cert"].as<std::string>();
+                if (!ca_cert_path.empty()) {
+                    std::cerr << "[SEC] Found CA cert path in config: " << config_path
+                              << " -> " << ca_cert_path << std::endl;
+                    return ca_cert_path;
+                }
+            }
+        } catch (const std::exception&) {
+            // Config file not found or parse error, try next
+            continue;
+        }
+    }
+#endif
+
+    return "";
 }
 
 } // namespace sec

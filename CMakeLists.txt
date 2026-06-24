@@ -30,6 +30,7 @@ include_directories(${OPENSSL_INCLUDE_DIR})
 # YAML-CPP
 find_package(yaml-cpp REQUIRED)
 include_directories(${YAML_CPP_INCLUDE_DIRS})
+add_definitions(-DUSE_YAML_CPP)
 
 # Google Test
 find_package(GTest REQUIRED)

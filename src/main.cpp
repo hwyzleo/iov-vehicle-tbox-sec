@@ -77,6 +77,17 @@ SecServiceConfig load_config(const std::string& config_file) {
     sec_config.state_file_path = get_config_value<std::string>(
         tbox["storage"], "state_file", "tbox.storage");
 
+    // CA certificate path (optional)
+    YAML::Node storage = tbox["storage"];
+    if (storage && storage["ca_cert"]) {
+        sec_config.ca_cert_path = storage["ca_cert"].as<std::string>();
+    }
+
+    // Certificate store path
+    if (storage && storage["cert_store"]) {
+        sec_config.cert_store_path = storage["cert_store"].as<std::string>();
+    }
+
     YAML::Node hsm = tbox["hsm"];
     sec_config.hsm_type = get_config_value<std::string>(hsm, "type", "tbox.hsm");
     sec_config.hsm_config_path = get_config_value<std::string>(hsm, "library_path", "tbox.hsm");

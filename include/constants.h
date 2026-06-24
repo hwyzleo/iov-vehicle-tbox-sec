@@ -17,7 +17,7 @@ constexpr const char* DEFAULT_KEY_USAGE = "digitalSignature";
 constexpr const char* DEFAULT_EXTENDED_KEY_USAGE = "clientAuth";
 
 // CSR settings
-constexpr const char* CSR_SUBJECT_CN_PREFIX = "ECU:";
+constexpr const char* CSR_SUBJECT_CN_PREFIX = "ECU_UID:";
 constexpr const char* CSR_SAN_TYPE_VIN = "VIN";
 constexpr const char* CSR_SAN_TYPE_ECU_UID = "ECU_UID";
 

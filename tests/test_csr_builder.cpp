@@ -42,7 +42,7 @@ protected:
 
 TEST_F(CsrBuilderTest, BuildCsrSubjectCN) {
     CsrConfig config;
-    config.common_name = "ECU:TBOX-ECU-001";
+    config.common_name = "ECU_UID:TBOX-ECU-001";
     config.vin = test_vin;
     config.ecu_uid = test_ecu_uid;
 
@@ -59,14 +59,14 @@ TEST_F(CsrBuilderTest, BuildCsrSubjectCN) {
 
     char cn[256];
     X509_NAME_get_text_by_NID(subject, NID_commonName, cn, sizeof(cn));
-    EXPECT_STREQ(cn, "ECU:TBOX-ECU-001");
+    EXPECT_STREQ(cn, "ECU_UID:TBOX-ECU-001");
 
     X509_REQ_free(req);
 }
 
 TEST_F(CsrBuilderTest, BuildCsrSAN) {
     CsrConfig config;
-    config.common_name = "ECU:TBOX-ECU-001";
+    config.common_name = "ECU_UID:TBOX-ECU-001";
     config.vin = test_vin;
     config.ecu_uid = test_ecu_uid;
 
@@ -118,7 +118,7 @@ TEST_F(CsrBuilderTest, BuildCsrSAN) {
 
 TEST_F(CsrBuilderTest, BuildCsrKeyUsage) {
     CsrConfig config;
-    config.common_name = "ECU:TBOX-ECU-001";
+    config.common_name = "ECU_UID:TBOX-ECU-001";
     config.vin = test_vin;
     config.ecu_uid = test_ecu_uid;
 
@@ -156,7 +156,7 @@ TEST_F(CsrBuilderTest, BuildCsrKeyUsage) {
 
 TEST_F(CsrBuilderTest, BuildCsrExtendedKeyUsage) {
     CsrConfig config;
-    config.common_name = "ECU:TBOX-ECU-001";
+    config.common_name = "ECU_UID:TBOX-ECU-001";
     config.vin = test_vin;
     config.ecu_uid = test_ecu_uid;
 
@@ -198,7 +198,7 @@ TEST_F(CsrBuilderTest, BuildCsrExtendedKeyUsage) {
 
 TEST_F(CsrBuilderTest, BuildCsrPublicKey) {
     CsrConfig config;
-    config.common_name = "ECU:TBOX-ECU-001";
+    config.common_name = "ECU_UID:TBOX-ECU-001";
     config.vin = test_vin;
     config.ecu_uid = test_ecu_uid;
 
@@ -224,7 +224,7 @@ TEST_F(CsrBuilderTest, BuildCsrPublicKey) {
 
 TEST_F(CsrBuilderTest, BuildCsrSignature) {
     CsrConfig config;
-    config.common_name = "ECU:TBOX-ECU-001";
+    config.common_name = "ECU_UID:TBOX-ECU-001";
     config.vin = test_vin;
     config.ecu_uid = test_ecu_uid;
 
@@ -245,11 +245,33 @@ TEST_F(CsrBuilderTest, BuildCsrSignature) {
     X509_REQ_free(req);
 }
 
+TEST_F(CsrBuilderTest, BuildCsrSelfSignatureVerify) {
+    CsrConfig config;
+    config.common_name = "ECU_UID:TBOX-ECU-001";
+    config.vin = test_vin;
+    config.ecu_uid = test_ecu_uid;
+
+    std::vector<uint8_t> csr_der;
+    ASSERT_EQ(builder->build_csr(config, csr_der), ErrorCode::SUCCESS);
+
+    const unsigned char* p = csr_der.data();
+    X509_REQ* req = d2i_X509_REQ(nullptr, &p, static_cast<long>(csr_der.size()));
+    ASSERT_NE(req, nullptr);
+
+    EVP_PKEY* pubkey = X509_REQ_get0_pubkey(req);
+    ASSERT_NE(pubkey, nullptr);
+
+    int rc = X509_REQ_verify(req, pubkey);
+    EXPECT_EQ(rc, 1) << "CSR self-signature verification failed";
+
+    X509_REQ_free(req);
+}
+
 TEST_F(CsrBuilderTest, BuildCsrWithNullEngine) {
     auto null_builder = std::make_unique<CsrBuilder>(nullptr);
 
     CsrConfig config;
-    config.common_name = "ECU:TBOX-ECU-001";
+    config.common_name = "ECU_UID:TBOX-ECU-001";
     config.vin = test_vin;
     config.ecu_uid = test_ecu_uid;
 
@@ -260,7 +282,7 @@ TEST_F(CsrBuilderTest, BuildCsrWithNullEngine) {
 
 TEST_F(CsrBuilderTest, BuildCsrWithMissingKey) {
     CsrConfig config;
-    config.common_name = "ECU:NONEXISTENT";
+    config.common_name = "ECU_UID:NONEXISTENT";
     config.vin = "NONEXISTENTVIN";
     config.ecu_uid = "NONEXISTENTECU";
 
