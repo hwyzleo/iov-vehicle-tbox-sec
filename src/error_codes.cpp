@@ -24,6 +24,7 @@ std::string error_code_to_string(ErrorCode code) {
         case ErrorCode::HSM_COMMUNICATION_FAILED: return "HSM_COMMUNICATION_FAILED";
         case ErrorCode::HSM_KEY_GENERATION_FAILED: return "HSM_KEY_GENERATION_FAILED";
         case ErrorCode::HSM_SIGN_FAILED: return "HSM_SIGN_FAILED";
+        case ErrorCode::HSM_VERIFICATION_FAILED: return "HSM_VERIFICATION_FAILED";
         case ErrorCode::STORAGE_WRITE_FAILED: return "STORAGE_WRITE_FAILED";
         case ErrorCode::STORAGE_READ_FAILED: return "STORAGE_READ_FAILED";
         case ErrorCode::STORAGE_CORRUPTION: return "STORAGE_CORRUPTION";
@@ -64,6 +65,7 @@ std::string error_code_to_description(ErrorCode code) {
         case ErrorCode::HSM_COMMUNICATION_FAILED: return "HSM communication error";
         case ErrorCode::HSM_KEY_GENERATION_FAILED: return "HSM key generation failed";
         case ErrorCode::HSM_SIGN_FAILED: return "HSM signing operation failed";
+        case ErrorCode::HSM_VERIFICATION_FAILED: return "HSM verification operation failed";
         case ErrorCode::STORAGE_WRITE_FAILED: return "Failed to write to secure storage";
         case ErrorCode::STORAGE_READ_FAILED: return "Failed to read from secure storage";
         case ErrorCode::STORAGE_CORRUPTION: return "Storage data corruption detected";

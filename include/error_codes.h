@@ -36,6 +36,7 @@ enum class ErrorCode : uint32_t {
     HSM_COMMUNICATION_FAILED = 5002,
     HSM_KEY_GENERATION_FAILED = 5003,
     HSM_SIGN_FAILED = 5004,
+    HSM_VERIFICATION_FAILED = 5005,
 
     // Storage errors
     STORAGE_WRITE_FAILED = 6001,
