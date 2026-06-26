@@ -81,6 +81,7 @@ add_executable(TboxSecTests
     tests/test_seed_key.cpp
     tests/test_service_dispatcher.cpp
     tests/test_soft_file_hsm.cpp
+    tests/test_key_provisioning_mode.cpp
 )
 target_link_libraries(TboxSecTests PRIVATE TboxSecLib GTest::GTest GTest::Main)
 add_test(NAME TboxSecTests COMMAND TboxSecTests)
