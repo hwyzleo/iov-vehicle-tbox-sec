@@ -97,3 +97,6 @@ Thumbs.db
 
 graphify-out
 docs/superpowers
+
+data/certs
+data/soft_keys

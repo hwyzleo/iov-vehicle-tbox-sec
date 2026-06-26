@@ -7,6 +7,7 @@
 #include <openssl/bn.h>
 #include <openssl/sha.h>
 #include <openssl/rand.h>
+#include <openssl/pem.h>
 
 #include <nlohmann/json.hpp>
 
@@ -55,9 +56,6 @@ ErrorCode SoftFileHsm::initialize() {
 
     if (fs::exists(encryption_key_path_)) {
         auto rc = load_encryption_key();
-        if (rc != ErrorCode::SUCCESS) return rc;
-    } else {
-        auto rc = generate_encryption_key();
         if (rc != ErrorCode::SUCCESS) return rc;
     }
 
@@ -238,6 +236,7 @@ ErrorCode SoftFileHsm::delete_key(const std::string& key_id) {
 
     std::error_code ec;
     fs::remove(get_key_file_path(key_id), ec);
+    fs::remove(get_key_dot_key_path(key_id), ec);
     return ErrorCode::SUCCESS;
 }
 
@@ -263,10 +262,10 @@ ErrorCode SoftFileHsm::export_private_key(const std::string& key_id,
 }
 
 ErrorCode SoftFileHsm::load_key_from_disk(const std::string& key_id, KeyData& key_data) {
-    std::string path = get_key_file_path(key_id);
-    if (!fs::exists(path)) return ErrorCode::KEY_NOT_FOUND;
+    std::string json_path = get_key_file_path(key_id);
+    if (!fs::exists(json_path)) return ErrorCode::KEY_NOT_FOUND;
 
-    std::ifstream ifs(path);
+    std::ifstream ifs(json_path);
     if (!ifs.is_open()) return ErrorCode::STORAGE_READ_FAILED;
 
     json j;
@@ -279,22 +278,44 @@ ErrorCode SoftFileHsm::load_key_from_disk(const std::string& key_id, KeyData& ke
     try {
         key_data.algorithm = j.at("algorithm").get<std::string>();
         auto pub_hex = j.at("public_key").get<std::string>();
-        auto priv_enc_hex = j.at("private_key_encrypted").get<std::string>();
 
         key_data.pub.resize(pub_hex.size() / 2);
         for (size_t i = 0; i < key_data.pub.size(); ++i) {
             key_data.pub[i] = static_cast<uint8_t>(std::stoul(pub_hex.substr(i * 2, 2), nullptr, 16));
         }
 
-        std::vector<uint8_t> priv_enc(priv_enc_hex.size() / 2);
-        for (size_t i = 0; i < priv_enc.size(); ++i) {
-            priv_enc[i] = static_cast<uint8_t>(std::stoul(priv_enc_hex.substr(i * 2, 2), nullptr, 16));
+        std::string key_path = get_key_dot_key_path(key_id);
+        if (fs::exists(key_path)) {
+            // Read PEM format private key
+            FILE* fp = fopen(key_path.c_str(), "r");
+            if (!fp) return ErrorCode::STORAGE_READ_FAILED;
+            EC_KEY* ec = PEM_read_ECPrivateKey(fp, nullptr, nullptr, nullptr);
+            fclose(fp);
+            if (!ec) return ErrorCode::STORAGE_CORRUPTION;
+
+            const BIGNUM* priv_bn = EC_KEY_get0_private_key(ec);
+            if (!priv_bn) {
+                EC_KEY_free(ec);
+                return ErrorCode::STORAGE_CORRUPTION;
+            }
+            int priv_len = BN_num_bytes(priv_bn);
+            key_data.priv.resize(priv_len);
+            BN_bn2bin(priv_bn, key_data.priv.data());
+            EC_KEY_free(ec);
+            key_data.priv_encrypted_on_disk = false;
+        } else if (j.contains("private_key_encrypted")) {
+            auto priv_enc_hex = j.at("private_key_encrypted").get<std::string>();
+            std::vector<uint8_t> priv_enc(priv_enc_hex.size() / 2);
+            for (size_t i = 0; i < priv_enc.size(); ++i) {
+                priv_enc[i] = static_cast<uint8_t>(std::stoul(priv_enc_hex.substr(i * 2, 2), nullptr, 16));
+            }
+            auto rc = decrypt_private_key(priv_enc, key_data.priv);
+            if (rc != ErrorCode::SUCCESS) return rc;
+            key_data.priv_encrypted_on_disk = true;
+        } else {
+            return ErrorCode::STORAGE_CORRUPTION;
         }
 
-        auto rc = decrypt_private_key(priv_enc, key_data.priv);
-        if (rc != ErrorCode::SUCCESS) return rc;
-
-        key_data.priv_encrypted_on_disk = true;
         auto ts = j.at("created_at").get<int64_t>();
         key_data.created_at = std::chrono::system_clock::time_point(std::chrono::seconds(ts));
     } catch (...) {
@@ -305,10 +326,6 @@ ErrorCode SoftFileHsm::load_key_from_disk(const std::string& key_id, KeyData& ke
 }
 
 ErrorCode SoftFileHsm::save_key_to_disk(const std::string& key_id, const KeyData& key_data) {
-    std::vector<uint8_t> enc_priv;
-    auto rc = encrypt_private_key(key_data.priv, enc_priv);
-    if (rc != ErrorCode::SUCCESS) return rc;
-
     auto to_hex = [](const std::vector<uint8_t>& v) {
         std::string h;
         h.reserve(v.size() * 2);
@@ -320,22 +337,58 @@ ErrorCode SoftFileHsm::save_key_to_disk(const std::string& key_id, const KeyData
         return h;
     };
 
+    std::string key_file = get_key_dot_key_path(key_id);
+    std::string json_file = get_key_file_path(key_id);
+
+    // Save private key in PEM format
+    EC_KEY* ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (!ec) return ErrorCode::KEY_GENERATION_FAILED;
+
+    const EC_GROUP* group = EC_KEY_get0_group(ec);
+    EC_POINT* pt = EC_POINT_new(group);
+    if (!pt) { EC_KEY_free(ec); return ErrorCode::KEY_GENERATION_FAILED; }
+    if (EC_POINT_oct2point(group, pt, key_data.pub.data(), key_data.pub.size(), nullptr) != 1) {
+        EC_POINT_free(pt);
+        EC_KEY_free(ec);
+        return ErrorCode::KEY_GENERATION_FAILED;
+    }
+    EC_KEY_set_public_key(ec, pt);
+    EC_POINT_free(pt);
+
+    BIGNUM* priv_bn = BN_bin2bn(key_data.priv.data(),
+                                 static_cast<int>(key_data.priv.size()), nullptr);
+    if (!priv_bn) { EC_KEY_free(ec); return ErrorCode::KEY_GENERATION_FAILED; }
+    EC_KEY_set_private_key(ec, priv_bn);
+    BN_free(priv_bn);
+
+    FILE* fp = fopen(key_file.c_str(), "w");
+    if (!fp) { EC_KEY_free(ec); return ErrorCode::STORAGE_WRITE_FAILED; }
+    if (PEM_write_ECPrivateKey(fp, ec, nullptr, nullptr, 0, nullptr, nullptr) != 1) {
+        fclose(fp);
+        EC_KEY_free(ec);
+        return ErrorCode::STORAGE_WRITE_FAILED;
+    }
+    fclose(fp);
+    EC_KEY_free(ec);
+
+    fs::permissions(key_file,
+                    fs::perms::owner_read | fs::perms::owner_write,
+                    fs::perm_options::replace);
+
     json j;
     j["key_id"] = key_id;
     j["algorithm"] = key_data.algorithm;
     j["public_key"] = to_hex(key_data.pub);
-    j["private_key_encrypted"] = to_hex(enc_priv);
+    j["private_key_file"] = fs::path(key_file).filename().string();
     j["created_at"] = std::chrono::duration_cast<std::chrono::seconds>(
         key_data.created_at.time_since_epoch()).count();
 
-    std::string path = get_key_file_path(key_id);
-    std::ofstream ofs(path);
-    if (!ofs.is_open()) return ErrorCode::STORAGE_WRITE_FAILED;
+    std::ofstream json_ofs(json_file);
+    if (!json_ofs.is_open()) return ErrorCode::STORAGE_WRITE_FAILED;
+    json_ofs << j.dump(2);
+    json_ofs.close();
 
-    ofs << j.dump(2);
-    ofs.close();
-
-    fs::permissions(path,
+    fs::permissions(json_file,
                     fs::perms::owner_read | fs::perms::owner_write,
                     fs::perm_options::replace);
 
@@ -453,6 +506,11 @@ std::string SoftFileHsm::get_key_file_path(const std::string& key_id) {
         if (c == ':') c = '_';
     }
     return key_store_path_ + "/" + safe_id + ".json";
+}
+
+std::string SoftFileHsm::get_key_dot_key_path(const std::string& key_id) {
+    std::string json_path = get_key_file_path(key_id);
+    return json_path.substr(0, json_path.size() - 5) + ".key";
 }
 
 ErrorCode SoftFileHsm::generate_encryption_key() {

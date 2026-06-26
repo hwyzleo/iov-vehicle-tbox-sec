@@ -27,7 +27,7 @@ protected:
 
 TEST_F(SoftFileHsmTest, InitializeSuccess) {
     EXPECT_TRUE(fs::exists(test_dir_));
-    EXPECT_TRUE(fs::exists(test_dir_ + "/.encryption_key"));
+    EXPECT_FALSE(fs::exists(test_dir_ + "/.encryption_key"));
 }
 
 TEST_F(SoftFileHsmTest, GenerateKeyPairSuccess) {

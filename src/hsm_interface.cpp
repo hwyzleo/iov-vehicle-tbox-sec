@@ -1,4 +1,6 @@
 #include "hsm_interface.h"
+#include "soft_file_hsm.h"
+#include "constants.h"
 #include <openssl/ec.h>
 #include <openssl/evp.h>
 #include <openssl/obj_mac.h>
@@ -145,6 +147,11 @@ std::unique_ptr<HsmInterface> HsmFactory::create(HsmType type,
     switch (type) {
         case HsmType::SOFTWARE:
             return std::make_unique<SoftwareHsm>(config_path);
+        case HsmType::SOFT_FILE:
+            return std::make_unique<SoftFileHsm>(
+                config_path.empty() ? DEFAULT_SOFT_KEY_PATH : config_path,
+                DEFAULT_SOFT_KEY_ENC_ALGO,
+                (config_path.empty() ? DEFAULT_SOFT_KEY_PATH : config_path) + "/.encryption_key");
         default:
             throw std::invalid_argument("Unsupported HSM type");
     }

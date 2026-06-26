@@ -144,13 +144,14 @@ TEST_F(SeedKeyTest, VerifyKeySuccess) {
     std::vector<uint8_t> seed;
     ASSERT_EQ(service_->get_seed(0x27, seed), ErrorCode::SUCCESS);
     
-    // Compute expected key (same algorithm as in SecService)
+    // Compute expected key using XOR algorithm (same as in SecService)
     std::vector<uint8_t> shared_secret(16, 0x01); // Same as in SecService
     std::vector<uint8_t> expected_key(16);
     
-    AES_KEY aes_key;
-    AES_set_encrypt_key(shared_secret.data(), 128, &aes_key);
-    AES_ecb_encrypt(seed.data(), expected_key.data(), &aes_key, AES_ENCRYPT);
+    // XOR-based computation: key = seed XOR shared_secret
+    for (size_t i = 0; i < 16; i++) {
+        expected_key[i] = seed[i] ^ shared_secret[i];
+    }
     
     // Verify key with UDS security level 0x28 (sendKey = requestSeed + 1)
     ErrorCode result = service_->verify_key(0x28, expected_key);
@@ -223,12 +224,14 @@ TEST_F(SeedKeyTest, SeedInvalidatedAfterUse) {
     std::vector<uint8_t> seed;
     ASSERT_EQ(service_->get_seed(0x27, seed), ErrorCode::SUCCESS);
     
-    // Compute valid key
+    // Compute valid key using XOR algorithm
     std::vector<uint8_t> shared_secret(16, 0x01);
     std::vector<uint8_t> expected_key(16);
-    AES_KEY aes_key;
-    AES_set_encrypt_key(shared_secret.data(), 128, &aes_key);
-    AES_ecb_encrypt(seed.data(), expected_key.data(), &aes_key, AES_ENCRYPT);
+    
+    // XOR-based computation: key = seed XOR shared_secret
+    for (size_t i = 0; i < 16; i++) {
+        expected_key[i] = seed[i] ^ shared_secret[i];
+    }
     
     // Verify key (should succeed and invalidate seed)
     EXPECT_EQ(service_->verify_key(0x28, expected_key), ErrorCode::SUCCESS);

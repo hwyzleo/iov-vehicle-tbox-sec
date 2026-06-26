@@ -85,3 +85,7 @@ add_executable(TboxSecTests
 )
 target_link_libraries(TboxSecTests PRIVATE TboxSecLib GTest::GTest GTest::Main)
 add_test(NAME TboxSecTests COMMAND TboxSecTests)
+
+# Example program
+add_executable(GenerateKeysAndCsr examples/generate_keys_and_csr.cpp)
+target_link_libraries(GenerateKeysAndCsr PRIVATE TboxSecLib)

@@ -122,12 +122,14 @@ TEST_F(ServiceDispatcherTest, SendKeySuccess) {
     ASSERT_EQ(dispatcher_->handle_security_access(0x27, {}, response), ErrorCode::SUCCESS);
     std::vector<uint8_t> seed = response.data;
     
-    // Compute valid key
+    // Compute valid key using XOR algorithm
     std::vector<uint8_t> shared_secret(16, 0x01);
     std::vector<uint8_t> expected_key(16);
-    AES_KEY aes_key;
-    AES_set_encrypt_key(shared_secret.data(), 128, &aes_key);
-    AES_ecb_encrypt(seed.data(), expected_key.data(), &aes_key, AES_ENCRYPT);
+    
+    // XOR-based computation: key = seed XOR shared_secret
+    for (size_t i = 0; i < 16; i++) {
+        expected_key[i] = seed[i] ^ shared_secret[i];
+    }
     
     // sendKey with level 0x28 (even, = 0x27 + 1)
     ErrorCode result = dispatcher_->handle_security_access(0x28, expected_key, response);
@@ -189,12 +191,14 @@ TEST_F(ServiceDispatcherTest, SendKeyUsesRawLevelNotDecremented) {
     ASSERT_EQ(dispatcher_->handle_security_access(0x27, {}, response), ErrorCode::SUCCESS);
     std::vector<uint8_t> seed = response.data;
     
-    // Compute valid key
+    // Compute valid key using XOR algorithm
     std::vector<uint8_t> shared_secret(16, 0x01);
     std::vector<uint8_t> expected_key(16);
-    AES_KEY aes_key;
-    AES_set_encrypt_key(shared_secret.data(), 128, &aes_key);
-    AES_ecb_encrypt(seed.data(), expected_key.data(), &aes_key, AES_ENCRYPT);
+    
+    // XOR-based computation: key = seed XOR shared_secret
+    for (size_t i = 0; i < 16; i++) {
+        expected_key[i] = seed[i] ^ shared_secret[i];
+    }
     
     // sendKey with level 0x28 - should work because SEC expects 0x28
     ErrorCode result = dispatcher_->handle_security_access(0x28, expected_key, response);

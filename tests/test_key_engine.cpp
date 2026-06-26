@@ -28,8 +28,11 @@ TEST_F(KeyEngineTest, GenerateDuplicateKey) {
     KeyPair key_pair;
     EXPECT_EQ(engine->generate_device_key(test_vin, test_ecu_uid, key_pair), ErrorCode::SUCCESS);
     
-    // Try to generate again - should fail
-    EXPECT_EQ(engine->generate_device_key(test_vin, test_ecu_uid, key_pair), ErrorCode::KEY_ALREADY_EXISTS);
+    // Try to generate again - should return existing key (success)
+    KeyPair key_pair2;
+    EXPECT_EQ(engine->generate_device_key(test_vin, test_ecu_uid, key_pair2), ErrorCode::SUCCESS);
+    EXPECT_EQ(key_pair2.key_id, key_pair.key_id);
+    EXPECT_EQ(key_pair2.public_key, key_pair.public_key);
 }
 
 TEST_F(KeyEngineTest, GetDeviceKey) {

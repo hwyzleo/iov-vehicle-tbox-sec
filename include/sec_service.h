@@ -96,7 +96,9 @@ private:
     ErrorCode load_provision_state();
     ErrorCode fetch_vehicle_info();
 
+public:
     ErrorCode generate_and_store_key_pair();
+private:
     ErrorCode build_and_store_csr();
     ErrorCode submit_csr_to_cloud();
     ErrorCode validate_and_store_certificate(const std::vector<uint8_t>& cert_der);
