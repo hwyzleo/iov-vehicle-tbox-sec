@@ -474,18 +474,39 @@ bool SecService::is_initialized() const {
 
 ErrorCode SecService::initialize_hsm() {
     try {
-        HsmFactory::HsmType hsm_type;
-        if (config_.hsm_type == "software") {
-            hsm_type = HsmFactory::HsmType::SOFTWARE;
-        } else if (config_.hsm_type == "pkcs11") {
-            hsm_type = HsmFactory::HsmType::PKCS11;
-        } else if (config_.hsm_type == "trustzone") {
-            hsm_type = HsmFactory::HsmType::TRUSTZONE;
-        } else {
-            return ErrorCode::INVALID_PARAMETER;
+        // 检查是否允许 soft_file 模式
+        if (config_.key_provisioning_mode == KEY_PROVISIONING_MODE_SOFT_FILE) {
+            if (config_.is_production) {
+                // 量产环境禁止使用 soft_file 模式
+                std::cerr << "[SEC] Software key file mode is not allowed in production environment" << std::endl;
+                return ErrorCode::SOFT_KEY_MODE_NOT_ALLOWED;
+            }
+            std::cout << "[SEC] Initializing in software file mode (test only)" << std::endl;
         }
 
-        auto hsm = HsmFactory::create(hsm_type, config_.hsm_config_path);
+        // 根据密钥生成模式选择 HSM 类型
+        HsmFactory::HsmType hsm_type;
+        std::string config_path;
+
+        if (config_.key_provisioning_mode == KEY_PROVISIONING_MODE_SOFT_FILE) {
+            // 软件落盘模式
+            hsm_type = HsmFactory::HsmType::SOFT_FILE;
+            config_path = config_.soft_key_config.key_path;
+        } else {
+            // HSM 模式（默认）
+            if (config_.hsm_type == "software") {
+                hsm_type = HsmFactory::HsmType::SOFTWARE;
+            } else if (config_.hsm_type == "pkcs11") {
+                hsm_type = HsmFactory::HsmType::PKCS11;
+            } else if (config_.hsm_type == "trustzone") {
+                hsm_type = HsmFactory::HsmType::TRUSTZONE;
+            } else {
+                return ErrorCode::INVALID_PARAMETER;
+            }
+            config_path = config_.hsm_config_path;
+        }
+
+        auto hsm = HsmFactory::create(hsm_type, config_path);
         key_engine_ = std::make_unique<KeyEngine>(std::move(hsm));
 
         return key_engine_->initialize();
@@ -523,7 +544,20 @@ ErrorCode SecService::fetch_vehicle_info() {
 ErrorCode SecService::generate_and_store_key_pair() {
     KeyPair key_pair;
     std::cout << "[SEC] Generating key pair with vin=" << vin_ << " ecu_uid=" << ecu_uid_ << std::endl;
-    return key_engine_->generate_device_key(vin_, ecu_uid_, key_pair);
+
+    auto err = key_engine_->generate_device_key(vin_, ecu_uid_, key_pair);
+    if (err != ErrorCode::SUCCESS) {
+        return err;
+    }
+
+    // 记录存储模式
+    if (key_pair.storage_mode == KeyStorageMode::SOFT_FILE) {
+        std::cout << "[SEC] Key generated in software file mode (test only): " << key_pair.key_id << std::endl;
+    } else {
+        std::cout << "[SEC] Key generated in HSM mode: " << key_pair.key_id << std::endl;
+    }
+
+    return ErrorCode::SUCCESS;
 }
 
 ErrorCode SecService::build_and_store_csr() {
