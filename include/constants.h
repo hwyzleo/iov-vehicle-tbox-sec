@@ -35,6 +35,14 @@ constexpr const char* DEFAULT_STATE_FILE_PATH = "/var/lib/tbox/sec/provision_sta
 constexpr uint8_t UDS_SECURITY_ACCESS_LEVEL = 0x29;
 constexpr auto UDS_SESSION_TIMEOUT = std::chrono::milliseconds(5000);
 
+// Key provisioning mode
+constexpr const char* KEY_PROVISIONING_MODE_HSM = "hsm";
+constexpr const char* KEY_PROVISIONING_MODE_SOFT_FILE = "soft_file";
+
+// Software key file defaults
+constexpr const char* DEFAULT_SOFT_KEY_PATH = "/var/lib/tbox/sec/soft_keys";
+constexpr const char* DEFAULT_SOFT_KEY_ENC_ALGO = "aes-256-gcm";
+
 // Error codes
 constexpr const char* ERROR_CODE_PREFIX = "SEC-";
 

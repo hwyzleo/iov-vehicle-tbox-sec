@@ -51,6 +51,9 @@ enum class ErrorCode : uint32_t {
     SEED_GENERATION_FAILED = 7007,
     KEY_VERIFICATION_FAILED = 7008,
 
+    // Soft key errors (SEC-1009)
+    SEC_ERR_SOFT_KEY_MODE_NOT_ALLOWED = 1009,
+
     // General errors
     INVALID_PARAMETER = 8001,
     NOT_INITIALIZED = 8002,
