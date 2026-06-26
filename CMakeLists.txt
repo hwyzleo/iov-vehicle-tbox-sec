@@ -48,6 +48,7 @@ set(LIB_SOURCES
     src/sec_service.cpp
     src/key_engine.cpp
     src/hsm_interface.cpp
+    src/soft_file_hsm.cpp
     src/secure_storage.cpp
     src/csr_builder.cpp
     src/cert_validator.cpp
@@ -79,6 +80,7 @@ add_executable(TboxSecTests
     tests/test_diag_service_interface.cpp
     tests/test_seed_key.cpp
     tests/test_service_dispatcher.cpp
+    tests/test_soft_file_hsm.cpp
 )
 target_link_libraries(TboxSecTests PRIVATE TboxSecLib GTest::GTest GTest::Main)
 add_test(NAME TboxSecTests COMMAND TboxSecTests)
