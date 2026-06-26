@@ -14,13 +14,22 @@
 namespace tbox {
 namespace sec {
 
+struct SoftKeyConfig {
+    std::string key_path = "/var/lib/tbox/sec/soft_keys";  // 软件密钥存储路径
+    std::string encryption_algo = "aes-256-gcm";           // 加密算法
+    std::string encryption_key_path = "";                   // 加密密钥路径（为空则使用默认）
+};
+
 struct SecServiceConfig {
     std::string hsm_type;
     std::string hsm_config_path;
     std::string state_file_path;
-    std::string ca_cert_path;     // CA certificate path for signature verification
-    std::string cert_store_path;  // Directory to store device certificates
+    std::string ca_cert_path;
+    std::string cert_store_path;
+    std::string key_provisioning_mode = "hsm";  // 密钥生成模式 (hsm/soft_file)
+    SoftKeyConfig soft_key_config;               // 软件落盘配置
     CloudConfig cloud_config;
+    bool is_production = false;                  // 是否量产环境
 };
 
 class SecService : public std::enable_shared_from_this<SecService> {

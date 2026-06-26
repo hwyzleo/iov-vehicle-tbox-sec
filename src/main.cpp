@@ -112,6 +112,32 @@ SecServiceConfig load_config(const std::string& config_file) {
         throw std::runtime_error("tbox.cloud.retry_delay_ms must be non-negative");
     }
 
+    // 解析密钥生成模式
+    if (tbox["key_provisioning"] && tbox["key_provisioning"]["mode"]) {
+        sec_config.key_provisioning_mode = tbox["key_provisioning"]["mode"].as<std::string>("hsm");
+    }
+
+    // 解析软件落盘配置
+    if (tbox["soft_key"]) {
+        auto soft_key_node = tbox["soft_key"];
+        if (soft_key_node["path"]) {
+            sec_config.soft_key_config.key_path = soft_key_node["path"].as<std::string>("/var/lib/tbox/sec/soft_keys");
+        }
+        if (soft_key_node["encryption_algo"]) {
+            sec_config.soft_key_config.encryption_algo = soft_key_node["encryption_algo"].as<std::string>("aes-256-gcm");
+        }
+        if (soft_key_node["encryption_key_path"]) {
+            sec_config.soft_key_config.encryption_key_path = soft_key_node["encryption_key_path"].as<std::string>("");
+        }
+    }
+
+    // 解析环境配置
+    if (tbox["environment"]) {
+        if (tbox["environment"]["is_production"]) {
+            sec_config.is_production = tbox["environment"]["is_production"].as<bool>(false);
+        }
+    }
+
     return sec_config;
 }
 
