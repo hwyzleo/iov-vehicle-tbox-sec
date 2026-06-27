@@ -579,8 +579,7 @@ ErrorCode SecService::build_and_store_csr() {
 
 ErrorCode SecService::submit_csr_to_cloud() {
     CertificateRequest request;
-    request.vin = vin_;
-    request.ecu_uid = device_sn_;
+    request.device_sn = device_sn_;
     request.csr_der = {0x30, 0x82, 0x01, 0x00};
 
     CertificateResponse response;
