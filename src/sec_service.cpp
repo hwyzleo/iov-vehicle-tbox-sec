@@ -453,7 +453,7 @@ ErrorCode SecService::reset_provision_status() {
 std::string SecService::get_device_info() const {
     std::stringstream ss;
     ss << "VIN: " << vin_ << "\n";
-    ss << "ECU UID: " << device_sn_ << "\n";
+    ss << "Device SN: " << device_sn_ << "\n";
     ss << "HSM Type: " << config_.hsm_type << "\n";
     ss << "Initialized: " << (initialized_ ? "Yes" : "No") << "\n";
     ss << "DIAG Service: " << (diag_service_ ? (diag_service_->is_connected() ? "Connected" : "Disconnected") : "Not available") << "\n";
@@ -543,7 +543,7 @@ ErrorCode SecService::fetch_vehicle_info() {
 
 ErrorCode SecService::generate_and_store_key_pair() {
     KeyPair key_pair;
-    std::cout << "[SEC] Generating key pair with vin=" << vin_ << " ecu_uid=" << device_sn_ << std::endl;
+    std::cout << "[SEC] Generating key pair with vin=" << vin_ << " device_sn=" << device_sn_ << std::endl;
 
     auto err = key_engine_->generate_device_key(vin_, device_sn_, key_pair);
     if (err != ErrorCode::SUCCESS) {
@@ -567,8 +567,8 @@ ErrorCode SecService::build_and_store_csr() {
 
     CsrConfig csr_config;
     csr_config.device_sn = device_sn_;
-    csr_config.key_id = device_sn_;
-    csr_config.algorithm = "SHA256withECDSA";
+    csr_config.key_id = device_sn_;  // key_id 暂时使用 device_sn
+    csr_config.algorithm = "ecdsa-p256";
 
     std::cout << "[SEC] Building CSR with vin=" << vin_ << " device_sn=" << device_sn_ << std::endl;
     ErrorCode result = csr_builder_->build_csr(vin_, csr_config, csr_der_);
