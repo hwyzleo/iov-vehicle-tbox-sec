@@ -7,8 +7,8 @@ namespace tbox {
 namespace sec {
 
 struct VehicleInfo {
-    std::string vin;
-    std::string ecu_uid;
+    std::string vin;           // 保留但不再用于证书
+    std::string device_sn;     // 设备序列号，出厂锁定绑定芯片UID
 };
 
 class ProvServiceInterface {
@@ -17,6 +17,7 @@ public:
 
     virtual ErrorCode initialize() = 0;
 
+    // 获取设备信息，VIN 保留但不再用于证书 Subject，证书使用 device_sn
     virtual ErrorCode get_vehicle_info(VehicleInfo& info) = 0;
 
     virtual bool is_connected() const = 0;
