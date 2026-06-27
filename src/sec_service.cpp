@@ -537,7 +537,7 @@ ErrorCode SecService::fetch_vehicle_info() {
     }
 
     vin_ = info.vin;
-    ecu_uid_ = info.ecu_uid;
+    ecu_uid_ = info.device_sn;
     return ErrorCode::SUCCESS;
 }
 

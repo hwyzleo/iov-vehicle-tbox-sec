@@ -19,7 +19,7 @@ public:
 
     ErrorCode get_vehicle_info(VehicleInfo& info) override {
         info.vin = vin_;
-        info.ecu_uid = ecu_uid_;
+        info.device_sn = ecu_uid_;
         return ErrorCode::SUCCESS;
     }
 

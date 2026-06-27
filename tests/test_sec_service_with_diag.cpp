@@ -14,7 +14,7 @@ public:
 
     ErrorCode get_vehicle_info(VehicleInfo& info) override {
         info.vin = "TESTVIN1234567890";
-        info.ecu_uid = "TBOX-ECU-001";
+        info.device_sn = "TBOX-ECU-001";
         return ErrorCode::SUCCESS;
     }
 
