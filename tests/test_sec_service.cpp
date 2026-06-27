@@ -116,7 +116,7 @@ TEST_F(SecServiceTest, GetDeviceInfoContainsHsmType) {
 TEST_F(SecServiceTest, GetDeviceInfoContainsEcuUid) {
     service->initialize();
     std::string info = service->get_device_info();
-    EXPECT_NE(info.find("ECU UID: TBOX-ECU-001"), std::string::npos);
+    EXPECT_NE(info.find("Device SN: TBOX-ECU-001"), std::string::npos);
 }
 
 TEST_F(SecServiceTest, GetDeviceInfoContainsProvService) {
