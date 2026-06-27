@@ -10,13 +10,15 @@ namespace tbox {
 namespace sec {
 
 struct CsrConfig {
-    std::string common_name;      // CN = ECU_UID
-    std::string vin;              // SAN: VIN
-    std::string ecu_uid;          // SAN: ECU_UID
+    std::string device_sn;        // 设备序列号（ECU UID / 芯片UID）
+    std::string key_id;           // 密钥标识
+    std::string algorithm;        // 签名算法（如 SHA256withECDSA）
     std::string key_usage;        // digitalSignature
     std::string extended_key_usage; // clientAuth
 };
 
+// CSR 构建器
+// Subject DN 格式: CN=device_sn, OU=TBOX-TSP, O=OpenIOV, C=CN
 class CsrBuilder {
 public:
     CsrBuilder(KeyEngine* key_engine);
