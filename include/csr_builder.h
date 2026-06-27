@@ -13,8 +13,6 @@ struct CsrConfig {
     std::string device_sn;        // 设备序列号（ECU UID / 芯片UID）
     std::string key_id;           // 密钥标识
     std::string algorithm;        // 签名算法（如 SHA256withECDSA）
-    std::string key_usage;        // digitalSignature
-    std::string extended_key_usage; // clientAuth
 };
 
 // CSR 构建器
@@ -35,8 +33,7 @@ private:
     ErrorCode marshal_x509_name(const std::string& cn,
                                 std::vector<uint8_t>& out_der);
 
-    ErrorCode marshal_san_extension(const std::string& vin,
-                                    const std::string& ecu_uid,
+    ErrorCode marshal_san_extension(const std::string& device_sn,
                                     std::vector<uint8_t>& ext_der);
 
     ErrorCode marshal_ku_extension(std::vector<uint8_t>& ext_der);
