@@ -13,86 +13,86 @@ protected:
     }
     
     std::unique_ptr<KeyEngine> engine;
-    std::string test_vin = "TESTVIN1234567890";
-    std::string test_ecu_uid = "TBOX-ECU-001";
+    std::string test_device_sn = "TBOX-DEVICE-001";
+    std::string test_key_id = "key-001";
 };
 
 TEST_F(KeyEngineTest, GenerateDeviceKey) {
     KeyPair key_pair;
-    EXPECT_EQ(engine->generate_device_key(test_vin, test_ecu_uid, key_pair), ErrorCode::SUCCESS);
+    EXPECT_EQ(engine->generate_device_key(test_device_sn, test_key_id, key_pair), ErrorCode::SUCCESS);
     EXPECT_FALSE(key_pair.public_key.empty());
     EXPECT_TRUE(key_pair.private_key_exists);
+    EXPECT_EQ(key_pair.key_id, test_device_sn + "+" + test_key_id);
 }
 
 TEST_F(KeyEngineTest, GenerateDuplicateKey) {
     KeyPair key_pair;
-    EXPECT_EQ(engine->generate_device_key(test_vin, test_ecu_uid, key_pair), ErrorCode::SUCCESS);
+    EXPECT_EQ(engine->generate_device_key(test_device_sn, test_key_id, key_pair), ErrorCode::SUCCESS);
     
-    // Try to generate again - should return existing key (success)
     KeyPair key_pair2;
-    EXPECT_EQ(engine->generate_device_key(test_vin, test_ecu_uid, key_pair2), ErrorCode::SUCCESS);
+    EXPECT_EQ(engine->generate_device_key(test_device_sn, test_key_id, key_pair2), ErrorCode::SUCCESS);
     EXPECT_EQ(key_pair2.key_id, key_pair.key_id);
     EXPECT_EQ(key_pair2.public_key, key_pair.public_key);
 }
 
 TEST_F(KeyEngineTest, GetDeviceKey) {
     KeyPair key_pair;
-    engine->generate_device_key(test_vin, test_ecu_uid, key_pair);
+    engine->generate_device_key(test_device_sn, test_key_id, key_pair);
     
     KeyPair retrieved_key;
-    EXPECT_EQ(engine->get_device_key(test_vin, test_ecu_uid, retrieved_key), ErrorCode::SUCCESS);
+    EXPECT_EQ(engine->get_device_key(test_device_sn, test_key_id, retrieved_key), ErrorCode::SUCCESS);
     EXPECT_EQ(retrieved_key.key_id, key_pair.key_id);
 }
 
 TEST_F(KeyEngineTest, SignData) {
     KeyPair key_pair;
-    engine->generate_device_key(test_vin, test_ecu_uid, key_pair);
+    engine->generate_device_key(test_device_sn, test_key_id, key_pair);
     
     std::vector<uint8_t> data = {0x01, 0x02, 0x03, 0x04};
     std::vector<uint8_t> signature;
     
-    EXPECT_EQ(engine->sign(test_vin, test_ecu_uid, data, signature), ErrorCode::SUCCESS);
+    EXPECT_EQ(engine->sign(test_device_sn, test_key_id, data, signature), ErrorCode::SUCCESS);
     EXPECT_FALSE(signature.empty());
 }
 
 TEST_F(KeyEngineTest, KeyExists) {
-    EXPECT_FALSE(engine->device_key_exists(test_vin, test_ecu_uid));
+    EXPECT_FALSE(engine->device_key_exists(test_device_sn, test_key_id));
     
     KeyPair key_pair;
-    engine->generate_device_key(test_vin, test_ecu_uid, key_pair);
+    engine->generate_device_key(test_device_sn, test_key_id, key_pair);
     
-    EXPECT_TRUE(engine->device_key_exists(test_vin, test_ecu_uid));
+    EXPECT_TRUE(engine->device_key_exists(test_device_sn, test_key_id));
 }
 
 TEST_F(KeyEngineTest, DeleteDeviceKey) {
     KeyPair key_pair;
-    engine->generate_device_key(test_vin, test_ecu_uid, key_pair);
-    EXPECT_TRUE(engine->device_key_exists(test_vin, test_ecu_uid));
+    engine->generate_device_key(test_device_sn, test_key_id, key_pair);
+    EXPECT_TRUE(engine->device_key_exists(test_device_sn, test_key_id));
     
-    EXPECT_EQ(engine->delete_device_key(test_vin, test_ecu_uid), ErrorCode::SUCCESS);
-    EXPECT_FALSE(engine->device_key_exists(test_vin, test_ecu_uid));
+    EXPECT_EQ(engine->delete_device_key(test_device_sn, test_key_id), ErrorCode::SUCCESS);
+    EXPECT_FALSE(engine->device_key_exists(test_device_sn, test_key_id));
 }
 
 TEST_F(KeyEngineTest, GetNonExistentKey) {
     KeyPair key_pair;
-    EXPECT_EQ(engine->get_device_key(test_vin, test_ecu_uid, key_pair), ErrorCode::KEY_NOT_FOUND);
+    EXPECT_EQ(engine->get_device_key(test_device_sn, test_key_id, key_pair), ErrorCode::KEY_NOT_FOUND);
 }
 
 TEST_F(KeyEngineTest, SignWithoutKey) {
     std::vector<uint8_t> data = {0x01, 0x02, 0x03, 0x04};
     std::vector<uint8_t> signature;
     
-    EXPECT_EQ(engine->sign(test_vin, test_ecu_uid, data, signature), ErrorCode::KEY_NOT_FOUND);
+    EXPECT_EQ(engine->sign(test_device_sn, test_key_id, data, signature), ErrorCode::KEY_NOT_FOUND);
 }
 
-TEST_F(KeyEngineTest, DifferentVinEcuPairs) {
+TEST_F(KeyEngineTest, DifferentDeviceKeyPairs) {
     KeyPair key_pair1;
     KeyPair key_pair2;
     
-    EXPECT_EQ(engine->generate_device_key("VIN001", "ECU001", key_pair1), ErrorCode::SUCCESS);
-    EXPECT_EQ(engine->generate_device_key("VIN001", "ECU002", key_pair2), ErrorCode::SUCCESS);
+    EXPECT_EQ(engine->generate_device_key("DEVICE-001", "key-a", key_pair1), ErrorCode::SUCCESS);
+    EXPECT_EQ(engine->generate_device_key("DEVICE-001", "key-b", key_pair2), ErrorCode::SUCCESS);
     
-    EXPECT_TRUE(engine->device_key_exists("VIN001", "ECU001"));
-    EXPECT_TRUE(engine->device_key_exists("VIN001", "ECU002"));
-    EXPECT_FALSE(engine->device_key_exists("VIN002", "ECU001"));
+    EXPECT_TRUE(engine->device_key_exists("DEVICE-001", "key-a"));
+    EXPECT_TRUE(engine->device_key_exists("DEVICE-001", "key-b"));
+    EXPECT_FALSE(engine->device_key_exists("DEVICE-002", "key-a"));
 }
