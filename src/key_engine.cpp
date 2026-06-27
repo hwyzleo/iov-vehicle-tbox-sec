@@ -28,7 +28,7 @@ ErrorCode KeyEngine::generate_device_key(const std::string& vin,
         return ErrorCode::NOT_INITIALIZED;
     }
     
-    std::string key_id = make_key_id(vin, ecu_uid);
+    std::string key_id = make_key_id(ecu_uid, vin);
     
     // Check if key already exists
     if (hsm_->key_exists(key_id)) {
@@ -51,7 +51,7 @@ ErrorCode KeyEngine::get_device_key(const std::string& vin,
         return ErrorCode::NOT_INITIALIZED;
     }
     
-    std::string key_id = make_key_id(vin, ecu_uid);
+    std::string key_id = make_key_id(ecu_uid, vin);
     
     if (!hsm_->key_exists(key_id)) {
         return ErrorCode::KEY_NOT_FOUND;
@@ -72,7 +72,7 @@ bool KeyEngine::device_key_exists(const std::string& vin, const std::string& ecu
         return false;
     }
     
-    std::string key_id = make_key_id(vin, ecu_uid);
+    std::string key_id = make_key_id(ecu_uid, vin);
     return hsm_->key_exists(key_id);
 }
 
@@ -84,7 +84,7 @@ ErrorCode KeyEngine::sign(const std::string& vin,
         return ErrorCode::NOT_INITIALIZED;
     }
     
-    std::string key_id = make_key_id(vin, ecu_uid);
+    std::string key_id = make_key_id(ecu_uid, vin);
     
     if (!hsm_->key_exists(key_id)) {
         return ErrorCode::KEY_NOT_FOUND;
@@ -98,12 +98,12 @@ ErrorCode KeyEngine::delete_device_key(const std::string& vin, const std::string
         return ErrorCode::NOT_INITIALIZED;
     }
     
-    std::string key_id = make_key_id(vin, ecu_uid);
+    std::string key_id = make_key_id(ecu_uid, vin);
     return hsm_->delete_key(key_id);
 }
 
-std::string KeyEngine::make_key_id(const std::string& vin, const std::string& ecu_uid) const {
-    return vin + ":" + ecu_uid;
+std::string KeyEngine::make_key_id(const std::string& device_sn, const std::string& key_id) const {
+    return device_sn + "+" + key_id;
 }
 
 } // namespace sec

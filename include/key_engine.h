@@ -41,7 +41,7 @@ private:
     std::unique_ptr<HsmInterface> hsm_;
     bool initialized_;
     
-    std::string make_key_id(const std::string& vin, const std::string& ecu_uid) const;
+    std::string make_key_id(const std::string& device_sn, const std::string& key_id) const;
 };
 
 } // namespace sec
