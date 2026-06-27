@@ -59,7 +59,19 @@ TEST_F(CsrBuilderTest, BuildCsrSubjectCN) {
 
     char cn[256];
     X509_NAME_get_text_by_NID(subject, NID_commonName, cn, sizeof(cn));
-    EXPECT_STREQ(cn, "TBOX-ECU-001");
+    EXPECT_STREQ(cn, test_ecu_uid.c_str());
+
+    char ou[256];
+    X509_NAME_get_text_by_NID(subject, NID_organizationalUnitName, ou, sizeof(ou));
+    EXPECT_STREQ(ou, "TBOX-TSP");
+
+    char org[256];
+    X509_NAME_get_text_by_NID(subject, NID_organizationName, org, sizeof(org));
+    EXPECT_STREQ(org, "OpenIOV");
+
+    char country[256];
+    X509_NAME_get_text_by_NID(subject, NID_countryName, country, sizeof(country));
+    EXPECT_STREQ(country, "CN");
 
     X509_REQ_free(req);
 }
@@ -103,6 +115,59 @@ TEST_F(CsrBuilderTest, BuildCsrSAN) {
                 }
             }
             sk_GENERAL_NAME_pop_free(gens, GENERAL_NAME_free);
+            EXPECT_TRUE(has_device_sn) << "device_sn not found in SAN";
+            break;
+        }
+    }
+    EXPECT_TRUE(found_san) << "SAN extension missing";
+
+    sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
+    X509_REQ_free(req);
+}
+
+TEST_F(CsrBuilderTest, SanExtensionWithoutVin) {
+    CsrConfig config;
+    config.device_sn = test_ecu_uid;
+    config.key_id = test_ecu_uid;
+    config.algorithm = "SHA256withECDSA";
+
+    std::vector<uint8_t> csr_der;
+    ASSERT_EQ(builder->build_csr("", config, csr_der), ErrorCode::SUCCESS);
+
+    const unsigned char* p = csr_der.data();
+    X509_REQ* req = d2i_X509_REQ(nullptr, &p, static_cast<long>(csr_der.size()));
+    ASSERT_NE(req, nullptr);
+
+    STACK_OF(X509_EXTENSION)* exts = X509_REQ_get_extensions(req);
+    ASSERT_NE(exts, nullptr);
+
+    bool found_san = false;
+    for (int i = 0; i < sk_X509_EXTENSION_num(exts); i++) {
+        X509_EXTENSION* ext = sk_X509_EXTENSION_value(exts, i);
+        ASN1_OBJECT* obj = X509_EXTENSION_get_object(ext);
+        if (OBJ_obj2nid(obj) == NID_subject_alt_name) {
+            found_san = true;
+            GENERAL_NAMES* gens = static_cast<GENERAL_NAMES*>(
+                X509V3_EXT_d2i(ext));
+            ASSERT_NE(gens, nullptr);
+
+            bool has_vin = false;
+            bool has_device_sn = false;
+            for (int j = 0; j < sk_GENERAL_NAME_num(gens); j++) {
+                GENERAL_NAME* gn = sk_GENERAL_NAME_value(gens, j);
+                if (gn->type == GEN_URI) {
+                    std::string uri(
+                        reinterpret_cast<const char*>(
+                            ASN1_STRING_get0_data(gn->d.uniformResourceIdentifier)),
+                        ASN1_STRING_length(gn->d.uniformResourceIdentifier));
+                    if (uri.find("urn:vin:") != std::string::npos)
+                        has_vin = true;
+                    if (uri.find(test_ecu_uid) != std::string::npos)
+                        has_device_sn = true;
+                }
+            }
+            sk_GENERAL_NAME_pop_free(gens, GENERAL_NAME_free);
+            EXPECT_FALSE(has_vin) << "VIN should not be in SAN when empty";
             EXPECT_TRUE(has_device_sn) << "device_sn not found in SAN";
             break;
         }
