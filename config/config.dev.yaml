@@ -1,8 +1,8 @@
 # TBOX Security Service Configuration
 tbox:
   # Device identification (optional, for default PROV service)
-  vin: "TESTVIN1234567890"
-  ecu_uid: "TBOX-ECU-001"
+  vin: "TESTVIN1234567890"  # 保留但不用于证书
+  device_sn: "TBOX-DEV-001"  # 替代 ecu_uid
 
   # HSM/Secure Element configuration
   hsm:
