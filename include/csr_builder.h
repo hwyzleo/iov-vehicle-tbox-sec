@@ -21,7 +21,8 @@ class CsrBuilder {
 public:
     CsrBuilder(KeyEngine* key_engine);
 
-    ErrorCode build_csr(const CsrConfig& config,
+    ErrorCode build_csr(const std::string& vin,
+                       const CsrConfig& config,
                        std::vector<uint8_t>& csr_der);
 
 private:
@@ -40,7 +41,8 @@ private:
 
     ErrorCode marshal_eku_extension(std::vector<uint8_t>& ext_der);
 
-    ErrorCode build_csr_info(const CsrConfig& config,
+    ErrorCode build_csr_info(const std::string& vin,
+                             const CsrConfig& config,
                              const KeyPair& key_pair,
                              std::vector<uint8_t>& csr_info_der);
 };

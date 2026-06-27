@@ -42,12 +42,12 @@ protected:
 
 TEST_F(CsrBuilderTest, BuildCsrSubjectCN) {
     CsrConfig config;
-    config.common_name = "ECU_UID:TBOX-ECU-001";
-    config.vin = test_vin;
-    config.ecu_uid = test_ecu_uid;
+    config.device_sn = test_ecu_uid;
+    config.key_id = test_ecu_uid;
+    config.algorithm = "SHA256withECDSA";
 
     std::vector<uint8_t> csr_der;
-    ASSERT_EQ(builder->build_csr(config, csr_der), ErrorCode::SUCCESS);
+    ASSERT_EQ(builder->build_csr(test_vin, config, csr_der), ErrorCode::SUCCESS);
     ASSERT_FALSE(csr_der.empty());
 
     const unsigned char* p = csr_der.data();
@@ -59,19 +59,19 @@ TEST_F(CsrBuilderTest, BuildCsrSubjectCN) {
 
     char cn[256];
     X509_NAME_get_text_by_NID(subject, NID_commonName, cn, sizeof(cn));
-    EXPECT_STREQ(cn, "ECU_UID:TBOX-ECU-001");
+    EXPECT_STREQ(cn, "TBOX-ECU-001");
 
     X509_REQ_free(req);
 }
 
 TEST_F(CsrBuilderTest, BuildCsrSAN) {
     CsrConfig config;
-    config.common_name = "ECU_UID:TBOX-ECU-001";
-    config.vin = test_vin;
-    config.ecu_uid = test_ecu_uid;
+    config.device_sn = test_ecu_uid;
+    config.key_id = test_ecu_uid;
+    config.algorithm = "SHA256withECDSA";
 
     std::vector<uint8_t> csr_der;
-    ASSERT_EQ(builder->build_csr(config, csr_der), ErrorCode::SUCCESS);
+    ASSERT_EQ(builder->build_csr(test_vin, config, csr_der), ErrorCode::SUCCESS);
 
     const unsigned char* p = csr_der.data();
     X509_REQ* req = d2i_X509_REQ(nullptr, &p, static_cast<long>(csr_der.size()));
@@ -90,7 +90,7 @@ TEST_F(CsrBuilderTest, BuildCsrSAN) {
                 X509V3_EXT_d2i(ext));
             ASSERT_NE(gens, nullptr);
 
-            bool has_vin = false, has_ecu = false;
+            bool has_device_sn = false;
             for (int j = 0; j < sk_GENERAL_NAME_num(gens); j++) {
                 GENERAL_NAME* gn = sk_GENERAL_NAME_value(gens, j);
                 if (gn->type == GEN_URI) {
@@ -98,15 +98,12 @@ TEST_F(CsrBuilderTest, BuildCsrSAN) {
                         reinterpret_cast<const char*>(
                             ASN1_STRING_get0_data(gn->d.uniformResourceIdentifier)),
                         ASN1_STRING_length(gn->d.uniformResourceIdentifier));
-                    if (uri.find(test_vin) != std::string::npos)
-                        has_vin = true;
                     if (uri.find(test_ecu_uid) != std::string::npos)
-                        has_ecu = true;
+                        has_device_sn = true;
                 }
             }
             sk_GENERAL_NAME_pop_free(gens, GENERAL_NAME_free);
-            EXPECT_TRUE(has_vin) << "VIN not found in SAN";
-            EXPECT_TRUE(has_ecu) << "ECU_UID not found in SAN";
+            EXPECT_TRUE(has_device_sn) << "device_sn not found in SAN";
             break;
         }
     }
@@ -118,12 +115,12 @@ TEST_F(CsrBuilderTest, BuildCsrSAN) {
 
 TEST_F(CsrBuilderTest, BuildCsrKeyUsage) {
     CsrConfig config;
-    config.common_name = "ECU_UID:TBOX-ECU-001";
-    config.vin = test_vin;
-    config.ecu_uid = test_ecu_uid;
+    config.device_sn = test_ecu_uid;
+    config.key_id = test_ecu_uid;
+    config.algorithm = "SHA256withECDSA";
 
     std::vector<uint8_t> csr_der;
-    ASSERT_EQ(builder->build_csr(config, csr_der), ErrorCode::SUCCESS);
+    ASSERT_EQ(builder->build_csr(test_vin, config, csr_der), ErrorCode::SUCCESS);
 
     const unsigned char* p = csr_der.data();
     X509_REQ* req = d2i_X509_REQ(nullptr, &p, static_cast<long>(csr_der.size()));
@@ -156,12 +153,12 @@ TEST_F(CsrBuilderTest, BuildCsrKeyUsage) {
 
 TEST_F(CsrBuilderTest, BuildCsrExtendedKeyUsage) {
     CsrConfig config;
-    config.common_name = "ECU_UID:TBOX-ECU-001";
-    config.vin = test_vin;
-    config.ecu_uid = test_ecu_uid;
+    config.device_sn = test_ecu_uid;
+    config.key_id = test_ecu_uid;
+    config.algorithm = "SHA256withECDSA";
 
     std::vector<uint8_t> csr_der;
-    ASSERT_EQ(builder->build_csr(config, csr_der), ErrorCode::SUCCESS);
+    ASSERT_EQ(builder->build_csr(test_vin, config, csr_der), ErrorCode::SUCCESS);
 
     const unsigned char* p = csr_der.data();
     X509_REQ* req = d2i_X509_REQ(nullptr, &p, static_cast<long>(csr_der.size()));
@@ -198,12 +195,12 @@ TEST_F(CsrBuilderTest, BuildCsrExtendedKeyUsage) {
 
 TEST_F(CsrBuilderTest, BuildCsrPublicKey) {
     CsrConfig config;
-    config.common_name = "ECU_UID:TBOX-ECU-001";
-    config.vin = test_vin;
-    config.ecu_uid = test_ecu_uid;
+    config.device_sn = test_ecu_uid;
+    config.key_id = test_ecu_uid;
+    config.algorithm = "SHA256withECDSA";
 
     std::vector<uint8_t> csr_der;
-    ASSERT_EQ(builder->build_csr(config, csr_der), ErrorCode::SUCCESS);
+    ASSERT_EQ(builder->build_csr(test_vin, config, csr_der), ErrorCode::SUCCESS);
 
     const unsigned char* p = csr_der.data();
     X509_REQ* req = d2i_X509_REQ(nullptr, &p, static_cast<long>(csr_der.size()));
@@ -224,12 +221,12 @@ TEST_F(CsrBuilderTest, BuildCsrPublicKey) {
 
 TEST_F(CsrBuilderTest, BuildCsrSignature) {
     CsrConfig config;
-    config.common_name = "ECU_UID:TBOX-ECU-001";
-    config.vin = test_vin;
-    config.ecu_uid = test_ecu_uid;
+    config.device_sn = test_ecu_uid;
+    config.key_id = test_ecu_uid;
+    config.algorithm = "SHA256withECDSA";
 
     std::vector<uint8_t> csr_der;
-    ASSERT_EQ(builder->build_csr(config, csr_der), ErrorCode::SUCCESS);
+    ASSERT_EQ(builder->build_csr(test_vin, config, csr_der), ErrorCode::SUCCESS);
 
     const unsigned char* p = csr_der.data();
     X509_REQ* req = d2i_X509_REQ(nullptr, &p, static_cast<long>(csr_der.size()));
@@ -247,12 +244,12 @@ TEST_F(CsrBuilderTest, BuildCsrSignature) {
 
 TEST_F(CsrBuilderTest, BuildCsrSelfSignatureVerify) {
     CsrConfig config;
-    config.common_name = "ECU_UID:TBOX-ECU-001";
-    config.vin = test_vin;
-    config.ecu_uid = test_ecu_uid;
+    config.device_sn = test_ecu_uid;
+    config.key_id = test_ecu_uid;
+    config.algorithm = "SHA256withECDSA";
 
     std::vector<uint8_t> csr_der;
-    ASSERT_EQ(builder->build_csr(config, csr_der), ErrorCode::SUCCESS);
+    ASSERT_EQ(builder->build_csr(test_vin, config, csr_der), ErrorCode::SUCCESS);
 
     const unsigned char* p = csr_der.data();
     X509_REQ* req = d2i_X509_REQ(nullptr, &p, static_cast<long>(csr_der.size()));
@@ -271,21 +268,21 @@ TEST_F(CsrBuilderTest, BuildCsrWithNullEngine) {
     auto null_builder = std::make_unique<CsrBuilder>(nullptr);
 
     CsrConfig config;
-    config.common_name = "ECU_UID:TBOX-ECU-001";
-    config.vin = test_vin;
-    config.ecu_uid = test_ecu_uid;
+    config.device_sn = test_ecu_uid;
+    config.key_id = test_ecu_uid;
+    config.algorithm = "SHA256withECDSA";
 
     std::vector<uint8_t> csr_der;
-    EXPECT_EQ(null_builder->build_csr(config, csr_der),
+    EXPECT_EQ(null_builder->build_csr(test_vin, config, csr_der),
               ErrorCode::INVALID_PARAMETER);
 }
 
 TEST_F(CsrBuilderTest, BuildCsrWithMissingKey) {
     CsrConfig config;
-    config.common_name = "ECU_UID:NONEXISTENT";
-    config.vin = "NONEXISTENTVIN";
-    config.ecu_uid = "NONEXISTENTECU";
+    config.device_sn = "NONEXISTENTECU";
+    config.key_id = "NONEXISTENTECU";
+    config.algorithm = "SHA256withECDSA";
 
     std::vector<uint8_t> csr_der;
-    EXPECT_EQ(builder->build_csr(config, csr_der), ErrorCode::KEY_NOT_FOUND);
+    EXPECT_EQ(builder->build_csr("NONEXISTENTVIN", config, csr_der), ErrorCode::KEY_NOT_FOUND);
 }

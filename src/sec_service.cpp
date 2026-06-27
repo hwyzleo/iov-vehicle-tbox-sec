@@ -566,14 +566,12 @@ ErrorCode SecService::build_and_store_csr() {
     }
 
     CsrConfig csr_config;
-    csr_config.common_name = ecu_uid_;  // CN=device_sn (ECU UID)
-    csr_config.vin = vin_;
-    csr_config.ecu_uid = ecu_uid_;
-    csr_config.key_usage = "digitalSignature";
-    csr_config.extended_key_usage = "clientAuth";
+    csr_config.device_sn = ecu_uid_;
+    csr_config.key_id = ecu_uid_;
+    csr_config.algorithm = "SHA256withECDSA";
 
-    std::cout << "[SEC] Building CSR with vin=" << vin_ << " ecu_uid=" << ecu_uid_ << std::endl;
-    ErrorCode result = csr_builder_->build_csr(csr_config, csr_der_);
+    std::cout << "[SEC] Building CSR with vin=" << vin_ << " device_sn=" << ecu_uid_ << std::endl;
+    ErrorCode result = csr_builder_->build_csr(vin_, csr_config, csr_der_);
     std::cout << "[SEC] build_csr result=" << static_cast<int>(result)
               << " csr_der_.size()=" << csr_der_.size() << std::endl;
     return result;
