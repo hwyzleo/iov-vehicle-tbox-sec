@@ -31,7 +31,7 @@ private:
     ErrorCode marshal_ec_pubkey_info(const std::vector<uint8_t>& raw_pubkey,
                                      std::vector<uint8_t>& out_der);
 
-    ErrorCode marshal_x509_name(const std::string& cn,
+    ErrorCode marshal_x509_name(const std::string& device_sn,
                                 std::vector<uint8_t>& out_der);
 
     ErrorCode marshal_san_extension(const std::string& device_sn,
