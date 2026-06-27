@@ -17,9 +17,14 @@ constexpr const char* DEFAULT_KEY_USAGE = "digitalSignature";
 constexpr const char* DEFAULT_EXTENDED_KEY_USAGE = "clientAuth";
 
 // CSR settings
-constexpr const char* CSR_SUBJECT_CN_PREFIX = "ECU_UID:";
+constexpr const char* CSR_SUBJECT_OU = "TBOX-TSP";
+constexpr const char* CSR_SUBJECT_O = "OpenIOV";
+constexpr const char* CSR_SUBJECT_C = "CN";
 constexpr const char* CSR_SAN_TYPE_VIN = "VIN";
 constexpr const char* CSR_SAN_TYPE_ECU_UID = "ECU_UID";
+
+// SAN URI prefix
+constexpr const char* SAN_URI_PREFIX_ECU_UID = "urn:ecu-uid:";
 
 // Timeouts
 constexpr auto DEFAULT_CLOUD_TIMEOUT = std::chrono::milliseconds(30000);
