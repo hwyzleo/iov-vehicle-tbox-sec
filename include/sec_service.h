@@ -81,7 +81,7 @@ private:
     std::shared_ptr<ProvServiceInterface> prov_service_;
 
     std::string vin_;
-    std::string ecu_uid_;
+    std::string device_sn_;
 
     std::unique_ptr<KeyEngine> key_engine_;
     std::unique_ptr<CsrBuilder> csr_builder_;
