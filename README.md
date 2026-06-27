@@ -162,6 +162,13 @@ See `docs/api.md` for complete API documentation.
                     +---------------+
 ```
 
+## 变更记录
+
+### TBOX-SEC-DSN-CR-005 (2026-06-27)
+- 设备证书 Subject 改为完整 DN 格式：CN=device_sn, OU=TBOX-TSP, O=OpenIOV, C=CN
+- 证书不再包含 VIN
+- 幂等键改为 device_sn+key_id
+
 ## License
 
 [License information]

@@ -24,6 +24,11 @@ Get Certificate Signing Request for the device.
 **Parameters:**
 - `csr_der`: Output vector containing DER-encoded CSR
 
+**CSR Subject 格式 (TBOX-SEC-DSN-CR-005):**
+```
+CN=device_sn, OU=TBOX-TSP, O=OpenIOV, C=CN
+```
+
 **Returns:** `ErrorCode::SUCCESS` on success
 
 #### submit_csr()
