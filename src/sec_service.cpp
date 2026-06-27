@@ -566,7 +566,7 @@ ErrorCode SecService::build_and_store_csr() {
     }
 
     CsrConfig csr_config;
-    csr_config.common_name = CSR_SUBJECT_CN_PREFIX + ecu_uid_;
+    csr_config.common_name = ecu_uid_;  // CN=device_sn (ECU UID)
     csr_config.vin = vin_;
     csr_config.ecu_uid = ecu_uid_;
     csr_config.key_usage = "digitalSignature";
