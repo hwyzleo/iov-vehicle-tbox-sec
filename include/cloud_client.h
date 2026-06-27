@@ -20,8 +20,7 @@ struct CloudConfig {
 
 struct CertificateRequest {
     std::vector<uint8_t> csr_der;
-    std::string vin;
-    std::string ecu_uid;
+    std::string device_sn;
 };
 
 struct CertificateResponse {
