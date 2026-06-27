@@ -1,4 +1,5 @@
 #include "csr_builder.h"
+#include "constants.h"
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 #include <openssl/evp.h>
@@ -123,36 +124,57 @@ ErrorCode CsrBuilder::marshal_ec_pubkey_info(
     return ErrorCode::SUCCESS;
 }
 
-ErrorCode CsrBuilder::marshal_x509_name(const std::string& cn,
+ErrorCode CsrBuilder::marshal_x509_name(const std::string& device_sn,
                                         std::vector<uint8_t>& out_der) {
-    static const uint8_t OID_CN[] = {0x55, 0x04, 0x03};
+    // OID definitions for X.509 Name attributes
+    static const uint8_t OID_CN[] = {0x55, 0x04, 0x03};  // 2.5.4.3
+    static const uint8_t OID_OU[] = {0x55, 0x04, 0x0B};  // 2.5.4.11
+    static const uint8_t OID_O[]  = {0x55, 0x04, 0x0A};  // 2.5.4.10
+    static const uint8_t OID_C[]  = {0x55, 0x04, 0x06};  // 2.5.4.6
 
-    std::vector<uint8_t> cn_val(cn.begin(), cn.end());
+    // Subject DN: CN=device_sn, OU=TBOX-TSP, O=OpenIOV, C=CN
+    struct {
+        const uint8_t* oid;
+        size_t oid_len;
+        const char* value;
+    } rdn_entries[] = {
+        {OID_CN, sizeof(OID_CN), device_sn.c_str()},
+        {OID_OU, sizeof(OID_OU), CSR_SUBJECT_OU},
+        {OID_O,  sizeof(OID_O),  CSR_SUBJECT_O},
+        {OID_C,  sizeof(OID_C),  CSR_SUBJECT_C},
+    };
 
-    std::vector<uint8_t> attr_type;
-    der_encode_oid(std::vector<uint8_t>(
-        std::begin(OID_CN), std::end(OID_CN)), attr_type);
+    std::vector<uint8_t> name_inner;
 
-    // Attribute value: UTF8String
-    std::vector<uint8_t> attr_value;
-    attr_value.push_back(0x0C);  // UTF8String tag
-    der_encode_length(static_cast<uint16_t>(cn_val.size()), attr_value);
-    attr_value.insert(attr_value.end(), cn_val.begin(), cn_val.end());
+    for (size_t i = 0; i < sizeof(rdn_entries) / sizeof(rdn_entries[0]); ++i) {
+        // Encode OID
+        std::vector<uint8_t> attr_type;
+        der_encode_oid(std::vector<uint8_t>(rdn_entries[i].oid, rdn_entries[i].oid + rdn_entries[i].oid_len), attr_type);
 
-    // SEQUENCE { OID, value }
-    std::vector<uint8_t> attr_seq_inner;
-    attr_seq_inner.insert(attr_seq_inner.end(), attr_type.begin(), attr_type.end());
-    attr_seq_inner.insert(attr_seq_inner.end(), attr_value.begin(), attr_value.end());
+        // Encode value as UTF8String
+        std::string val(rdn_entries[i].value);
+        std::vector<uint8_t> attr_value;
+        attr_value.push_back(0x0C);  // UTF8String tag
+        der_encode_length(static_cast<uint16_t>(val.size()), attr_value);
+        attr_value.insert(attr_value.end(), val.begin(), val.end());
 
-    std::vector<uint8_t> attr_seq;
-    der_wrap_sequence(attr_seq_inner, attr_seq);
+        // SEQUENCE { OID, value }
+        std::vector<uint8_t> attr_seq_inner;
+        attr_seq_inner.insert(attr_seq_inner.end(), attr_type.begin(), attr_type.end());
+        attr_seq_inner.insert(attr_seq_inner.end(), attr_value.begin(), attr_value.end());
 
-    // SET OF { attr_seq }
-    std::vector<uint8_t> set_of;
-    der_wrap_set(attr_seq, set_of);
+        std::vector<uint8_t> attr_seq;
+        der_wrap_sequence(attr_seq_inner, attr_seq);
 
-    // SEQUENCE { set_of }
-    der_wrap_sequence(set_of, out_der);
+        // SET OF { attr_seq } - each RDN is a SET
+        std::vector<uint8_t> set_of;
+        der_wrap_set(attr_seq, set_of);
+
+        name_inner.insert(name_inner.end(), set_of.begin(), set_of.end());
+    }
+
+    // SEQUENCE of all RDNs
+    der_wrap_sequence(name_inner, out_der);
     return ErrorCode::SUCCESS;
 }
 
