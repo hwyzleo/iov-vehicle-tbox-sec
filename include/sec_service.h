@@ -2,6 +2,7 @@
 
 #include <string>
 #include <memory>
+#include <optional>
 #include "key_engine.h"
 #include "csr_builder.h"
 #include "cert_validator.h"
@@ -11,6 +12,7 @@
 #include "diag_service_interface.h"
 #include "prov_service_interface.h"
 #include "config.h"
+#include "store.h"
 
 namespace tbox {
 namespace sec {
@@ -126,6 +128,10 @@ public:
     SecService(const SecServiceConfig& config,
                std::shared_ptr<DiagServiceInterface> diag_service,
                std::shared_ptr<ProvServiceInterface> prov_service);
+    SecService(const SecServiceConfig& config,
+               std::shared_ptr<DiagServiceInterface> diag_service,
+               std::shared_ptr<ProvServiceInterface> prov_service,
+               hwyz::store::Store store);
 
     virtual ~SecService() = default;
 
@@ -165,6 +171,7 @@ private:
     std::shared_ptr<DiagServiceInterface> diag_service_;
     std::shared_ptr<ProvServiceInterface> prov_service_;
     std::unique_ptr<ProvisionStateManager> state_manager_;
+    std::optional<hwyz::store::Store> store_;
 
     std::string vin_;
     std::string device_sn_;

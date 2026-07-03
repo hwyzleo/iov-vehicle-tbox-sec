@@ -75,7 +75,7 @@ target_link_libraries(TboxSecLib PUBLIC OpenSSL::SSL OpenSSL::Crypto yaml-cpp::y
 
 # Main executable
 add_executable(TboxSecService src/main.cpp)
-target_link_libraries(TboxSecService PRIVATE TboxSecLib)
+target_link_libraries(TboxSecService PRIVATE TboxSecLib ${FRAMEWORK_DIR}/build/libhwyz.dylib)
 
 # Tests
 enable_testing()
