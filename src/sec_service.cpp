@@ -30,7 +30,14 @@ SecService::SecService(const SecServiceConfig& config,
                       std::shared_ptr<ProvServiceInterface> prov_service)
     : config_(config), initialized_(false), diag_service_(diag_service), prov_service_(prov_service) {}
 
-// NOTE: Store-based constructor removed until framework-store integration is implemented
+SecService::SecService(const SecServiceConfig& config, hwyz::store::Store store)
+    : config_(config), initialized_(false), store_(std::move(store)) {}
+
+SecService::SecService(const SecServiceConfig& config,
+                      std::shared_ptr<DiagServiceInterface> diag_service,
+                      std::shared_ptr<ProvServiceInterface> prov_service,
+                      hwyz::store::Store store)
+    : config_(config), initialized_(false), diag_service_(diag_service), prov_service_(prov_service), store_(std::move(store)) {}
 
 ErrorCode SecService::initialize() {
     // Validate required config
@@ -69,7 +76,12 @@ ErrorCode SecService::initialize() {
         return result;
     }
 
-    result = load_provision_state();
+    // Load provision state - prefer store over state_manager
+    if (store_.isReady()) {
+        result = load_provision_state_from_store();
+    } else {
+        result = load_provision_state();
+    }
     if (result != ErrorCode::SUCCESS) {
         return result;
     }
@@ -289,7 +301,16 @@ ErrorCode SecService::apply_certificate() {
         status.state = ProvisionState::NONE;
         status.retry_count = 0;
         status.last_error.clear();
-        state_manager_->update_status(status);
+        // Save the reset state
+        if (store_.isReady()) {
+            try {
+                store_.save("provision_state", status);
+            } catch (const hwyz::store::StoreException& e) {
+                std::cerr << "[SEC] Failed to reset state in store: " << e.what() << std::endl;
+            }
+        } else if (state_manager_) {
+            state_manager_->update_status(status);
+        }
     }
 
     // 如果有DIAG服务，通过DIAG服务执行整个流程
@@ -455,6 +476,27 @@ ErrorCode SecService::verify_key(uint8_t level, const std::vector<uint8_t>& key)
 }
 
 ProvisionStatus SecService::get_provision_status() const {
+    // Try store first
+    if (store_.isReady()) {
+        try {
+            auto status = store_.load<ProvisionStatus>("provision_state");
+            return status;
+        } catch (const hwyz::store::StoreException& e) {
+            if (e.getError().code == hwyz::store::StoreError::kKeyNotFound) {
+                // No state saved yet, return default
+                ProvisionStatus status;
+                status.vin = vin_;
+                status.ecu_uid = device_sn_;
+                status.state = ProvisionState::NONE;
+                status.retry_count = 0;
+                status.last_updated = std::chrono::system_clock::now();
+                return status;
+            }
+            // Other errors - fall through to state_manager
+        }
+    }
+
+    // Fallback to state_manager
     if (!state_manager_) {
         ProvisionStatus status;
         status.state = ProvisionState::NONE;
@@ -465,7 +507,23 @@ ProvisionStatus SecService::get_provision_status() const {
 }
 
 ErrorCode SecService::reset_provision_status() {
-    if (!initialized_ || !state_manager_) {
+    if (!initialized_) {
+        return ErrorCode::NOT_INITIALIZED;
+    }
+
+    // Try store first
+    if (store_.isReady()) {
+        try {
+            store_.remove("provision_state");
+            return ErrorCode::SUCCESS;
+        } catch (const hwyz::store::StoreException& e) {
+            std::cerr << "[SEC] Failed to reset provision state from store: " << e.what() << std::endl;
+            return ErrorCode::STORAGE_WRITE_FAILED;
+        }
+    }
+
+    // Fallback to state_manager
+    if (!state_manager_) {
         return ErrorCode::NOT_INITIALIZED;
     }
 
@@ -547,6 +605,23 @@ ErrorCode SecService::initialize_cloud_client() {
 ErrorCode SecService::load_provision_state() {
     state_manager_ = std::make_unique<ProvisionStateManager>(config_.get_state_file_path());
     return state_manager_->load_state() ? ErrorCode::SUCCESS : ErrorCode::STORAGE_READ_FAILED;
+}
+
+ErrorCode SecService::load_provision_state_from_store() {
+    try {
+        auto status = store_.load<ProvisionStatus>("provision_state");
+        std::cerr << "[SEC] Loaded provision state from store: "
+                  << provision_state_to_string(status.state) << std::endl;
+        return ErrorCode::SUCCESS;
+    } catch (const hwyz::store::StoreException& e) {
+        if (e.getError().code == hwyz::store::StoreError::kKeyNotFound) {
+            // No state saved yet - this is normal for first run
+            std::cerr << "[SEC] No provision state in store, starting fresh" << std::endl;
+            return ErrorCode::SUCCESS;
+        }
+        std::cerr << "[SEC] Failed to load provision state from store: " << e.what() << std::endl;
+        return ErrorCode::STORAGE_READ_FAILED;
+    }
 }
 
 ErrorCode SecService::fetch_vehicle_info() {
@@ -638,6 +713,20 @@ ErrorCode SecService::validate_and_store_certificate(const std::vector<uint8_t>&
 }
 
 ErrorCode SecService::store_certificate_to_file(const std::vector<uint8_t>& cert_der) {
+    // Try store first
+    if (store_.isReady()) {
+        try {
+            std::string cert_key = "device_cert:" + vin_ + ":" + device_sn_;
+            store_.save(cert_key, cert_der);
+            std::cout << "[SEC] Certificate stored in store with key: " << cert_key << std::endl;
+            return ErrorCode::SUCCESS;
+        } catch (const hwyz::store::StoreException& e) {
+            std::cerr << "[SEC] Failed to store certificate in store: " << e.what() << std::endl;
+            // Fall through to file-based storage
+        }
+    }
+
+    // Fallback to file-based storage
     // Determine certificate store path
     std::string cert_dir = config_.get_cert_store_path();
     if (cert_dir.empty()) {
@@ -706,10 +795,6 @@ std::string SecService::find_cert_store_from_config() {
 }
 
 void SecService::update_provision_state(ProvisionState state, const std::string& error) {
-    if (!state_manager_) {
-        return;
-    }
-
     ProvisionStatus status = get_provision_status();
     status.state = state;
     status.last_error = error;
@@ -719,7 +804,21 @@ void SecService::update_provision_state(ProvisionState state, const std::string&
         status.retry_count++;
     }
 
-    state_manager_->update_status(status);
+    // Try store first
+    if (store_.isReady()) {
+        try {
+            store_.save("provision_state", status);
+            return;
+        } catch (const hwyz::store::StoreException& e) {
+            std::cerr << "[SEC] Failed to save provision state to store: " << e.what() << std::endl;
+            // Fall through to state_manager
+        }
+    }
+
+    // Fallback to state_manager
+    if (state_manager_) {
+        state_manager_->update_status(status);
+    }
 }
 
 void SecService::handle_error(ErrorCode error, const std::string& context) {

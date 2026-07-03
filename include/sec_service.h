@@ -12,6 +12,7 @@
 #include "diag_service_interface.h"
 #include "prov_service_interface.h"
 #include "config.h"
+#include "store.h"
 
 namespace tbox {
 namespace sec {
@@ -127,7 +128,11 @@ public:
     SecService(const SecServiceConfig& config,
                std::shared_ptr<DiagServiceInterface> diag_service,
                std::shared_ptr<ProvServiceInterface> prov_service);
-    // TODO: Add Store-based constructor when framework-store integration is implemented
+    SecService(const SecServiceConfig& config, hwyz::store::Store store);
+    SecService(const SecServiceConfig& config,
+               std::shared_ptr<DiagServiceInterface> diag_service,
+               std::shared_ptr<ProvServiceInterface> prov_service,
+               hwyz::store::Store store);
 
     virtual ~SecService() = default;
 
@@ -167,6 +172,7 @@ private:
     std::shared_ptr<DiagServiceInterface> diag_service_;
     std::shared_ptr<ProvServiceInterface> prov_service_;
     std::unique_ptr<ProvisionStateManager> state_manager_;
+    hwyz::store::Store store_;
 
     std::string vin_;
     std::string device_sn_;
@@ -181,6 +187,7 @@ private:
     ErrorCode initialize_hsm();
     ErrorCode initialize_cloud_client();
     ErrorCode load_provision_state();
+    ErrorCode load_provision_state_from_store();
     ErrorCode fetch_vehicle_info();
 
 public:
