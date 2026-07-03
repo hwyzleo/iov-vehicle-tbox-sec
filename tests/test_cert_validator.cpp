@@ -19,7 +19,7 @@ protected:
 
         // Generate test key
         KeyPair key_pair;
-        key_engine->generate_device_key("TESTVIN1234567890", "TBOX-ECU-001", key_pair);
+        key_engine->generate_device_key("TESTVIN1234567890", "00000000000000000000000000000001", key_pair);
 
         validator = std::make_unique<CertValidator>(key_engine.get());
     }
@@ -32,7 +32,7 @@ protected:
     std::unique_ptr<KeyEngine> key_engine;
     std::unique_ptr<CertValidator> validator;
     std::string test_vin = "TESTVIN1234567890";
-    std::string test_ecu_uid = "TBOX-ECU-001";
+    std::string test_ecu_uid = "00000000000000000000000000000001";
 };
 
 TEST_F(CertValidatorTest, ValidateCertificate_EmptyCert) {

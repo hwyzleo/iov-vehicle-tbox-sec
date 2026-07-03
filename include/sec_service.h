@@ -12,7 +12,6 @@
 #include "diag_service_interface.h"
 #include "prov_service_interface.h"
 #include "config.h"
-#include "store.h"
 
 namespace tbox {
 namespace sec {
@@ -60,16 +59,19 @@ struct SecServiceConfig {
     }
 
     int get_cloud_timeout_ms() const {
+        // Default: 5000ms (5 seconds)
         if (config_snapshot) return config_snapshot->getInt("cloud.timeout_ms", 5000);
         return cloud_config.timeout_ms;
     }
 
     int get_cloud_retry_count() const {
+        // Default: 3 retries
         if (config_snapshot) return config_snapshot->getInt("cloud.retry_count", 3);
         return cloud_config.retry_count;
     }
 
     int get_cloud_retry_delay_ms() const {
+        // Default: 1000ms (1 second)
         if (config_snapshot) return config_snapshot->getInt("cloud.retry_delay_ms", 1000);
         return cloud_config.retry_delay_ms;
     }
@@ -128,10 +130,7 @@ public:
     SecService(const SecServiceConfig& config,
                std::shared_ptr<DiagServiceInterface> diag_service,
                std::shared_ptr<ProvServiceInterface> prov_service);
-    SecService(const SecServiceConfig& config,
-               std::shared_ptr<DiagServiceInterface> diag_service,
-               std::shared_ptr<ProvServiceInterface> prov_service,
-               hwyz::store::Store store);
+    // NOTE: Store-based constructor removed until framework-store integration is implemented
 
     virtual ~SecService() = default;
 
@@ -171,7 +170,6 @@ private:
     std::shared_ptr<DiagServiceInterface> diag_service_;
     std::shared_ptr<ProvServiceInterface> prov_service_;
     std::unique_ptr<ProvisionStateManager> state_manager_;
-    std::optional<hwyz::store::Store> store_;
 
     std::string vin_;
     std::string device_sn_;

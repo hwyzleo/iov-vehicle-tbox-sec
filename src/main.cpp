@@ -5,7 +5,6 @@
 #include <unistd.h>
 #include "sec_service.h"
 #include "config.h"
-#include "store.h"
 
 using namespace tbox::sec;
 
@@ -70,13 +69,6 @@ int main(int argc, char* argv[]) {
     SecServiceConfig sec_config;
     sec_config.config_snapshot = config_snapshot;
 
-    // 初始化framework-store
-    auto store = hwyz::store::Store::open("sec");
-    if (!store.isReady()) {
-        std::cerr << "Failed to open store" << std::endl;
-        return 1;
-    }
-
     // 读取VIN和ECU UID配置（用于默认PROV服务）
     std::string vin = config_snapshot->getString("vin", "DEFAULT_VIN");
     std::string ecu_uid = config_snapshot->getString("ecu_uid", "DEFAULT_ECU_UID");
@@ -86,7 +78,7 @@ int main(int argc, char* argv[]) {
 
     // 创建SEC服务
     try {
-        g_sec_service = std::make_shared<SecService>(sec_config, nullptr, prov_service, std::move(store));
+        g_sec_service = std::make_shared<SecService>(sec_config, nullptr, prov_service);
         ErrorCode result = g_sec_service->initialize();
 
         if (result != ErrorCode::SUCCESS) {

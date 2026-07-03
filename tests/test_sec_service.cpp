@@ -12,7 +12,7 @@ public:
 
     ErrorCode get_vehicle_info(VehicleInfo& info) override {
         info.vin = "TESTVIN1234567890";
-        info.device_sn = "TBOX-ECU-001";
+        info.device_sn = "00000000000000000000000000000001";
         return ErrorCode::SUCCESS;
     }
 
@@ -58,7 +58,7 @@ TEST_F(SecServiceTest, GetProvisionStatus) {
     service->initialize();
     ProvisionStatus status = service->get_provision_status();
     EXPECT_EQ(status.vin, "TESTVIN1234567890");
-    EXPECT_EQ(status.ecu_uid, "TBOX-ECU-001");
+    EXPECT_EQ(status.ecu_uid, "00000000000000000000000000000001");
 }
 
 TEST_F(SecServiceTest, GetDeviceInfo) {
@@ -116,7 +116,7 @@ TEST_F(SecServiceTest, GetDeviceInfoContainsHsmType) {
 TEST_F(SecServiceTest, GetDeviceInfoContainsEcuUid) {
     service->initialize();
     std::string info = service->get_device_info();
-    EXPECT_NE(info.find("Device SN: TBOX-ECU-001"), std::string::npos);
+    EXPECT_NE(info.find("Device SN: 00000000000000000000000000000001"), std::string::npos);
 }
 
 TEST_F(SecServiceTest, GetDeviceInfoContainsProvService) {
@@ -142,4 +142,14 @@ TEST_F(SecServiceTest, ApplyCertificate) {
     result = service->apply_certificate();
     // 在没有DIAG服务的情况下，会尝试提交CSR到云端，但云端连接会失败
     EXPECT_EQ(result, ErrorCode::PKI_CONNECTION_FAILED);
+}
+
+TEST_F(SecServiceTest, InitializeFailsOnInvalidConfig) {
+    SecServiceConfig config;
+    config.hsm_type = "";  // Empty hsm_type should fail
+    
+    SecService service(config, nullptr, nullptr);
+    auto result = service.initialize();
+    
+    EXPECT_EQ(result, ErrorCode::CONFIG_ERROR);
 }

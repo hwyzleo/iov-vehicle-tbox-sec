@@ -30,11 +30,7 @@ SecService::SecService(const SecServiceConfig& config,
                       std::shared_ptr<ProvServiceInterface> prov_service)
     : config_(config), initialized_(false), diag_service_(diag_service), prov_service_(prov_service) {}
 
-SecService::SecService(const SecServiceConfig& config,
-                      std::shared_ptr<DiagServiceInterface> diag_service,
-                      std::shared_ptr<ProvServiceInterface> prov_service,
-                      hwyz::store::Store store)
-    : config_(config), initialized_(false), diag_service_(diag_service), prov_service_(prov_service), store_(std::move(store)) {}
+// NOTE: Store-based constructor removed until framework-store integration is implemented
 
 ErrorCode SecService::initialize() {
     // Validate required config

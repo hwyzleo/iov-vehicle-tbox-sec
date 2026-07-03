@@ -22,7 +22,7 @@ std::string bytes_to_hex(const std::vector<uint8_t>& data) {
 std::string get_subject_from_csr(const std::vector<uint8_t>& csr_der) {
     // 简单解析 CSR DER 格式获取 Subject
     // 这里只是演示，实际应该使用 OpenSSL API
-    return "CN=TBOX-ECU-001, OU=TBOX-TSP, O=OpenIOV, C=CN";
+    return "CN=00000000000000000000000000000001, OU=TBOX-TSP, O=OpenIOV, C=CN";
 }
 
 TEST(ShowCsr, GenerateAndDisplay) {
@@ -36,7 +36,7 @@ TEST(ShowCsr, GenerateAndDisplay) {
     
     // 生成密钥对
     std::string vin = "TESTVIN1234567890";
-    std::string device_sn = "TBOX-ECU-001";
+    std::string device_sn = "00000000000000000000000000000001";
     KeyPair key_pair;
     ASSERT_EQ(key_engine.generate_device_key(vin, device_sn, key_pair), ErrorCode::SUCCESS);
     

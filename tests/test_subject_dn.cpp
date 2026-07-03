@@ -38,7 +38,7 @@ protected:
     std::unique_ptr<CsrBuilder> builder;
     KeyPair key_pair_;
     std::string test_vin = "TESTVIN1234567890";
-    std::string test_ecu_uid = "TBOX-ECU-001";
+    std::string test_ecu_uid = "00000000000000000000000000000001";
 };
 
 TEST_F(SubjectDnTest, FullSubjectDn) {

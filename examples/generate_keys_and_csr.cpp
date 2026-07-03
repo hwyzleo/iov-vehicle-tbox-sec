@@ -42,7 +42,7 @@ int main() {
 
     // 设备信息
     std::string vin = "TESTVIN1234567890";
-    std::string ecu_uid = "TBOX-ECU-001";
+    std::string ecu_uid = "00000000000000000000000000000001";
 
     // 创建目录
     fs::create_directories("./data/soft_keys");
