@@ -99,8 +99,9 @@ add_executable(TboxSecTests
     tests/test_subject_dn.cpp
     tests/test_show_csr.cpp
     tests/test_config_snapshot.cpp
+    tests/test_framework_integration.cpp
 )
-target_link_libraries(TboxSecTests PRIVATE TboxSecLib GTest::GTest GTest::Main)
+target_link_libraries(TboxSecTests PRIVATE TboxSecLib ${FRAMEWORK_LIB} GTest::GTest gmock GTest::Main)
 add_test(NAME TboxSecTests COMMAND TboxSecTests)
 
 # Example program
