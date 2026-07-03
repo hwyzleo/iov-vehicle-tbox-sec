@@ -83,6 +83,26 @@ Inject certificate into device after validation.
 | 7001 | UDS_SESSION_TIMEOUT | UDS session timeout |
 | 7002 | UDS_SECURITY_DENIED | UDS security access denied |
 
+## 配置项说明
+
+### 公共配置（common.yaml）
+- `cloud.endpoint`: 云端API端点
+- `cloud.timeout_ms`: 请求超时时间（毫秒）
+- `cloud.retry_count`: 重试次数
+- `cloud.retry_delay_ms`: 重试延迟（毫秒）
+- `environment.is_production`: 是否生产环境
+
+### SEC服务配置（conf.d/sec.yaml）
+- `hsm.type`: HSM类型（soft_file/hardware）
+- `hsm.library_path`: HSM库路径
+- `key_provisioning.mode`: 密钥配置模式（soft_file/hsm）
+- `soft_key.path`: 软件密钥存储路径
+- `soft_key.encryption_algo`: 加密算法
+- `soft_key.encryption_key_path`: 加密密钥路径
+- `storage.state_file`: 状态文件路径
+- `storage.ca_cert`: CA证书路径
+- `storage.cert_store`: 证书存储路径
+
 ## UDS Services
 
 ### Diagnostic Session Control (0x10)

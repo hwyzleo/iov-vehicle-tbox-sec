@@ -164,6 +164,13 @@ See `docs/api.md` for complete API documentation.
 
 ## 变更记录
 
+### TBOX-SEC-DSN-CR-006 (2026-07-03)
+- 配置读取迁移到framework-config（`Config::load("sec")`）
+- 本地持久化迁移到framework-store（`Store::open("sec")`）
+- 明确三层边界：SE/HSM、framework-store、framework-config
+- 删除自研配置加载和持久化代码
+- 更新SoftFileHSM使用framework-store进行原子写
+
 ### TBOX-SEC-DSN-CR-005 (2026-06-27)
 - 设备证书 Subject 改为完整 DN 格式：CN=device_sn, OU=TBOX-TSP, O=OpenIOV, C=CN
 - 证书不再包含 VIN

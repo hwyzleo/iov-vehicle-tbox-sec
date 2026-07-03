@@ -112,22 +112,28 @@ ssh root@192.168.1.100 "systemctl daemon-reload"
 ### 4.1 修改配置文件
 
 ```bash
-# 编辑TBOX上的配置
-ssh root@192.168.1.100 "vi /opt/tbox-sec/config/config.yaml"
+# 编辑TBOX上的公共配置
+ssh root@192.168.1.100 "vi /etc/tbox/common.yaml"
+
+# 编辑SEC服务配置
+ssh root@192.168.1.100 "vi /etc/tbox/conf.d/sec.yaml"
 ```
 
 关键配置项：
 ```yaml
-tbox:
-  hsm:
-    type: "pkcs11"           # 生产环境使用pkcs11
-    library_path: "/usr/lib/softhsm2/libsofthsm2.so"
-    
-  cloud:
-    oapi_endpoint: "https://实际OAPI地址:10805"
-```
+# common.yaml
+cloud:
+  endpoint: "https://实际OAPI地址:10805"
+environment:
+  is_production: false
 
-**注意**：VIN和ECU UID现在从PROV服务获取，不再需要在配置文件中配置。
+# conf.d/sec.yaml
+hsm:
+  type: "soft_file"           # 生产环境用hardware
+  library_path: "/usr/lib/softhsm2/libsofthsm2.so"
+key_provisioning:
+  mode: "soft_file"           # 生产环境用hsm
+```
 
 ### 4.2 创建必要目录
 
@@ -139,6 +145,29 @@ mkdir -p /var/log/tbox
 chown -R tbox:tbox /var/lib/tbox /var/log/tbox
 "
 ```
+
+## 配置文件结构
+
+### 配置文件路径
+- 公共配置：`/etc/tbox/common.yaml`
+- SEC服务配置：`/etc/tbox/conf.d/sec.yaml`
+- 本地配置：`./sec.yaml`（可选）
+
+### 存储目录结构
+```
+/var/lib/tbox/sec/
+├── provision_state.json    # ProvisionState
+├── device_cert.der         # 设备证书
+├── ca_cert.der             # CA证书
+└── keys/                   # 密钥存储（SOFT_FILE模式）
+    ├── metadata_<key_id>.json
+    └── encrypted_<key_id>.bin
+```
+
+### 权限要求
+- 配置文件：`0644`（所有者读写，其他只读）
+- 存储目录：`0700`（仅所有者）
+- 密钥文件：`0600`（仅所有者读写）
 
 ## 5. 启动服务
 
@@ -186,7 +215,7 @@ journalctl -u tbox-sec -n 100
 ldd /opt/tbox-sec/TboxSecService
 
 # 手动运行测试
-/opt/tbox-sec/TboxSecService /opt/tbox-sec/config/config.yaml
+/opt/tbox-sec/TboxSecService /etc/tbox/common.yaml
 ```
 
 ### 7.2 常见问题

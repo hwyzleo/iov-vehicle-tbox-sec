@@ -21,7 +21,8 @@ make -j$(nproc)
 ./scripts/deploy.sh <TBOX_IP> root
 
 # 3. 配置TBOX
-ssh root@<TBOX_IP> "vi /opt/tbox-sec/config/config.yaml"
+ssh root@<TBOX_IP> "vi /etc/tbox/common.yaml"
+ssh root@<TBOX_IP> "vi /etc/tbox/conf.d/sec.yaml"
 
 # 4. 启动服务
 ssh root@<TBOX_IP> "systemctl start tbox-sec"
@@ -34,16 +35,18 @@ ssh root@<TBOX_IP> "journalctl -u tbox-sec -f"
 ## 目录结构（TBOX上）
 
 ```
-/opt/tbox-sec/
-├── TboxSecService          # 主程序
-├── config/
-│   └── config.yaml         # 配置文件
-└── lib/                    # 依赖库（如需要）
+/etc/tbox/
+├── common.yaml             # 公共配置（cloud, environment）
+└── conf.d/
+    └── sec.yaml            # SEC服务配置
 
 /var/lib/tbox/sec/
-├── keys/                   # 密钥存储
-├── certs/                  # 证书存储
-└── provision_state.json    # 状态文件
+├── provision_state.json    # ProvisionState
+├── device_cert.der         # 设备证书
+├── ca_cert.der             # CA证书
+└── keys/                   # 密钥存储（SOFT_FILE模式）
+    ├── metadata_<key_id>.json
+    └── encrypted_<key_id>.bin
 
 /var/log/tbox/
 └── sec_service.log         # 日志文件
@@ -51,20 +54,33 @@ ssh root@<TBOX_IP> "journalctl -u tbox-sec -f"
 
 ## 配置文件模板
 
+### 公共配置（common.yaml）
 ```yaml
-tbox:
-  hsm:
-    type: "pkcs11"            # 生产环境用pkcs11
-    library_path: "/usr/lib/softhsm2/libsofthsm2.so"
-    
-  cloud:
-    oapi_endpoint: "https://实际地址:10805"  # 必须修改
-    
-  storage:
-    state_file: "/var/lib/tbox/sec/provision_state.json"
+cloud:
+  endpoint: "https://实际地址:10805"
+  timeout_ms: 30000
+  retry_count: 3
+  retry_delay_ms: 1000
+environment:
+  is_production: false
 ```
 
-**注意**：VIN和ECU UID现在从PROV服务获取，不再需要在配置文件中配置。
+### SEC服务配置（conf.d/sec.yaml）
+```yaml
+hsm:
+  type: "soft_file"           # 生产环境用hardware
+  library_path: "/usr/lib/softhsm2/libsofthsm2.so"
+key_provisioning:
+  mode: "soft_file"           # 生产环境用hsm
+soft_key:
+  path: "/var/lib/tbox/sec/keys"
+  encryption_algo: "aes-256-gcm"
+  encryption_key_path: "/var/lib/tbox/sec/soft_key_enc.key"
+storage:
+  state_file: "/var/lib/tbox/sec/provision_state.json"
+  ca_cert: "/var/lib/tbox/sec/ca_cert.der"
+  cert_store: "/var/lib/tbox/sec/"
+```
 
 ## 诊断仪测试命令
 
@@ -93,7 +109,7 @@ tbox:
 | 查看日志 | `journalctl -u tbox-sec -f` |
 | 重启服务 | `systemctl restart tbox-sec` |
 | 检查依赖 | `ldd /opt/tbox-sec/TboxSecService` |
-| 手动运行 | `/opt/tbox-sec/TboxSecService /opt/tbox-sec/config/config.yaml` |
+| 手动运行 | `/opt/tbox-sec/TboxSecService /etc/tbox/common.yaml` |
 | 检查端口 | `netstat -tlnp \| grep TboxSecService` |
 
 ## 文件清单
