@@ -59,6 +59,9 @@ size_t write_callback(void* contents, size_t size, size_t nmemb, std::string* us
 CloudClient::CloudClient(const CloudConfig& config)
     : config_(config), initialized_(false), connected_(false) {}
 
+CloudClient::CloudClient(const CloudConfig& config, hwyz::store::Store store)
+    : config_(config), initialized_(false), connected_(false), store_(std::move(store)) {}
+
 ErrorCode CloudClient::initialize() {
     std::call_once(g_curl_init_flag, []() {
         curl_global_init(CURL_GLOBAL_ALL);
@@ -224,6 +227,38 @@ ErrorCode CloudClient::handle_http_error(int http_code, const std::string& respo
     } else {
         set_last_error("HTTP error " + std::to_string(http_code) + ": " + response);
         return ErrorCode::PKI_CONNECTION_FAILED;
+    }
+}
+
+ErrorCode CloudClient::store_certificate(const std::vector<uint8_t>& cert_der) {
+    if (!store_.has_value() || !store_->isReady()) {
+        set_last_error("Store not available");
+        return ErrorCode::STORAGE_WRITE_FAILED;
+    }
+
+    try {
+        std::string encoded = base64_encode(cert_der);
+        store_->save("device_cert", encoded);
+        return ErrorCode::SUCCESS;
+    } catch (const hwyz::store::StoreException& e) {
+        set_last_error("Failed to store certificate: " + std::string(e.what()));
+        return ErrorCode::STORAGE_WRITE_FAILED;
+    }
+}
+
+std::vector<uint8_t> CloudClient::load_certificate() {
+    if (!store_.has_value() || !store_->isReady()) {
+        return {};
+    }
+
+    try {
+        std::string encoded = store_->load<std::string>("device_cert");
+        return base64_decode(encoded);
+    } catch (const hwyz::store::StoreException& e) {
+        if (e.getError().code == hwyz::store::StoreError::kKeyNotFound) {
+            return {};
+        }
+        throw;
     }
 }
 
