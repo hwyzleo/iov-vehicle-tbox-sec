@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "soft_file_hsm.h"
+#include "store.h"
 #include <filesystem>
 #include <fstream>
 
@@ -11,8 +12,9 @@ protected:
         test_dir_ = "/tmp/tbox_sec_test_" + std::to_string(
             std::chrono::system_clock::now().time_since_epoch().count());
         fs::create_directories(test_dir_);
+        auto store = hwyz::store::Store::open("sec_test", test_dir_);
         hsm_ = std::make_unique<tbox::sec::SoftFileHsm>(
-            test_dir_, "aes-256-gcm", test_dir_ + "/.encryption_key");
+            std::move(store), "aes-256-gcm", test_dir_ + "/.encryption_key");
         hsm_->initialize();
     }
     
@@ -111,17 +113,14 @@ TEST_F(SoftFileHsmTest, DeleteKey) {
     EXPECT_FALSE(hsm_->key_exists("test:vin:ecu"));
 }
 
-TEST_F(SoftFileHsmTest, KeyPersistedToDisk) {
+TEST_F(SoftFileHsmTest, KeyPersistedToStore) {
     tbox::sec::KeyPair key_pair;
     hsm_->generate_key_pair("test:vin:ecu", "ecdsa-p256", key_pair);
     
-    // 检查文件是否存在
-    std::string safe_id = "test_vin_ecu";
-    EXPECT_TRUE(fs::exists(test_dir_ + "/" + safe_id + ".json"));
-    
     // 重新初始化 HSM，应该能加载已有密钥
+    auto store = hwyz::store::Store::open("sec_test", test_dir_);
     auto hsm2 = std::make_unique<tbox::sec::SoftFileHsm>(
-        test_dir_, "aes-256-gcm", test_dir_ + "/.encryption_key");
+        std::move(store), "aes-256-gcm", test_dir_ + "/.encryption_key");
     hsm2->initialize();
     
     EXPECT_TRUE(hsm2->key_exists("test:vin:ecu"));

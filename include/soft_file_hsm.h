@@ -1,16 +1,19 @@
 #pragma once
 
 #include "hsm_interface.h"
+#include "store.h"
+
 #include <string>
-#include <map>
+#include <vector>
 #include <mutex>
+#include <map>
 
 namespace tbox {
 namespace sec {
 
 class SoftFileHsm : public HsmInterface {
 public:
-    SoftFileHsm(const std::string& key_store_path,
+    SoftFileHsm(hwyz::store::Store store,
                 const std::string& encryption_algo,
                 const std::string& encryption_key_path);
     ~SoftFileHsm() override;
@@ -43,7 +46,7 @@ public:
                                  std::vector<uint8_t>& private_key);
 
 private:
-    std::string key_store_path_;
+    hwyz::store::Store store_;
     std::string encryption_algo_;
     std::string encryption_key_path_;
     std::vector<uint8_t> encryption_key_;
@@ -53,19 +56,16 @@ private:
         std::vector<uint8_t> priv;
         std::string algorithm;
         std::chrono::system_clock::time_point created_at;
-        bool priv_encrypted_on_disk = false;
     };
     std::map<std::string, KeyData> keys_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
 
-    ErrorCode load_key_from_disk(const std::string& key_id, KeyData& key_data);
-    ErrorCode save_key_to_disk(const std::string& key_id, const KeyData& key_data);
+    ErrorCode save_key_to_store(const std::string& key_id, const KeyData& key_data);
+    ErrorCode load_key_from_store(const std::string& key_id, KeyData& key_data);
     ErrorCode encrypt_private_key(const std::vector<uint8_t>& plain_key,
                                   std::vector<uint8_t>& encrypted_key);
     ErrorCode decrypt_private_key(const std::vector<uint8_t>& encrypted_key,
                                   std::vector<uint8_t>& plain_key);
-    std::string get_key_file_path(const std::string& key_id);
-    std::string get_key_dot_key_path(const std::string& key_id);
     ErrorCode generate_encryption_key();
     ErrorCode load_encryption_key();
     void secure_zero(std::vector<uint8_t>& data);
