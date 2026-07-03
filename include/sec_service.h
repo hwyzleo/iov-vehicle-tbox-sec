@@ -192,7 +192,6 @@ private:
 
     ErrorCode initialize_hsm();
     ErrorCode initialize_cloud_client();
-    ErrorCode load_provision_state();
     ErrorCode load_provision_state_from_store();
     ErrorCode fetch_vehicle_info();
 
@@ -248,9 +247,8 @@ private:
     void save_provision_status_to_store(const ProvisionStatus& status);
     ProvisionStatus load_provision_status_from_store() const;
 
-    // Base64 encoding/decoding for certificate storage
+    // Base64 encoding for certificate storage
     static std::string base64_encode(const std::vector<uint8_t>& data);
-    static std::vector<uint8_t> base64_decode(const std::string& encoded);
 };
 
 } // namespace sec

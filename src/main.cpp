@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include "sec_service.h"
 #include "config.h"
+#include "store.h"
 
 using namespace tbox::sec;
 
@@ -87,7 +88,8 @@ int main(int argc, char* argv[]) {
 
     // 创建SEC服务
     try {
-        g_sec_service = std::make_shared<SecService>(sec_config, nullptr, prov_service);
+        auto store = hwyz::store::Store::open("sec");
+        g_sec_service = std::make_shared<SecService>(sec_config, nullptr, prov_service, std::move(store));
         ErrorCode result = g_sec_service->initialize();
 
         if (result != ErrorCode::SUCCESS) {

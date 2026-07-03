@@ -511,24 +511,19 @@ ErrorCode SecService::reset_provision_status() {
         return ErrorCode::NOT_INITIALIZED;
     }
 
-    // Try store first
     if (store_.has_value() && store_->isReady()) {
         try {
             store_->remove("provision_state");
-            return ErrorCode::SUCCESS;
         } catch (const hwyz::store::StoreException& e) {
             std::cerr << "[SEC] Failed to reset provision state from store: " << e.what() << std::endl;
-            return ErrorCode::STORAGE_WRITE_FAILED;
         }
     }
 
-    // Fallback to state_manager
-    if (!state_manager_) {
-        return ErrorCode::NOT_INITIALIZED;
+    if (state_manager_) {
+        state_manager_->reset_status(vin_, device_sn_);
     }
 
-    return state_manager_->reset_status(vin_, device_sn_)
-        ? ErrorCode::SUCCESS : ErrorCode::STORAGE_WRITE_FAILED;
+    return ErrorCode::SUCCESS;
 }
 
 std::string SecService::get_device_info() const {
@@ -600,11 +595,6 @@ ErrorCode SecService::initialize_hsm() {
 ErrorCode SecService::initialize_cloud_client() {
     cloud_client_ = std::make_unique<CloudClient>(config_.get_cloud_config());
     return cloud_client_->initialize();
-}
-
-ErrorCode SecService::load_provision_state() {
-    state_manager_ = std::make_unique<ProvisionStateManager>(config_.get_state_file_path());
-    return state_manager_->load_state() ? ErrorCode::SUCCESS : ErrorCode::STORAGE_READ_FAILED;
 }
 
 ErrorCode SecService::load_provision_state_from_store() {
@@ -847,33 +837,31 @@ ErrorCode SecService::set_ca_certificate(const std::vector<uint8_t>& ca_cert_der
 }
 
 bool SecService::save_state() {
-    if (!store_.has_value() || !store_->isReady()) {
-        return false;
+    bool success = false;
+
+    if (store_.has_value() && store_->isReady()) {
+        try {
+            ProvisionStatus status = get_provision_status();
+            save_provision_status_to_store(status);
+            success = true;
+        } catch (const std::exception& e) {
+            std::cerr << "[SEC] Failed to save state to store: " << e.what() << std::endl;
+        }
     }
-    try {
+
+    if (state_manager_) {
         ProvisionStatus status = get_provision_status();
-        save_provision_status_to_store(status);
-        return true;
-    } catch (const std::exception& e) {
-        std::cerr << "[SEC] Failed to save state: " << e.what() << std::endl;
-        return false;
+        state_manager_->update_status(status);
+        if (state_manager_->save_state()) {
+            success = true;
+        }
     }
+
+    return success;
 }
 
 ErrorCode SecService::store_certificate(const std::vector<uint8_t>& cert_der) {
-    if (!store_.has_value() || !store_->isReady()) {
-        std::cerr << "[SEC] Store not ready" << std::endl;
-        return ErrorCode::STORAGE_WRITE_FAILED;
-    }
-    try {
-        std::string cert_key = "device_cert:" + vin_ + ":" + device_sn_;
-        std::string encoded = base64_encode(cert_der);
-        store_->save(cert_key, encoded);
-        return ErrorCode::SUCCESS;
-    } catch (const std::exception& e) {
-        std::cerr << "[SEC] Failed to store certificate: " << e.what() << std::endl;
-        return ErrorCode::STORAGE_WRITE_FAILED;
-    }
+    return store_certificate_to_file(cert_der);
 }
 
 ErrorCode SecService::generate_random_seed(std::vector<uint8_t>& seed) {
@@ -1055,25 +1043,6 @@ std::string SecService::base64_encode(const std::vector<uint8_t>& data) {
     std::string result(buffer_ptr->data, buffer_ptr->length);
     BIO_free_all(bio);
 
-    return result;
-}
-
-std::vector<uint8_t> SecService::base64_decode(const std::string& encoded) {
-    BIO* bio = BIO_new_mem_buf(encoded.data(), encoded.size());
-    BIO* b64 = BIO_new(BIO_f_base64());
-    bio = BIO_push(b64, bio);
-
-    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
-
-    std::vector<uint8_t> result(encoded.size());
-    int decoded_length = BIO_read(bio, result.data(), encoded.size());
-    BIO_free_all(bio);
-
-    if (decoded_length < 0) {
-        return {};
-    }
-
-    result.resize(decoded_length);
     return result;
 }
 
