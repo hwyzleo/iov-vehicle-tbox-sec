@@ -62,7 +62,6 @@ set(LIB_SOURCES
     src/csr_builder.cpp
     src/cert_validator.cpp
     src/cloud_client.cpp
-    src/provision_state.cpp
     src/error_codes.cpp
     src/diag_service_adapter.cpp
     src/service_dispatcher.cpp

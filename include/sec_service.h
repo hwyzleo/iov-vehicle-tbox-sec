@@ -3,11 +3,12 @@
 #include <string>
 #include <memory>
 #include <optional>
+#include <chrono>
+#include <nlohmann/json.hpp>
 #include "key_engine.h"
 #include "csr_builder.h"
 #include "cert_validator.h"
 #include "cloud_client.h"
-#include "provision_state.h"
 #include "error_codes.h"
 #include "diag_service_interface.h"
 #include "prov_service_interface.h"
@@ -16,6 +17,30 @@
 
 namespace tbox {
 namespace sec {
+
+enum class ProvisionState {
+    NONE,
+    KEY_GENERATED,
+    CSR_BUILT,
+    CSR_SUBMITTED,
+    CERT_INSTALLED,
+    FAILED
+};
+
+std::string provision_state_to_string(ProvisionState state);
+ProvisionState string_to_provision_state(const std::string& str);
+
+struct ProvisionStatus {
+    std::string vin;
+    std::string ecu_uid;
+    ProvisionState state;
+    std::string last_error;
+    int retry_count;
+    std::chrono::system_clock::time_point last_updated;
+
+    nlohmann::json to_json() const;
+    static ProvisionStatus from_json(const nlohmann::json& j);
+};
 
 struct SoftKeyConfig {
     std::string key_path = "/var/lib/tbox/sec/soft_keys";
@@ -177,7 +202,6 @@ private:
     bool initialized_;
     std::shared_ptr<DiagServiceInterface> diag_service_;
     std::shared_ptr<ProvServiceInterface> prov_service_;
-    std::unique_ptr<ProvisionStateManager> state_manager_;
     std::optional<hwyz::store::Store> store_;
 
     std::string vin_;

@@ -79,17 +79,11 @@ ErrorCode SecService::initialize() {
         return result;
     }
 
-    // Always initialize state_manager for fallback
-    state_manager_ = std::make_unique<ProvisionStateManager>(config_.get_state_file_path());
-    if (!state_manager_->load_state()) {
-        std::cerr << "[SEC] Failed to load state from file, will try store" << std::endl;
-    }
-
-    // If store is available, also try loading from store (takes precedence)
+    // Load provision state from store if available
     if (store_.has_value() && store_->isReady()) {
         result = load_provision_state_from_store();
         if (result != ErrorCode::SUCCESS) {
-            std::cerr << "[SEC] Failed to load from store, using state_manager state" << std::endl;
+            std::cerr << "[SEC] Failed to load from store" << std::endl;
         }
     }
 
@@ -311,8 +305,6 @@ ErrorCode SecService::apply_certificate() {
         // Save the reset state
         if (store_.has_value() && store_->isReady()) {
             save_provision_status_to_store(status);
-        } else if (state_manager_) {
-            state_manager_->update_status(status);
         }
     }
 
@@ -490,20 +482,15 @@ ProvisionStatus SecService::get_provision_status() const {
             if (store_->has("provision_state")) {
                 return status;
             }
-            // No state saved yet, fall through to state_manager
         } catch (const std::exception& e) {
-            // Fall through to state_manager
+            // Fall through to default status
         }
     }
 
-    // Fallback to state_manager
-    if (!state_manager_) {
-        ProvisionStatus status;
-        status.state = ProvisionState::NONE;
-        return status;
-    }
-
-    return state_manager_->get_status(vin_, device_sn_);
+    // Return default status
+    ProvisionStatus status;
+    status.state = ProvisionState::NONE;
+    return status;
 }
 
 ErrorCode SecService::reset_provision_status() {
@@ -517,10 +504,6 @@ ErrorCode SecService::reset_provision_status() {
         } catch (const hwyz::store::StoreException& e) {
             std::cerr << "[SEC] Failed to reset provision state from store: " << e.what() << std::endl;
         }
-    }
-
-    if (state_manager_) {
-        state_manager_->reset_status(vin_, device_sn_);
     }
 
     return ErrorCode::SUCCESS;
@@ -605,10 +588,6 @@ ErrorCode SecService::load_provision_state_from_store() {
         auto status = load_provision_status_from_store();
         std::cerr << "[SEC] Loaded provision state from store: "
                   << provision_state_to_string(status.state) << std::endl;
-        // Update state_manager with store state for consistency
-        if (state_manager_) {
-            state_manager_->update_status(status);
-        }
         return ErrorCode::SUCCESS;
     } catch (const std::exception& e) {
         std::cerr << "[SEC] Failed to load provision state from store: " << e.what() << std::endl;
@@ -803,12 +782,7 @@ void SecService::update_provision_state(ProvisionState state, const std::string&
         return;
     }
 
-    // Fallback to state_manager
-    if (state_manager_) {
-        state_manager_->update_status(status);
-    } else {
-        std::cerr << "[SEC] Failed to update state: no storage available" << std::endl;
-    }
+    std::cerr << "[SEC] Failed to update state: no storage available" << std::endl;
 }
 
 void SecService::handle_error(ErrorCode error, const std::string& context) {
@@ -846,14 +820,6 @@ bool SecService::save_state() {
             success = true;
         } catch (const std::exception& e) {
             std::cerr << "[SEC] Failed to save state to store: " << e.what() << std::endl;
-        }
-    }
-
-    if (state_manager_) {
-        ProvisionStatus status = get_provision_status();
-        state_manager_->update_status(status);
-        if (state_manager_->save_state()) {
-            success = true;
         }
     }
 
@@ -1044,6 +1010,63 @@ std::string SecService::base64_encode(const std::vector<uint8_t>& data) {
     BIO_free_all(bio);
 
     return result;
+}
+
+std::string provision_state_to_string(ProvisionState state) {
+    switch (state) {
+        case ProvisionState::NONE: return "NONE";
+        case ProvisionState::KEY_GENERATED: return "KEY_GENERATED";
+        case ProvisionState::CSR_BUILT: return "CSR_BUILT";
+        case ProvisionState::CSR_SUBMITTED: return "CSR_SUBMITTED";
+        case ProvisionState::CERT_INSTALLED: return "CERT_INSTALLED";
+        case ProvisionState::FAILED: return "FAILED";
+        default: return "UNKNOWN";
+    }
+}
+
+ProvisionState string_to_provision_state(const std::string& str) {
+    if (str == "NONE") return ProvisionState::NONE;
+    if (str == "KEY_GENERATED") return ProvisionState::KEY_GENERATED;
+    if (str == "CSR_BUILT") return ProvisionState::CSR_BUILT;
+    if (str == "CSR_SUBMITTED") return ProvisionState::CSR_SUBMITTED;
+    if (str == "CERT_INSTALLED") return ProvisionState::CERT_INSTALLED;
+    if (str == "FAILED") return ProvisionState::FAILED;
+    return ProvisionState::NONE;
+}
+
+nlohmann::json ProvisionStatus::to_json() const {
+    nlohmann::json j;
+    j["vin"] = vin;
+    j["ecu_uid"] = ecu_uid;
+    j["state"] = provision_state_to_string(state);
+    j["last_error"] = last_error;
+    j["retry_count"] = retry_count;
+
+    auto time_t = std::chrono::system_clock::to_time_t(last_updated);
+    std::tm tm_buf{};
+    localtime_r(&time_t, &tm_buf);
+    std::stringstream ss;
+    ss << std::put_time(&tm_buf, "%Y-%m-%dT%H:%M:%S");
+    j["last_updated"] = ss.str();
+
+    return j;
+}
+
+ProvisionStatus ProvisionStatus::from_json(const nlohmann::json& j) {
+    ProvisionStatus status;
+    status.vin = j["vin"].get<std::string>();
+    status.ecu_uid = j["ecu_uid"].get<std::string>();
+    status.state = string_to_provision_state(j["state"].get<std::string>());
+    status.last_error = j["last_error"].get<std::string>();
+    status.retry_count = j["retry_count"].get<int>();
+
+    std::string time_str = j["last_updated"].get<std::string>();
+    std::tm tm = {};
+    std::istringstream ss(time_str);
+    ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
+    status.last_updated = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+
+    return status;
 }
 
 } // namespace sec
