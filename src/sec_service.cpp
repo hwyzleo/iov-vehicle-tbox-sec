@@ -76,14 +76,18 @@ ErrorCode SecService::initialize() {
         return result;
     }
 
-    // Load provision state - prefer store over state_manager
-    if (store_.isReady()) {
-        result = load_provision_state_from_store();
-    } else {
-        result = load_provision_state();
-    }
+    // Always initialize state_manager for fallback
+    result = load_provision_state();
     if (result != ErrorCode::SUCCESS) {
         return result;
+    }
+
+    // If store is available, also try loading from store (takes precedence)
+    if (store_.isReady()) {
+        result = load_provision_state_from_store();
+        if (result != ErrorCode::SUCCESS) {
+            std::cerr << "[SEC] Failed to load from store, using state_manager state" << std::endl;
+        }
     }
 
     // Load CA certificate
@@ -818,6 +822,8 @@ void SecService::update_provision_state(ProvisionState state, const std::string&
     // Fallback to state_manager
     if (state_manager_) {
         state_manager_->update_status(status);
+    } else {
+        std::cerr << "[SEC] Failed to update state: no storage available" << std::endl;
     }
 }
 
@@ -860,15 +866,18 @@ bool SecService::save_state() {
     }
 }
 
-void SecService::store_certificate(const std::vector<uint8_t>& cert_der) {
+ErrorCode SecService::store_certificate(const std::vector<uint8_t>& cert_der) {
     if (!store_.isReady()) {
-        throw std::runtime_error("Store not ready");
+        std::cerr << "[SEC] Store not ready" << std::endl;
+        return ErrorCode::STORAGE_WRITE_FAILED;
     }
     try {
-        store_.save("device_cert", cert_der);
+        std::string cert_key = "device_cert:" + vin_ + ":" + device_sn_;
+        store_.save(cert_key, cert_der);
+        return ErrorCode::SUCCESS;
     } catch (const hwyz::store::StoreException& e) {
         std::cerr << "[SEC] Failed to store certificate: " << e.what() << std::endl;
-        throw;
+        return ErrorCode::STORAGE_WRITE_FAILED;
     }
 }
 

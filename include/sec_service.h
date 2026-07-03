@@ -170,7 +170,7 @@ public:
     bool save_state();
 
     // Store certificate to store
-    void store_certificate(const std::vector<uint8_t>& cert_der);
+    ErrorCode store_certificate(const std::vector<uint8_t>& cert_der);
 
 private:
     SecServiceConfig config_;
