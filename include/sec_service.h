@@ -2,6 +2,7 @@
 
 #include <string>
 #include <memory>
+#include <optional>
 #include "key_engine.h"
 #include "csr_builder.h"
 #include "cert_validator.h"
@@ -17,9 +18,9 @@ namespace tbox {
 namespace sec {
 
 struct SoftKeyConfig {
-    std::string key_path;
-    std::string encryption_algo;
-    std::string encryption_key_path;
+    std::string key_path = "/var/lib/tbox/sec/soft_keys";
+    std::string encryption_algo = "aes-256-gcm";
+    std::string encryption_key_path = "";
 };
 
 struct SecServiceConfig {
@@ -29,7 +30,7 @@ struct SecServiceConfig {
     std::string state_file_path;
     std::string ca_cert_path;
     std::string cert_store_path;
-    std::string key_provisioning_mode;
+    std::string key_provisioning_mode = "hsm";
     bool is_production = false;
     SoftKeyConfig soft_key_config;
     CloudConfig cloud_config;
@@ -39,7 +40,7 @@ struct SecServiceConfig {
 
     // Accessors that prefer config_snapshot when available
     std::string get_hsm_type() const {
-        if (config_snapshot) return config_snapshot->getString("hsm.type", "soft_file");
+        if (config_snapshot) return config_snapshot->getString("hsm.type", "");
         return hsm_type;
     }
 
@@ -166,6 +167,7 @@ private:
     std::shared_ptr<DiagServiceInterface> diag_service_;
     std::shared_ptr<ProvServiceInterface> prov_service_;
     std::unique_ptr<ProvisionStateManager> state_manager_;
+    std::optional<hwyz::store::Store> store_;
 
     std::string vin_;
     std::string device_sn_;
