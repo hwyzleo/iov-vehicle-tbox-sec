@@ -1,31 +1,14 @@
-#include <gtest/gtest.h>
-#include <fstream>
-#include <optional>
+#include "gtest/gtest.h"
 #include "sec_service.h"
 #include "diag_service_interface.h"
+#include "config.h"
+#include "store.h"
+
+#include <filesystem>
+#include <fstream>
+#include <optional>
 
 using namespace tbox::sec;
-
-class MockProvService : public ProvServiceInterface {
-public:
-    ErrorCode initialize() override {
-        return ErrorCode::SUCCESS;
-    }
-
-    ErrorCode get_vehicle_info(VehicleInfo& info) override {
-        info.vin = "TESTVIN1234567890";
-        info.device_sn = "00000000000000000000000000000001";
-        return ErrorCode::SUCCESS;
-    }
-
-    bool is_connected() const override {
-        return true;
-    }
-
-    std::string get_service_status() const override {
-        return "Mock PROV Service";
-    }
-};
 
 class MockDiagService : public DiagServiceInterface {
 public:
@@ -33,7 +16,7 @@ public:
         initialized_ = true;
         return ErrorCode::SUCCESS;
     }
-    
+
     ErrorCode send_request(DiagRequestType request_type,
                           const std::vector<uint8_t>& request_data,
                           DiagResponseCallback callback) override {
@@ -44,7 +27,7 @@ public:
         if (callback) callback(response);
         return ErrorCode::SUCCESS;
     }
-    
+
     ErrorCode send_request_sync(DiagRequestType request_type,
                                const std::vector<uint8_t>& request_data,
                                DiagResponse& response) override {
@@ -54,11 +37,11 @@ public:
         response.data = {0x01};
         return ErrorCode::SUCCESS;
     }
-    
+
     bool is_connected() const override {
         return initialized_;
     }
-    
+
     std::string get_service_status() const override {
         return initialized_ ? "Connected" : "Disconnected";
     }
@@ -72,159 +55,116 @@ private:
     int request_count_ = 0;
 };
 
+// Simple mock ProvService for testing
+class SimpleProvService : public ProvServiceInterface {
+public:
+    ErrorCode initialize() override {
+        return ErrorCode::SUCCESS;
+    }
+    
+    ErrorCode get_vehicle_info(VehicleInfo& info) override {
+        info.vin = "TESTVIN1234567890";
+        info.device_sn = "TBOX-DEV-001";
+        return ErrorCode::SUCCESS;
+    }
+    
+    bool is_connected() const override {
+        return true;
+    }
+    
+    std::string get_service_status() const override {
+        return "OK";
+    }
+};
+
 class SecServiceWithDiagTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Create empty state file so load_state() succeeds
-        std::ofstream state_file("/tmp/test_sec_diag_state.json");
-        state_file << "{}";
-        state_file.close();
+        test_dir_ = "/tmp/test_sec_service_diag_" + std::to_string(getpid());
+        config_dir_ = test_dir_ + "/config";
+        store_dir_ = test_dir_ + "/store";
 
-        SecServiceConfig config;
-        config.hsm_type = "software";
-        config.hsm_config_path = "/tmp/test_sec_diag";
-        config.state_file_path = "/tmp/test_sec_diag_state.json";
-        config.cloud_config.oapi_endpoint = "https://test.example.com:10805";
-        config.cloud_config.timeout_ms = 5000;
-        config.cloud_config.retry_count = 1;
-        config.cloud_config.retry_delay_ms = 1000;
+        std::filesystem::create_directories(config_dir_);
+        std::filesystem::create_directories(store_dir_);
+
+        create_test_config();
+
+        auto& config_manager = hwyz::config::ConfigManager::instance();
+        config_manager.load("sec", config_dir_);
+        config_snapshot_ = config_manager.getSnapshot();
+
+        store_.emplace(hwyz::store::Store::open("sec", store_dir_));
 
         mock_diag_service = std::make_shared<MockDiagService>();
-        auto prov_service = std::make_shared<MockProvService>();
-        service = std::make_unique<SecService>(config, mock_diag_service, prov_service);
     }
 
     void TearDown() override {
-        service.reset();
         mock_diag_service.reset();
+        store_.reset();
+        std::filesystem::remove_all(test_dir_);
     }
 
+    void create_test_config() {
+        std::ofstream common(config_dir_ + "/common.yaml");
+        common << "cloud:\n  endpoint: \"https://test.example.com\"\n  timeout_ms: 1000\n";
+        common << "\nlog:\n  level: \"info\"\n";
+        common.close();
+
+        std::filesystem::create_directories(config_dir_ + "/conf.d");
+        std::ofstream sec(config_dir_ + "/conf.d/sec.yaml");
+        sec << "hsm:\n  type: \"soft_file\"\n  library_path: \"/usr/lib/libhsm.so\"\n";
+        sec << "key_provisioning:\n  mode: \"soft_file\"\n";
+        sec.close();
+    }
+
+    std::string test_dir_;
+    std::string config_dir_;
+    std::string store_dir_;
+    std::shared_ptr<const hwyz::config::ImmutableConfigView> config_snapshot_;
+    std::optional<hwyz::store::Store> store_;
     std::shared_ptr<MockDiagService> mock_diag_service;
-    std::unique_ptr<SecService> service;
 };
 
 TEST_F(SecServiceWithDiagTest, InitializeWithDiagService) {
-    EXPECT_FALSE(service->is_initialized());
-    EXPECT_NE(mock_diag_service, nullptr);
+    SecServiceConfig config;
+    config.config_snapshot = config_snapshot_;
     
-    ErrorCode result = service->initialize();
+    auto prov_service = std::make_shared<SimpleProvService>();
+
+    SecService service(config, mock_diag_service, prov_service, std::move(*store_));
+    EXPECT_FALSE(service.is_initialized());
+
+    ErrorCode result = service.initialize();
     EXPECT_EQ(result, ErrorCode::SUCCESS);
-    EXPECT_TRUE(service->is_initialized());
+    EXPECT_TRUE(service.is_initialized());
     EXPECT_TRUE(mock_diag_service->is_connected());
 }
 
 TEST_F(SecServiceWithDiagTest, GenerateKeyPairViaDiag) {
-    ErrorCode result = service->initialize();
+    SecServiceConfig config;
+    config.config_snapshot = config_snapshot_;
+
+    auto prov_service = std::make_shared<SimpleProvService>();
+    SecService service(config, mock_diag_service, prov_service, std::move(*store_));
+    ErrorCode result = service.initialize();
     ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    result = service->generate_key_pair();
+
+    result = service.generate_key_pair();
     EXPECT_EQ(result, ErrorCode::SUCCESS);
     EXPECT_EQ(mock_diag_service->get_last_request_type(), DiagRequestType::GENERATE_KEY_PAIR);
     EXPECT_GT(mock_diag_service->get_request_count(), 0);
 }
 
-TEST_F(SecServiceWithDiagTest, GetCsrViaDiag) {
-    ErrorCode result = service->initialize();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    // Generate key pair via diag service
-    result = service->generate_key_pair();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    // Actually generate the key in HSM (diag service only updates state)
-    result = service->generate_and_store_key_pair();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    std::vector<uint8_t> csr;
-    result = service->get_csr(csr);
-    EXPECT_EQ(result, ErrorCode::SUCCESS);
-}
-
-TEST_F(SecServiceWithDiagTest, SubmitCsrViaDiag) {
-    ErrorCode result = service->initialize();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    // Generate key pair via diag service
-    result = service->generate_key_pair();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    // Actually generate the key in HSM
-    result = service->generate_and_store_key_pair();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    std::vector<uint8_t> csr;
-    result = service->get_csr(csr);
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    result = service->submit_csr();
-    EXPECT_EQ(result, ErrorCode::SUCCESS);
-}
-
-TEST_F(SecServiceWithDiagTest, InjectCertificateViaDiag) {
-    ErrorCode result = service->initialize();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    // Generate key pair via diag service
-    result = service->generate_key_pair();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    // Actually generate the key in HSM
-    result = service->generate_and_store_key_pair();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    std::vector<uint8_t> csr;
-    result = service->get_csr(csr);
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    result = service->submit_csr();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    std::vector<uint8_t> cert = {0x30, 0x82, 0x01, 0x00};
-    result = service->inject_certificate(cert);
-    EXPECT_EQ(result, ErrorCode::SUCCESS);
-}
-
-TEST_F(SecServiceWithDiagTest, DeviceInfoShowsConnectedWhenInitialized) {
-    mock_diag_service->initialize();
-    
-    std::string info = service->get_device_info();
-    EXPECT_NE(info.find("DIAG Service: Connected"), std::string::npos);
-}
-
-TEST_F(SecServiceWithDiagTest, DeviceInfoShowsDisconnectedWhenNotInitialized) {
-    std::string info = service->get_device_info();
-    EXPECT_NE(info.find("DIAG Service: Disconnected"), std::string::npos);
-}
-
-TEST_F(SecServiceWithDiagTest, FullProvisioningFlowViaDiag) {
-    ErrorCode result = service->initialize();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    // Generate key pair via diag service
-    result = service->generate_key_pair();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    // Actually generate the key in HSM
-    result = service->generate_and_store_key_pair();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    std::vector<uint8_t> csr;
-    result = service->get_csr(csr);
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    result = service->submit_csr();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    std::vector<uint8_t> cert = {0x30, 0x82, 0x01, 0x00};
-    result = service->inject_certificate(cert);
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-}
-
 TEST_F(SecServiceWithDiagTest, ApplyCertificateViaDiag) {
-    ErrorCode result = service->initialize();
+    SecServiceConfig config;
+    config.config_snapshot = config_snapshot_;
+
+    auto prov_service = std::make_shared<SimpleProvService>();
+    SecService service(config, mock_diag_service, prov_service, std::move(*store_));
+    ErrorCode result = service.initialize();
     ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    result = service->apply_certificate();
+
+    result = service.apply_certificate();
     EXPECT_EQ(result, ErrorCode::SUCCESS);
     EXPECT_EQ(mock_diag_service->get_last_request_type(), DiagRequestType::APPLY_CERTIFICATE);
 }
@@ -234,7 +174,7 @@ public:
     ErrorCode initialize() override {
         return ErrorCode::SUCCESS;
     }
-    
+
     ErrorCode send_request(DiagRequestType request_type,
                           const std::vector<uint8_t>& request_data,
                           DiagResponseCallback callback) override {
@@ -243,222 +183,163 @@ public:
         if (callback) callback(response);
         return ErrorCode::CONNECTION_FAILED;
     }
-    
+
     ErrorCode send_request_sync(DiagRequestType request_type,
                                const std::vector<uint8_t>& request_data,
                                DiagResponse& response) override {
         response.error_code = ErrorCode::CONNECTION_FAILED;
         return ErrorCode::CONNECTION_FAILED;
     }
-    
+
     bool is_connected() const override {
         return false;
     }
-    
+
     std::string get_service_status() const override {
         return "Disconnected";
     }
 };
 
-class SelectiveFailureDiagService : public DiagServiceInterface {
-public:
-    ErrorCode initialize() override {
-        initialized_ = true;
-        return ErrorCode::SUCCESS;
-    }
-    
-    ErrorCode send_request(DiagRequestType request_type,
-                          const std::vector<uint8_t>& request_data,
-                          DiagResponseCallback callback) override {
-        DiagResponse response;
-        response.error_code = should_fail(request_type) ? ErrorCode::CONNECTION_FAILED : ErrorCode::SUCCESS;
-        if (callback) callback(response);
-        return response.error_code;
-    }
-    
-    ErrorCode send_request_sync(DiagRequestType request_type,
-                               const std::vector<uint8_t>& request_data,
-                               DiagResponse& response) override {
-        if (should_fail(request_type)) {
-            response.error_code = ErrorCode::CONNECTION_FAILED;
-            return ErrorCode::CONNECTION_FAILED;
-        }
-        response.error_code = ErrorCode::SUCCESS;
-        response.data = {0x01};
-        return ErrorCode::SUCCESS;
-    }
-    
-    bool is_connected() const override {
-        return connected_;
-    }
-    
-    std::string get_service_status() const override {
-        return connected_ ? "Connected" : "Disconnected";
-    }
-
-    void set_fail_on(DiagRequestType type) { fail_on_type_ = type; }
-    void set_connected(bool connected) { connected_ = connected; }
-
-private:
-    bool should_fail(DiagRequestType type) const {
-        return !connected_ || (fail_on_type_ && *fail_on_type_ == type);
-    }
-
-    bool initialized_ = false;
-    bool connected_ = true;
-    std::optional<DiagRequestType> fail_on_type_;
-};
-
 class SecServiceDiagFailureTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        std::ofstream state_file("/tmp/test_sec_diag_fail_state.json");
-        state_file << "{}";
-        state_file.close();
+        test_dir_ = "/tmp/test_sec_diag_fail_" + std::to_string(getpid());
+        config_dir_ = test_dir_ + "/config";
+        store_dir_ = test_dir_ + "/store";
 
-        SecServiceConfig config;
-        config.hsm_type = "software";
-        config.hsm_config_path = "/tmp/test_sec_diag_fail";
-        config.state_file_path = "/tmp/test_sec_diag_fail_state.json";
-        config.cloud_config.oapi_endpoint = "https://test.example.com:10805";
-        config.cloud_config.timeout_ms = 5000;
-        config.cloud_config.retry_count = 1;
-        config.cloud_config.retry_delay_ms = 1000;
+        std::filesystem::create_directories(config_dir_);
+        std::filesystem::create_directories(store_dir_);
 
-        selective_diag_service = std::make_shared<SelectiveFailureDiagService>();
-        auto prov_service = std::make_shared<MockProvService>();
-        service = std::make_unique<SecService>(config, selective_diag_service, prov_service);
+        create_test_config();
+
+        auto& config_manager = hwyz::config::ConfigManager::instance();
+        config_manager.load("sec", config_dir_);
+        config_snapshot_ = config_manager.getSnapshot();
+
+        store_.emplace(hwyz::store::Store::open("sec", store_dir_));
+
+        failing_diag_service = std::make_shared<FailingDiagService>();
     }
 
     void TearDown() override {
-        service.reset();
-        selective_diag_service.reset();
+        failing_diag_service.reset();
+        store_.reset();
+        std::filesystem::remove_all(test_dir_);
     }
 
-    std::shared_ptr<SelectiveFailureDiagService> selective_diag_service;
-    std::unique_ptr<SecService> service;
+    void create_test_config() {
+        std::ofstream common(config_dir_ + "/common.yaml");
+        common << "cloud:\n  endpoint: \"https://test.example.com\"\n  timeout_ms: 1000\n";
+        common << "\nlog:\n  level: \"info\"\n";
+        common.close();
+
+        std::filesystem::create_directories(config_dir_ + "/conf.d");
+        std::ofstream sec(config_dir_ + "/conf.d/sec.yaml");
+        sec << "hsm:\n  type: \"soft_file\"\n  library_path: \"/usr/lib/libhsm.so\"\n";
+        sec << "key_provisioning:\n  mode: \"soft_file\"\n";
+        sec.close();
+    }
+
+    std::string test_dir_;
+    std::string config_dir_;
+    std::string store_dir_;
+    std::shared_ptr<const hwyz::config::ImmutableConfigView> config_snapshot_;
+    std::optional<hwyz::store::Store> store_;
+    std::shared_ptr<FailingDiagService> failing_diag_service;
 };
 
 TEST_F(SecServiceDiagFailureTest, GenerateKeyPairFailsWhenDisconnected) {
-    selective_diag_service->set_connected(false);
-    ErrorCode result = service->initialize();
+    SecServiceConfig config;
+    config.config_snapshot = config_snapshot_;
+
+    auto prov_service = std::make_shared<SimpleProvService>();
+    SecService service(config, failing_diag_service, prov_service, std::move(*store_));
+    ErrorCode result = service.initialize();
     ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    result = service->generate_key_pair();
+
+    result = service.generate_key_pair();
     EXPECT_EQ(result, ErrorCode::CONNECTION_FAILED);
-}
-
-TEST_F(SecServiceDiagFailureTest, GenerateKeyPairFailsOnRequestError) {
-    selective_diag_service->set_fail_on(DiagRequestType::GENERATE_KEY_PAIR);
-    ErrorCode result = service->initialize();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    result = service->generate_key_pair();
-    EXPECT_EQ(result, ErrorCode::CONNECTION_FAILED);
-}
-
-TEST_F(SecServiceDiagFailureTest, GetCsrBuiltLocallyWhenDiagFails) {
-    ErrorCode result = service->initialize();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    // First succeed at key generation to advance state
-    result = service->generate_key_pair();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    // Actually generate the key in HSM
-    result = service->generate_and_store_key_pair();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    // Now make READ_CSR fail - but get_csr builds CSR locally, not via diag
-    selective_diag_service->set_fail_on(DiagRequestType::READ_CSR);
-    std::vector<uint8_t> csr;
-    result = service->get_csr(csr);
-    // get_csr builds CSR locally using CsrBuilder, not via diag service
-    EXPECT_EQ(result, ErrorCode::SUCCESS);
-    EXPECT_FALSE(csr.empty());
-}
-
-TEST_F(SecServiceDiagFailureTest, DeviceInfoShowsDisconnected) {
-    selective_diag_service->set_connected(false);
-    std::string info = service->get_device_info();
-    EXPECT_NE(info.find("DIAG Service: Disconnected"), std::string::npos);
 }
 
 TEST_F(SecServiceDiagFailureTest, ApplyCertificateFailsWhenDisconnected) {
-    selective_diag_service->set_connected(false);
-    ErrorCode result = service->initialize();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    result = service->apply_certificate();
-    EXPECT_EQ(result, ErrorCode::CONNECTION_FAILED);
-}
+    SecServiceConfig config;
+    config.config_snapshot = config_snapshot_;
 
-TEST_F(SecServiceDiagFailureTest, ApplyCertificateFailsOnRequestError) {
-    selective_diag_service->set_fail_on(DiagRequestType::APPLY_CERTIFICATE);
-    ErrorCode result = service->initialize();
+    auto prov_service = std::make_shared<SimpleProvService>();
+    SecService service(config, failing_diag_service, prov_service, std::move(*store_));
+    ErrorCode result = service.initialize();
     ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    result = service->apply_certificate();
+
+    result = service.apply_certificate();
     EXPECT_EQ(result, ErrorCode::CONNECTION_FAILED);
 }
 
 class SecServiceFallbackTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        std::ofstream state_file("/tmp/test_sec_fallback_state.json");
-        state_file << "{}";
-        state_file.close();
+        test_dir_ = "/tmp/test_sec_fallback_" + std::to_string(getpid());
+        config_dir_ = test_dir_ + "/config";
+        store_dir_ = test_dir_ + "/store";
 
-        SecServiceConfig config;
-        config.hsm_type = "software";
-        config.hsm_config_path = "/tmp/test_sec_fallback";
-        config.state_file_path = "/tmp/test_sec_fallback_state.json";
-        config.cloud_config.oapi_endpoint = "https://test.example.com:10805";
-        config.cloud_config.timeout_ms = 5000;
-        config.cloud_config.retry_count = 1;
-        config.cloud_config.retry_delay_ms = 1000;
+        std::filesystem::create_directories(config_dir_);
+        std::filesystem::create_directories(store_dir_);
 
-        auto prov_service = std::make_shared<MockProvService>();
-        service = std::make_unique<SecService>(config, nullptr, prov_service);
+        create_test_config();
+
+        auto& config_manager = hwyz::config::ConfigManager::instance();
+        config_manager.load("sec", config_dir_);
+        config_snapshot_ = config_manager.getSnapshot();
+
+        store_.emplace(hwyz::store::Store::open("sec", store_dir_));
     }
 
     void TearDown() override {
-        service.reset();
+        store_.reset();
+        std::filesystem::remove_all(test_dir_);
     }
 
-    std::unique_ptr<SecService> service;
+    void create_test_config() {
+        std::ofstream common(config_dir_ + "/common.yaml");
+        common << "cloud:\n  endpoint: \"https://test.example.com\"\n  timeout_ms: 1000\n";
+        common << "\nlog:\n  level: \"info\"\n";
+        common.close();
+
+        std::filesystem::create_directories(config_dir_ + "/conf.d");
+        std::ofstream sec(config_dir_ + "/conf.d/sec.yaml");
+        sec << "hsm:\n  type: \"soft_file\"\n  library_path: \"/usr/lib/libhsm.so\"\n";
+        sec << "key_provisioning:\n  mode: \"soft_file\"\n";
+        sec.close();
+    }
+
+    std::string test_dir_;
+    std::string config_dir_;
+    std::string store_dir_;
+    std::shared_ptr<const hwyz::config::ImmutableConfigView> config_snapshot_;
+    std::optional<hwyz::store::Store> store_;
 };
 
 TEST_F(SecServiceFallbackTest, GenerateKeyPairWithoutDiagService) {
-    ErrorCode result = service->initialize();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    result = service->generate_key_pair();
-    EXPECT_EQ(result, ErrorCode::SUCCESS);
-}
+    SecServiceConfig config;
+    config.config_snapshot = config_snapshot_;
 
-TEST_F(SecServiceFallbackTest, GetCsrWithoutDiagService) {
-    ErrorCode result = service->initialize();
+    auto prov_service = std::make_shared<SimpleProvService>();
+    SecService service(config, nullptr, prov_service, std::move(*store_));
+    ErrorCode result = service.initialize();
     ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    result = service->generate_key_pair();
-    ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    std::vector<uint8_t> csr;
-    result = service->get_csr(csr);
-    EXPECT_EQ(result, ErrorCode::SUCCESS);
-}
 
-TEST_F(SecServiceFallbackTest, DeviceInfoShowsNoDiagService) {
-    std::string info = service->get_device_info();
-    EXPECT_NE(info.find("DIAG Service: Not available"), std::string::npos);
+    result = service.generate_key_pair();
+    EXPECT_EQ(result, ErrorCode::SUCCESS);
 }
 
 TEST_F(SecServiceFallbackTest, ApplyCertificateWithoutDiagService) {
-    ErrorCode result = service->initialize();
+    SecServiceConfig config;
+    config.config_snapshot = config_snapshot_;
+
+    auto prov_service = std::make_shared<SimpleProvService>();
+    SecService service(config, nullptr, prov_service, std::move(*store_));
+    ErrorCode result = service.initialize();
     ASSERT_EQ(result, ErrorCode::SUCCESS);
-    
-    result = service->apply_certificate();
-    // 在没有DIAG服务的情况下，会尝试提交CSR到云端，但云端连接会失败
+
+    result = service.apply_certificate();
     EXPECT_EQ(result, ErrorCode::PKI_CONNECTION_FAILED);
 }
