@@ -57,8 +57,8 @@ int main(int argc, char* argv[]) {
     auto& config_manager = hwyz::config::ConfigManager::instance();
     auto config_result = config_manager.load("sec", config_root);
     if (config_result != hwyz::config::ConfigError::kOk) {
-        std::cerr << "Failed to load configuration: "
-                  << static_cast<uint32_t>(config_result) << std::endl;
+        std::cerr << "Failed to load configuration from: " << config_root << std::endl;
+        std::cerr << "Error code: " << static_cast<uint32_t>(config_result) << std::endl;
         return 1;
     }
 
@@ -70,8 +70,17 @@ int main(int argc, char* argv[]) {
     sec_config.config_snapshot = config_snapshot;
 
     // 读取VIN和ECU UID配置（用于默认PROV服务）
-    std::string vin = config_snapshot->getString("vin", "DEFAULT_VIN");
-    std::string ecu_uid = config_snapshot->getString("ecu_uid", "DEFAULT_ECU_UID");
+    std::string vin = config_snapshot->getString("vin", "");
+    if (vin.empty()) {
+        std::cerr << "SEC: vin is required in configuration" << std::endl;
+        return 1;
+    }
+
+    std::string ecu_uid = config_snapshot->getString("ecu_uid", "");
+    if (ecu_uid.empty()) {
+        std::cerr << "SEC: ecu_uid is required in configuration" << std::endl;
+        return 1;
+    }
 
     // 创建默认PROV服务实例
     auto prov_service = std::make_shared<DefaultProvService>(vin, ecu_uid);
