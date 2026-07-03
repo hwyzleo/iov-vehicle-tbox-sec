@@ -166,6 +166,12 @@ public:
     // Set CA certificate for signature verification
     ErrorCode set_ca_certificate(const std::vector<uint8_t>& ca_cert_der);
 
+    // Save current provision state to store
+    bool save_state();
+
+    // Store certificate to store
+    void store_certificate(const std::vector<uint8_t>& cert_der);
+
 private:
     SecServiceConfig config_;
     bool initialized_;

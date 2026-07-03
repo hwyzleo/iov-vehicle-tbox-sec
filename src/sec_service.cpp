@@ -846,6 +846,32 @@ ErrorCode SecService::set_ca_certificate(const std::vector<uint8_t>& ca_cert_der
     return ErrorCode::SUCCESS;
 }
 
+bool SecService::save_state() {
+    if (!store_.isReady()) {
+        return false;
+    }
+    try {
+        ProvisionStatus status = get_provision_status();
+        store_.save("provision_state", status);
+        return true;
+    } catch (const hwyz::store::StoreException& e) {
+        std::cerr << "[SEC] Failed to save state: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+void SecService::store_certificate(const std::vector<uint8_t>& cert_der) {
+    if (!store_.isReady()) {
+        throw std::runtime_error("Store not ready");
+    }
+    try {
+        store_.save("device_cert", cert_der);
+    } catch (const hwyz::store::StoreException& e) {
+        std::cerr << "[SEC] Failed to store certificate: " << e.what() << std::endl;
+        throw;
+    }
+}
+
 ErrorCode SecService::generate_random_seed(std::vector<uint8_t>& seed) {
     seed.resize(SEED_KEY_SIZE);
     
