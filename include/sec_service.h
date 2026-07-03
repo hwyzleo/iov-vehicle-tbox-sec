@@ -16,27 +16,105 @@
 namespace tbox {
 namespace sec {
 
+struct SoftKeyConfig {
+    std::string key_path;
+    std::string encryption_algo;
+    std::string encryption_key_path;
+};
+
 struct SecServiceConfig {
+    // Old field-based config (for backward compatibility)
+    std::string hsm_type;
+    std::string hsm_config_path;
+    std::string state_file_path;
+    std::string ca_cert_path;
+    std::string cert_store_path;
+    std::string key_provisioning_mode;
+    bool is_production = false;
+    SoftKeyConfig soft_key_config;
+    CloudConfig cloud_config;
+
+    // New config snapshot (optional, takes precedence when set)
     std::shared_ptr<const hwyz::config::ImmutableConfigView> config_snapshot;
 
+    // Accessors that prefer config_snapshot when available
     std::string get_hsm_type() const {
-        return config_snapshot->getString("hsm.type", "soft_file");
+        if (config_snapshot) return config_snapshot->getString("hsm.type", "soft_file");
+        return hsm_type;
+    }
+
+    std::string get_hsm_library_path() const {
+        if (config_snapshot) return config_snapshot->getString("hsm.library_path", "");
+        return hsm_config_path;
     }
 
     std::string get_key_provisioning_mode() const {
-        return config_snapshot->getString("key_provisioning.mode", "soft_file");
+        if (config_snapshot) return config_snapshot->getString("key_provisioning.mode", "hsm");
+        return key_provisioning_mode;
     }
 
     std::string get_cloud_endpoint() const {
-        return config_snapshot->getString("cloud.endpoint");
+        if (config_snapshot) return config_snapshot->getString("cloud.endpoint", "");
+        return cloud_config.oapi_endpoint;
     }
 
     int get_cloud_timeout_ms() const {
-        return config_snapshot->getInt("cloud.timeout_ms", 5000);
+        if (config_snapshot) return config_snapshot->getInt("cloud.timeout_ms", 5000);
+        return cloud_config.timeout_ms;
     }
 
-    bool is_production() const {
-        return config_snapshot->getBool("environment.is_production", false);
+    int get_cloud_retry_count() const {
+        if (config_snapshot) return config_snapshot->getInt("cloud.retry_count", 3);
+        return cloud_config.retry_count;
+    }
+
+    int get_cloud_retry_delay_ms() const {
+        if (config_snapshot) return config_snapshot->getInt("cloud.retry_delay_ms", 1000);
+        return cloud_config.retry_delay_ms;
+    }
+
+    bool get_is_production() const {
+        if (config_snapshot) return config_snapshot->getBool("environment.is_production", false);
+        return is_production;
+    }
+
+    std::string get_state_file_path() const {
+        if (config_snapshot) return config_snapshot->getString("storage.state_file", "/var/lib/tbox/sec/provision_state.json");
+        return state_file_path;
+    }
+
+    std::string get_ca_cert_path() const {
+        if (config_snapshot) return config_snapshot->getString("storage.ca_cert", "");
+        return ca_cert_path;
+    }
+
+    std::string get_cert_store_path() const {
+        if (config_snapshot) return config_snapshot->getString("storage.cert_store", "");
+        return cert_store_path;
+    }
+
+    std::string get_soft_key_path() const {
+        if (config_snapshot) return config_snapshot->getString("soft_key.path", "/var/lib/tbox/sec/soft_keys");
+        return soft_key_config.key_path;
+    }
+
+    std::string get_soft_key_encryption_algo() const {
+        if (config_snapshot) return config_snapshot->getString("soft_key.encryption_algo", "aes-256-gcm");
+        return soft_key_config.encryption_algo;
+    }
+
+    std::string get_soft_key_encryption_key_path() const {
+        if (config_snapshot) return config_snapshot->getString("soft_key.encryption_key_path", "");
+        return soft_key_config.encryption_key_path;
+    }
+
+    CloudConfig get_cloud_config() const {
+        CloudConfig config;
+        config.oapi_endpoint = get_cloud_endpoint();
+        config.timeout_ms = get_cloud_timeout_ms();
+        config.retry_count = get_cloud_retry_count();
+        config.retry_delay_ms = get_cloud_retry_delay_ms();
+        return config;
     }
 };
 
@@ -84,10 +162,10 @@ public:
 
 private:
     SecServiceConfig config_;
-    hwyz::store::Store store_;
     bool initialized_;
     std::shared_ptr<DiagServiceInterface> diag_service_;
     std::shared_ptr<ProvServiceInterface> prov_service_;
+    std::unique_ptr<ProvisionStateManager> state_manager_;
 
     std::string vin_;
     std::string device_sn_;

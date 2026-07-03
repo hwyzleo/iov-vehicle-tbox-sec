@@ -113,6 +113,7 @@ SecServiceConfig load_config(const std::string& config_file) {
     }
 
     // 解析密钥生成模式
+    sec_config.key_provisioning_mode = "hsm";  // default
     if (tbox["key_provisioning"] && tbox["key_provisioning"]["mode"]) {
         sec_config.key_provisioning_mode = tbox["key_provisioning"]["mode"].as<std::string>("hsm");
     }

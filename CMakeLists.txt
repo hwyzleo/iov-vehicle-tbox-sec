@@ -43,6 +43,15 @@ find_package(nlohmann_json REQUIRED)
 find_package(CURL REQUIRED)
 include_directories(${CURL_INCLUDE_DIRS})
 
+# Framework (hwyz) - config and store
+set(FRAMEWORK_DIR ${PROJECT_SOURCE_DIR}/../iov-vehicle-tbox-framework)
+if(EXISTS ${FRAMEWORK_DIR}/include)
+    set(FRAMEWORK_INCLUDE_DIR ${FRAMEWORK_DIR}/include)
+    message(STATUS "Found framework include at: ${FRAMEWORK_INCLUDE_DIR}")
+else()
+    message(FATAL_ERROR "Framework not found at: ${FRAMEWORK_DIR}")
+endif()
+
 # Library source files (without main.cpp)
 set(LIB_SOURCES
     src/sec_service.cpp
@@ -61,7 +70,7 @@ set(LIB_SOURCES
 
 # Static library for other modules to link against
 add_library(TboxSecLib STATIC ${LIB_SOURCES})
-target_include_directories(TboxSecLib PUBLIC ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(TboxSecLib PUBLIC ${PROJECT_SOURCE_DIR}/include ${FRAMEWORK_INCLUDE_DIR})
 target_link_libraries(TboxSecLib PUBLIC OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json CURL::libcurl)
 
 # Main executable

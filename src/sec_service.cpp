@@ -52,9 +52,9 @@ ErrorCode SecService::initialize() {
     }
 
     // Load CA certificate
-    std::string ca_cert_path = config_.ca_cert_path;
+    std::string ca_cert_path = config_.get_ca_cert_path();
 
-    std::cerr << "[SEC] Initializing CA cert, config_.ca_cert_path='" << config_.ca_cert_path << "'" << std::endl;
+    std::cerr << "[SEC] Initializing CA cert, ca_cert_path='" << ca_cert_path << "'" << std::endl;
 
     // If ca_cert_path is empty, try to load from default config
     if (ca_cert_path.empty()) {
@@ -454,7 +454,7 @@ std::string SecService::get_device_info() const {
     std::stringstream ss;
     ss << "VIN: " << vin_ << "\n";
     ss << "Device SN: " << device_sn_ << "\n";
-    ss << "HSM Type: " << config_.hsm_type << "\n";
+    ss << "HSM Type: " << config_.get_hsm_type() << "\n";
     ss << "Initialized: " << (initialized_ ? "Yes" : "No") << "\n";
     ss << "DIAG Service: " << (diag_service_ ? (diag_service_->is_connected() ? "Connected" : "Disconnected") : "Not available") << "\n";
     ss << "PROV Service: " << (prov_service_ ? (prov_service_->is_connected() ? "Connected" : "Disconnected") : "Not available") << "\n";
@@ -475,8 +475,8 @@ bool SecService::is_initialized() const {
 ErrorCode SecService::initialize_hsm() {
     try {
         // 检查是否允许 soft_file 模式
-        if (config_.key_provisioning_mode == KEY_PROVISIONING_MODE_SOFT_FILE) {
-            if (config_.is_production) {
+        if (config_.get_key_provisioning_mode() == KEY_PROVISIONING_MODE_SOFT_FILE) {
+            if (config_.get_is_production()) {
                 // 量产环境禁止使用 soft_file 模式
                 std::cerr << "[SEC] Software key file mode is not allowed in production environment" << std::endl;
                 return ErrorCode::SOFT_KEY_MODE_NOT_ALLOWED;
@@ -488,22 +488,23 @@ ErrorCode SecService::initialize_hsm() {
         HsmFactory::HsmType hsm_type;
         std::string config_path;
 
-        if (config_.key_provisioning_mode == KEY_PROVISIONING_MODE_SOFT_FILE) {
+        if (config_.get_key_provisioning_mode() == KEY_PROVISIONING_MODE_SOFT_FILE) {
             // 软件落盘模式
             hsm_type = HsmFactory::HsmType::SOFT_FILE;
-            config_path = config_.soft_key_config.key_path;
+            config_path = config_.get_soft_key_path();
         } else {
             // HSM 模式（默认）
-            if (config_.hsm_type == "software") {
+            std::string hsm_type_str = config_.get_hsm_type();
+            if (hsm_type_str == "software") {
                 hsm_type = HsmFactory::HsmType::SOFTWARE;
-            } else if (config_.hsm_type == "pkcs11") {
+            } else if (hsm_type_str == "pkcs11") {
                 hsm_type = HsmFactory::HsmType::PKCS11;
-            } else if (config_.hsm_type == "trustzone") {
+            } else if (hsm_type_str == "trustzone") {
                 hsm_type = HsmFactory::HsmType::TRUSTZONE;
             } else {
                 return ErrorCode::INVALID_PARAMETER;
             }
-            config_path = config_.hsm_config_path;
+            config_path = config_.get_hsm_library_path();
         }
 
         auto hsm = HsmFactory::create(hsm_type, config_path);
@@ -516,12 +517,12 @@ ErrorCode SecService::initialize_hsm() {
 }
 
 ErrorCode SecService::initialize_cloud_client() {
-    cloud_client_ = std::make_unique<CloudClient>(config_.cloud_config);
+    cloud_client_ = std::make_unique<CloudClient>(config_.get_cloud_config());
     return cloud_client_->initialize();
 }
 
 ErrorCode SecService::load_provision_state() {
-    state_manager_ = std::make_unique<ProvisionStateManager>(config_.state_file_path);
+    state_manager_ = std::make_unique<ProvisionStateManager>(config_.get_state_file_path());
     return state_manager_->load_state() ? ErrorCode::SUCCESS : ErrorCode::STORAGE_READ_FAILED;
 }
 
@@ -615,7 +616,7 @@ ErrorCode SecService::validate_and_store_certificate(const std::vector<uint8_t>&
 
 ErrorCode SecService::store_certificate_to_file(const std::vector<uint8_t>& cert_der) {
     // Determine certificate store path
-    std::string cert_dir = config_.cert_store_path;
+    std::string cert_dir = config_.get_cert_store_path();
     if (cert_dir.empty()) {
         // Try to find from config file
         cert_dir = find_cert_store_from_config();
