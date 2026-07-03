@@ -10,26 +10,34 @@
 #include "error_codes.h"
 #include "diag_service_interface.h"
 #include "prov_service_interface.h"
+#include "config.h"
+#include "store.h"
 
 namespace tbox {
 namespace sec {
 
-struct SoftKeyConfig {
-    std::string key_path = "/var/lib/tbox/sec/soft_keys";  // 软件密钥存储路径
-    std::string encryption_algo = "aes-256-gcm";           // 加密算法
-    std::string encryption_key_path = "";                   // 加密密钥路径（为空则使用默认）
-};
-
 struct SecServiceConfig {
-    std::string hsm_type;
-    std::string hsm_config_path;
-    std::string state_file_path;
-    std::string ca_cert_path;
-    std::string cert_store_path;
-    std::string key_provisioning_mode = "hsm";  // 密钥生成模式 (hsm/soft_file)
-    SoftKeyConfig soft_key_config;               // 软件落盘配置
-    CloudConfig cloud_config;
-    bool is_production = false;                  // 是否量产环境
+    std::shared_ptr<const hwyz::config::ImmutableConfigView> config_snapshot;
+
+    std::string get_hsm_type() const {
+        return config_snapshot->getString("hsm.type", "soft_file");
+    }
+
+    std::string get_key_provisioning_mode() const {
+        return config_snapshot->getString("key_provisioning.mode", "soft_file");
+    }
+
+    std::string get_cloud_endpoint() const {
+        return config_snapshot->getString("cloud.endpoint");
+    }
+
+    int get_cloud_timeout_ms() const {
+        return config_snapshot->getInt("cloud.timeout_ms", 5000);
+    }
+
+    bool is_production() const {
+        return config_snapshot->getBool("environment.is_production", false);
+    }
 };
 
 class SecService : public std::enable_shared_from_this<SecService> {
@@ -76,6 +84,7 @@ public:
 
 private:
     SecServiceConfig config_;
+    hwyz::store::Store store_;
     bool initialized_;
     std::shared_ptr<DiagServiceInterface> diag_service_;
     std::shared_ptr<ProvServiceInterface> prov_service_;
@@ -87,7 +96,6 @@ private:
     std::unique_ptr<CsrBuilder> csr_builder_;
     std::unique_ptr<CertValidator> cert_validator_;
     std::unique_ptr<CloudClient> cloud_client_;
-    std::unique_ptr<ProvisionStateManager> state_manager_;
 
     std::vector<uint8_t> csr_der_;  // 存储构建的 CSR
 
