@@ -60,6 +60,7 @@ private:
     std::map<std::string, KeyData> keys_;
     mutable std::mutex mutex_;
 
+    bool is_valid_key_id(const std::string& key_id) const;
     ErrorCode save_key_to_store(const std::string& key_id, const KeyData& key_data);
     ErrorCode load_key_from_store(const std::string& key_id, KeyData& key_data);
     ErrorCode encrypt_private_key(const std::vector<uint8_t>& plain_key,
@@ -69,6 +70,9 @@ private:
     ErrorCode generate_encryption_key();
     ErrorCode load_encryption_key();
     void secure_zero(std::vector<uint8_t>& data);
+
+    static std::string bytes_to_hex(const std::vector<uint8_t>& bytes);
+    static std::vector<uint8_t> hex_to_bytes(const std::string& hex);
 };
 
 } // namespace sec

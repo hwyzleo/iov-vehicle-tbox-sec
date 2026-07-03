@@ -57,6 +57,10 @@ ErrorCode SoftFileHsm::generate_key_pair(const std::string& key_id,
                                          KeyPair& key_pair) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    if (!is_valid_key_id(key_id)) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
     if (keys_.find(key_id) != keys_.end()) {
         return ErrorCode::KEY_ALREADY_EXISTS;
     }
@@ -109,6 +113,10 @@ ErrorCode SoftFileHsm::sign(const std::string& key_id,
                             std::vector<uint8_t>& signature) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    if (!is_valid_key_id(key_id)) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
     auto it = keys_.find(key_id);
     if (it == keys_.end()) {
         KeyData kd;
@@ -158,6 +166,10 @@ ErrorCode SoftFileHsm::verify(const std::string& key_id,
                               bool& valid) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    if (!is_valid_key_id(key_id)) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
     auto it = keys_.find(key_id);
     if (it == keys_.end()) {
         KeyData kd;
@@ -196,6 +208,10 @@ ErrorCode SoftFileHsm::export_public_key(const std::string& key_id,
                                          std::vector<uint8_t>& public_key) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    if (!is_valid_key_id(key_id)) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
     auto it = keys_.find(key_id);
     if (it == keys_.end()) {
         KeyData kd;
@@ -211,6 +227,7 @@ ErrorCode SoftFileHsm::export_public_key(const std::string& key_id,
 
 bool SoftFileHsm::key_exists(const std::string& key_id) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!is_valid_key_id(key_id)) return false;
     if (keys_.find(key_id) != keys_.end()) return true;
 
     try {
@@ -223,6 +240,10 @@ bool SoftFileHsm::key_exists(const std::string& key_id) {
 ErrorCode SoftFileHsm::delete_key(const std::string& key_id) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    if (!is_valid_key_id(key_id)) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
     auto it = keys_.find(key_id);
     if (it != keys_.end()) {
         secure_zero(it->second.priv);
@@ -230,8 +251,8 @@ ErrorCode SoftFileHsm::delete_key(const std::string& key_id) {
     }
 
     try {
-        store_.remove("key_metadata_" + key_id);
         store_.remove("encrypted_private_key_" + key_id);
+        store_.remove("key_metadata_" + key_id);
     } catch (const hwyz::store::StoreException& e) {
         std::cerr << "Failed to delete key from store: " << e.what() << std::endl;
         return ErrorCode::STORAGE_WRITE_FAILED;
@@ -248,6 +269,10 @@ ErrorCode SoftFileHsm::export_private_key(const std::string& key_id,
                                           std::vector<uint8_t>& private_key) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    if (!is_valid_key_id(key_id)) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
     auto it = keys_.find(key_id);
     if (it == keys_.end()) {
         KeyData kd;
@@ -263,34 +288,24 @@ ErrorCode SoftFileHsm::export_private_key(const std::string& key_id,
 
 ErrorCode SoftFileHsm::save_key_to_store(const std::string& key_id, const KeyData& key_data) {
     try {
-        nlohmann::json metadata;
-        metadata["key_id"] = key_id;
-        metadata["algorithm"] = key_data.algorithm;
-        metadata["created_at"] = std::chrono::duration_cast<std::chrono::seconds>(
-            key_data.created_at.time_since_epoch()).count();
-
-        auto to_hex = [](const std::vector<uint8_t>& v) {
-            std::string h;
-            h.reserve(v.size() * 2);
-            char buf[3];
-            for (auto b : v) {
-                snprintf(buf, sizeof(buf), "%02x", b);
-                h += buf;
-            }
-            return h;
-        };
-        metadata["public_key"] = to_hex(key_data.pub);
-
-        store_.save("key_metadata_" + key_id, metadata.dump());
-
+        // 1. Encrypt private key first
         std::vector<uint8_t> encrypted_key;
         auto rc = encrypt_private_key(key_data.priv, encrypted_key);
         if (rc != ErrorCode::SUCCESS) {
             return rc;
         }
 
-        auto enc_hex = to_hex(encrypted_key);
-        store_.save("encrypted_private_key_" + key_id, enc_hex);
+        // 2. Save encrypted key first (leaf data)
+        store_.save("encrypted_private_key_" + key_id, bytes_to_hex(encrypted_key));
+
+        // 3. Save metadata last (commit marker)
+        nlohmann::json metadata;
+        metadata["key_id"] = key_id;
+        metadata["algorithm"] = key_data.algorithm;
+        metadata["created_at"] = std::chrono::duration_cast<std::chrono::seconds>(
+            key_data.created_at.time_since_epoch()).count();
+        metadata["public_key"] = bytes_to_hex(key_data.pub);
+        store_.save("key_metadata_" + key_id, metadata.dump());
 
         return ErrorCode::SUCCESS;
     } catch (const hwyz::store::StoreException& e) {
@@ -311,16 +326,10 @@ ErrorCode SoftFileHsm::load_key_from_store(const std::string& key_id, KeyData& k
         key_data.algorithm = metadata.at("algorithm").get<std::string>();
 
         auto pub_hex = metadata.at("public_key").get<std::string>();
-        key_data.pub.resize(pub_hex.size() / 2);
-        for (size_t i = 0; i < key_data.pub.size(); ++i) {
-            key_data.pub[i] = static_cast<uint8_t>(std::stoul(pub_hex.substr(i * 2, 2), nullptr, 16));
-        }
+        key_data.pub = hex_to_bytes(pub_hex);
 
         auto enc_hex = store_.load<std::string>("encrypted_private_key_" + key_id);
-        std::vector<uint8_t> encrypted_key(enc_hex.size() / 2);
-        for (size_t i = 0; i < encrypted_key.size(); ++i) {
-            encrypted_key[i] = static_cast<uint8_t>(std::stoul(enc_hex.substr(i * 2, 2), nullptr, 16));
-        }
+        std::vector<uint8_t> encrypted_key = hex_to_bytes(enc_hex);
 
         auto rc = decrypt_private_key(encrypted_key, key_data.priv);
         if (rc != ErrorCode::SUCCESS) return rc;
@@ -483,6 +492,32 @@ void SoftFileHsm::secure_zero(std::vector<uint8_t>& data) {
         OPENSSL_cleanse(data.data(), data.size());
         data.clear();
     }
+}
+
+bool SoftFileHsm::is_valid_key_id(const std::string& key_id) const {
+    return key_id.find("..") == std::string::npos &&
+           key_id.find('/') == std::string::npos &&
+           key_id.find('\\') == std::string::npos;
+}
+
+std::string SoftFileHsm::bytes_to_hex(const std::vector<uint8_t>& bytes) {
+    std::string hex;
+    hex.reserve(bytes.size() * 2);
+    char buf[3];
+    for (auto b : bytes) {
+        snprintf(buf, sizeof(buf), "%02x", b);
+        hex += buf;
+    }
+    return hex;
+}
+
+std::vector<uint8_t> SoftFileHsm::hex_to_bytes(const std::string& hex) {
+    std::vector<uint8_t> bytes;
+    bytes.reserve(hex.size() / 2);
+    for (size_t i = 0; i < hex.size(); i += 2) {
+        bytes.push_back(static_cast<uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16)));
+    }
+    return bytes;
 }
 
 } // namespace sec
