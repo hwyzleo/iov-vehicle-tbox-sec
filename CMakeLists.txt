@@ -93,6 +93,7 @@ add_executable(TboxSecTests
     tests/test_key_provisioning_mode.cpp
     tests/test_subject_dn.cpp
     tests/test_show_csr.cpp
+    tests/test_config_snapshot.cpp
 )
 target_link_libraries(TboxSecTests PRIVATE TboxSecLib GTest::GTest GTest::Main)
 add_test(NAME TboxSecTests COMMAND TboxSecTests)
