@@ -6,7 +6,6 @@
 #include <future>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include "error_codes.h"
 #include "store.h"
 
@@ -39,7 +38,7 @@ public:
 
     ErrorCode initialize();
 
-    ErrorCode store_certificate(const std::vector<uint8_t>& cert_der);
+    void store_certificate(const std::vector<uint8_t>& cert_der);
     std::vector<uint8_t> load_certificate();
 
     ErrorCode submit_csr(const CertificateRequest& request,
@@ -60,7 +59,7 @@ private:
     std::string last_error_;
     mutable std::mutex error_mutex_;
     std::future<void> async_task_;
-    std::optional<hwyz::store::Store> store_;
+    hwyz::store::Store store_;
 
     void set_last_error(const std::string& error);
 
