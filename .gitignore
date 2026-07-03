@@ -1,5 +1,6 @@
 # Prerequisites
 *.d
+!config/conf.d/
 
 # Compiled Object files
 *.slo

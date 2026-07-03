@@ -1,0 +1,20 @@
+# TBOX SEC服务配置
+hsm:
+  type: "software"
+  library_path: "/usr/lib/softhsm/libsofthsm2.so"
+  slot_id: 0
+  pin: "123456"
+
+key_provisioning:
+  mode: "hsm"
+
+soft_key:
+  path: "/var/lib/tbox/sec/soft_keys"
+  encryption_algo: "aes-256-gcm"
+  encryption_key_path: ""
+
+storage:
+  state_file: "/var/lib/tbox/sec/provision_state.json"
+  ca_cert: "/Users/hwyz_leo/Docker/step/certs/intermediate_ca.crt"
+  cert_store: "/var/lib/tbox/sec/certs"
+  key_store: "/var/lib/tbox/sec/keys"

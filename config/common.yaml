@@ -1,0 +1,9 @@
+# TBOX 公共配置
+cloud:
+  oapi_endpoint: "https://oapi.example.com:10805"
+  timeout_ms: 30000
+  retry_count: 3
+  retry_delay_ms: 1000
+
+environment:
+  is_production: false
