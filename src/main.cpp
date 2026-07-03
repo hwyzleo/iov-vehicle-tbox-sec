@@ -72,6 +72,10 @@ int main(int argc, char* argv[]) {
 
     // 初始化framework-store
     auto store = hwyz::store::Store::open("sec");
+    if (!store.isReady()) {
+        std::cerr << "Failed to open store" << std::endl;
+        return 1;
+    }
 
     // 读取VIN和ECU UID配置（用于默认PROV服务）
     std::string vin = config_snapshot->getString("vin", "DEFAULT_VIN");

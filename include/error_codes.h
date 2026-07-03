@@ -55,6 +55,9 @@ enum class ErrorCode : uint32_t {
     // Soft key errors (SEC-1009)
     SOFT_KEY_MODE_NOT_ALLOWED = 1009,
 
+    // Configuration errors
+    CONFIG_ERROR = 1100,
+
     // General errors
     INVALID_PARAMETER = 8001,
     NOT_INITIALIZED = 8002,

@@ -37,6 +37,27 @@ SecService::SecService(const SecServiceConfig& config,
     : config_(config), initialized_(false), diag_service_(diag_service), prov_service_(prov_service), store_(std::move(store)) {}
 
 ErrorCode SecService::initialize() {
+    // Validate required config
+    if (config_.get_hsm_type().empty() &&
+        config_.get_key_provisioning_mode() != KEY_PROVISIONING_MODE_SOFT_FILE) {
+        std::cerr << "[SEC] hsm.type is required" << std::endl;
+        return ErrorCode::CONFIG_ERROR;
+    }
+
+    auto cloud_config = config_.get_cloud_config();
+    if (cloud_config.timeout_ms <= 0) {
+        std::cerr << "[SEC] cloud.timeout_ms must be positive" << std::endl;
+        return ErrorCode::CONFIG_ERROR;
+    }
+    if (cloud_config.retry_count < 0) {
+        std::cerr << "[SEC] cloud.retry_count must be non-negative" << std::endl;
+        return ErrorCode::CONFIG_ERROR;
+    }
+    if (cloud_config.retry_delay_ms < 0) {
+        std::cerr << "[SEC] cloud.retry_delay_ms must be non-negative" << std::endl;
+        return ErrorCode::CONFIG_ERROR;
+    }
+
     ErrorCode result = fetch_vehicle_info();
     if (result != ErrorCode::SUCCESS) {
         return result;

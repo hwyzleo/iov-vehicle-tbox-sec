@@ -75,7 +75,13 @@ target_link_libraries(TboxSecLib PUBLIC OpenSSL::SSL OpenSSL::Crypto yaml-cpp::y
 
 # Main executable
 add_executable(TboxSecService src/main.cpp)
-target_link_libraries(TboxSecService PRIVATE TboxSecLib ${FRAMEWORK_DIR}/build/libhwyz.dylib)
+
+# Find framework library properly
+find_library(FRAMEWORK_LIB hwyz PATHS ${FRAMEWORK_DIR}/build NO_DEFAULT_PATH)
+if(NOT FRAMEWORK_LIB)
+    message(FATAL_ERROR "Framework library not found in ${FRAMEWORK_DIR}/build")
+endif()
+target_link_libraries(TboxSecService PRIVATE TboxSecLib ${FRAMEWORK_LIB})
 
 # Tests
 enable_testing()
