@@ -178,7 +178,7 @@ private:
     std::shared_ptr<DiagServiceInterface> diag_service_;
     std::shared_ptr<ProvServiceInterface> prov_service_;
     std::unique_ptr<ProvisionStateManager> state_manager_;
-    hwyz::store::Store store_;
+    std::optional<hwyz::store::Store> store_;
 
     std::string vin_;
     std::string device_sn_;

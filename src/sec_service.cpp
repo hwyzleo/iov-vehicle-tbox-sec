@@ -16,28 +16,28 @@
 namespace tbox {
 namespace sec {
 
-SecService::SecService() : initialized_(false) {}
+SecService::SecService() : initialized_(false), store_(std::nullopt) {}
 
 SecService::SecService(const SecServiceConfig& config)
-    : config_(config), initialized_(false) {}
+    : config_(config), initialized_(false), store_(std::nullopt) {}
 
 SecService::SecService(const SecServiceConfig& config,
                       std::shared_ptr<DiagServiceInterface> diag_service)
-    : config_(config), initialized_(false), diag_service_(diag_service) {}
+    : config_(config), initialized_(false), diag_service_(diag_service), store_(std::nullopt) {}
 
 SecService::SecService(const SecServiceConfig& config,
                       std::shared_ptr<DiagServiceInterface> diag_service,
                       std::shared_ptr<ProvServiceInterface> prov_service)
-    : config_(config), initialized_(false), diag_service_(diag_service), prov_service_(prov_service) {}
+    : config_(config), initialized_(false), diag_service_(diag_service), prov_service_(prov_service), store_(std::nullopt) {}
 
 SecService::SecService(const SecServiceConfig& config, hwyz::store::Store store)
-    : config_(config), initialized_(false), store_(std::move(store)) {}
+    : config_(config), initialized_(false), store_(std::make_optional(std::move(store))) {}
 
 SecService::SecService(const SecServiceConfig& config,
                       std::shared_ptr<DiagServiceInterface> diag_service,
                       std::shared_ptr<ProvServiceInterface> prov_service,
                       hwyz::store::Store store)
-    : config_(config), initialized_(false), diag_service_(diag_service), prov_service_(prov_service), store_(std::move(store)) {}
+    : config_(config), initialized_(false), diag_service_(diag_service), prov_service_(prov_service), store_(std::make_optional(std::move(store))) {}
 
 ErrorCode SecService::initialize() {
     // Validate required config
@@ -77,13 +77,13 @@ ErrorCode SecService::initialize() {
     }
 
     // Always initialize state_manager for fallback
-    result = load_provision_state();
-    if (result != ErrorCode::SUCCESS) {
-        return result;
+    state_manager_ = std::make_unique<ProvisionStateManager>(config_.get_state_file_path());
+    if (!state_manager_->load_state()) {
+        std::cerr << "[SEC] Failed to load state from file, will try store" << std::endl;
     }
 
     // If store is available, also try loading from store (takes precedence)
-    if (store_.isReady()) {
+    if (store_.has_value() && store_->isReady()) {
         result = load_provision_state_from_store();
         if (result != ErrorCode::SUCCESS) {
             std::cerr << "[SEC] Failed to load from store, using state_manager state" << std::endl;
@@ -306,9 +306,9 @@ ErrorCode SecService::apply_certificate() {
         status.retry_count = 0;
         status.last_error.clear();
         // Save the reset state
-        if (store_.isReady()) {
+        if (store_.has_value() && store_->isReady()) {
             try {
-                store_.save("provision_state", status);
+                store_->save("provision_state", status);
             } catch (const hwyz::store::StoreException& e) {
                 std::cerr << "[SEC] Failed to reset state in store: " << e.what() << std::endl;
             }
@@ -481,9 +481,9 @@ ErrorCode SecService::verify_key(uint8_t level, const std::vector<uint8_t>& key)
 
 ProvisionStatus SecService::get_provision_status() const {
     // Try store first
-    if (store_.isReady()) {
+    if (store_.has_value() && store_->isReady()) {
         try {
-            auto status = store_.load<ProvisionStatus>("provision_state");
+            auto status = store_->load<ProvisionStatus>("provision_state");
             return status;
         } catch (const hwyz::store::StoreException& e) {
             if (e.getError().code == hwyz::store::StoreError::kKeyNotFound) {
@@ -516,9 +516,9 @@ ErrorCode SecService::reset_provision_status() {
     }
 
     // Try store first
-    if (store_.isReady()) {
+    if (store_.has_value() && store_->isReady()) {
         try {
-            store_.remove("provision_state");
+            store_->remove("provision_state");
             return ErrorCode::SUCCESS;
         } catch (const hwyz::store::StoreException& e) {
             std::cerr << "[SEC] Failed to reset provision state from store: " << e.what() << std::endl;
@@ -612,10 +612,17 @@ ErrorCode SecService::load_provision_state() {
 }
 
 ErrorCode SecService::load_provision_state_from_store() {
+    if (!store_.has_value() || !store_->isReady()) {
+        return ErrorCode::SUCCESS;
+    }
     try {
-        auto status = store_.load<ProvisionStatus>("provision_state");
+        auto status = store_->load<ProvisionStatus>("provision_state");
         std::cerr << "[SEC] Loaded provision state from store: "
                   << provision_state_to_string(status.state) << std::endl;
+        // Update state_manager with store state for consistency
+        if (state_manager_) {
+            state_manager_->update_status(status);
+        }
         return ErrorCode::SUCCESS;
     } catch (const hwyz::store::StoreException& e) {
         if (e.getError().code == hwyz::store::StoreError::kKeyNotFound) {
@@ -718,10 +725,10 @@ ErrorCode SecService::validate_and_store_certificate(const std::vector<uint8_t>&
 
 ErrorCode SecService::store_certificate_to_file(const std::vector<uint8_t>& cert_der) {
     // Try store first
-    if (store_.isReady()) {
+    if (store_.has_value() && store_->isReady()) {
         try {
             std::string cert_key = "device_cert:" + vin_ + ":" + device_sn_;
-            store_.save(cert_key, cert_der);
+            store_->save(cert_key, cert_der);
             std::cout << "[SEC] Certificate stored in store with key: " << cert_key << std::endl;
             return ErrorCode::SUCCESS;
         } catch (const hwyz::store::StoreException& e) {
@@ -809,9 +816,9 @@ void SecService::update_provision_state(ProvisionState state, const std::string&
     }
 
     // Try store first
-    if (store_.isReady()) {
+    if (store_.has_value() && store_->isReady()) {
         try {
-            store_.save("provision_state", status);
+            store_->save("provision_state", status);
             return;
         } catch (const hwyz::store::StoreException& e) {
             std::cerr << "[SEC] Failed to save provision state to store: " << e.what() << std::endl;
@@ -853,12 +860,12 @@ ErrorCode SecService::set_ca_certificate(const std::vector<uint8_t>& ca_cert_der
 }
 
 bool SecService::save_state() {
-    if (!store_.isReady()) {
+    if (!store_.has_value() || !store_->isReady()) {
         return false;
     }
     try {
         ProvisionStatus status = get_provision_status();
-        store_.save("provision_state", status);
+        store_->save("provision_state", status);
         return true;
     } catch (const hwyz::store::StoreException& e) {
         std::cerr << "[SEC] Failed to save state: " << e.what() << std::endl;
@@ -867,13 +874,13 @@ bool SecService::save_state() {
 }
 
 ErrorCode SecService::store_certificate(const std::vector<uint8_t>& cert_der) {
-    if (!store_.isReady()) {
+    if (!store_.has_value() || !store_->isReady()) {
         std::cerr << "[SEC] Store not ready" << std::endl;
         return ErrorCode::STORAGE_WRITE_FAILED;
     }
     try {
         std::string cert_key = "device_cert:" + vin_ + ":" + device_sn_;
-        store_.save(cert_key, cert_der);
+        store_->save(cert_key, cert_der);
         return ErrorCode::SUCCESS;
     } catch (const hwyz::store::StoreException& e) {
         std::cerr << "[SEC] Failed to store certificate: " << e.what() << std::endl;
