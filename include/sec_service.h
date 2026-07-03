@@ -243,6 +243,14 @@ private:
     // CA certificate loading helper
     std::string find_ca_cert_from_config();
     std::string find_cert_store_from_config();
+
+    // Store helper methods for ProvisionStatus serialization
+    void save_provision_status_to_store(const ProvisionStatus& status);
+    ProvisionStatus load_provision_status_from_store() const;
+
+    // Base64 encoding/decoding for certificate storage
+    static std::string base64_encode(const std::vector<uint8_t>& data);
+    static std::vector<uint8_t> base64_decode(const std::string& encoded);
 };
 
 } // namespace sec

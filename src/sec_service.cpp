@@ -8,6 +8,9 @@
 #include <iostream>
 #include <fstream>
 #include <openssl/rand.h>
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/buffer.h>
 
 #ifdef USE_YAML_CPP
 #include <yaml-cpp/yaml.h>
@@ -307,11 +310,7 @@ ErrorCode SecService::apply_certificate() {
         status.last_error.clear();
         // Save the reset state
         if (store_.has_value() && store_->isReady()) {
-            try {
-                store_->save("provision_state", status);
-            } catch (const hwyz::store::StoreException& e) {
-                std::cerr << "[SEC] Failed to reset state in store: " << e.what() << std::endl;
-            }
+            save_provision_status_to_store(status);
         } else if (state_manager_) {
             state_manager_->update_status(status);
         }
@@ -483,20 +482,17 @@ ProvisionStatus SecService::get_provision_status() const {
     // Try store first
     if (store_.has_value() && store_->isReady()) {
         try {
-            auto status = store_->load<ProvisionStatus>("provision_state");
-            return status;
-        } catch (const hwyz::store::StoreException& e) {
-            if (e.getError().code == hwyz::store::StoreError::kKeyNotFound) {
-                // No state saved yet, return default
-                ProvisionStatus status;
-                status.vin = vin_;
-                status.ecu_uid = device_sn_;
-                status.state = ProvisionState::NONE;
-                status.retry_count = 0;
-                status.last_updated = std::chrono::system_clock::now();
+            auto status = load_provision_status_from_store();
+            if (status.state != ProvisionState::NONE || !status.vin.empty()) {
                 return status;
             }
-            // Other errors - fall through to state_manager
+            // If status is default, check if key exists
+            if (store_->has("provision_state")) {
+                return status;
+            }
+            // No state saved yet, fall through to state_manager
+        } catch (const std::exception& e) {
+            // Fall through to state_manager
         }
     }
 
@@ -616,7 +612,7 @@ ErrorCode SecService::load_provision_state_from_store() {
         return ErrorCode::SUCCESS;
     }
     try {
-        auto status = store_->load<ProvisionStatus>("provision_state");
+        auto status = load_provision_status_from_store();
         std::cerr << "[SEC] Loaded provision state from store: "
                   << provision_state_to_string(status.state) << std::endl;
         // Update state_manager with store state for consistency
@@ -624,12 +620,7 @@ ErrorCode SecService::load_provision_state_from_store() {
             state_manager_->update_status(status);
         }
         return ErrorCode::SUCCESS;
-    } catch (const hwyz::store::StoreException& e) {
-        if (e.getError().code == hwyz::store::StoreError::kKeyNotFound) {
-            // No state saved yet - this is normal for first run
-            std::cerr << "[SEC] No provision state in store, starting fresh" << std::endl;
-            return ErrorCode::SUCCESS;
-        }
+    } catch (const std::exception& e) {
         std::cerr << "[SEC] Failed to load provision state from store: " << e.what() << std::endl;
         return ErrorCode::STORAGE_READ_FAILED;
     }
@@ -728,10 +719,11 @@ ErrorCode SecService::store_certificate_to_file(const std::vector<uint8_t>& cert
     if (store_.has_value() && store_->isReady()) {
         try {
             std::string cert_key = "device_cert:" + vin_ + ":" + device_sn_;
-            store_->save(cert_key, cert_der);
+            std::string encoded = base64_encode(cert_der);
+            store_->save(cert_key, encoded);
             std::cout << "[SEC] Certificate stored in store with key: " << cert_key << std::endl;
             return ErrorCode::SUCCESS;
-        } catch (const hwyz::store::StoreException& e) {
+        } catch (const std::exception& e) {
             std::cerr << "[SEC] Failed to store certificate in store: " << e.what() << std::endl;
             // Fall through to file-based storage
         }
@@ -817,13 +809,8 @@ void SecService::update_provision_state(ProvisionState state, const std::string&
 
     // Try store first
     if (store_.has_value() && store_->isReady()) {
-        try {
-            store_->save("provision_state", status);
-            return;
-        } catch (const hwyz::store::StoreException& e) {
-            std::cerr << "[SEC] Failed to save provision state to store: " << e.what() << std::endl;
-            // Fall through to state_manager
-        }
+        save_provision_status_to_store(status);
+        return;
     }
 
     // Fallback to state_manager
@@ -865,9 +852,9 @@ bool SecService::save_state() {
     }
     try {
         ProvisionStatus status = get_provision_status();
-        store_->save("provision_state", status);
+        save_provision_status_to_store(status);
         return true;
-    } catch (const hwyz::store::StoreException& e) {
+    } catch (const std::exception& e) {
         std::cerr << "[SEC] Failed to save state: " << e.what() << std::endl;
         return false;
     }
@@ -880,9 +867,10 @@ ErrorCode SecService::store_certificate(const std::vector<uint8_t>& cert_der) {
     }
     try {
         std::string cert_key = "device_cert:" + vin_ + ":" + device_sn_;
-        store_->save(cert_key, cert_der);
+        std::string encoded = base64_encode(cert_der);
+        store_->save(cert_key, encoded);
         return ErrorCode::SUCCESS;
-    } catch (const hwyz::store::StoreException& e) {
+    } catch (const std::exception& e) {
         std::cerr << "[SEC] Failed to store certificate: " << e.what() << std::endl;
         return ErrorCode::STORAGE_WRITE_FAILED;
     }
@@ -1013,6 +1001,80 @@ std::string SecService::find_ca_cert_from_config() {
 #endif
 
     return "";
+}
+
+void SecService::save_provision_status_to_store(const ProvisionStatus& status) {
+    if (!store_.has_value() || !store_->isReady()) {
+        return;
+    }
+    try {
+        std::string json_str = status.to_json().dump();
+        store_->save("provision_state", json_str);
+    } catch (const std::exception& e) {
+        std::cerr << "[SEC] Failed to save provision status to store: " << e.what() << std::endl;
+    }
+}
+
+ProvisionStatus SecService::load_provision_status_from_store() const {
+    if (!store_.has_value() || !store_->isReady()) {
+        ProvisionStatus status;
+        status.state = ProvisionState::NONE;
+        return status;
+    }
+    try {
+        std::string json_str = store_->load<std::string>("provision_state");
+        nlohmann::json j = nlohmann::json::parse(json_str);
+        return ProvisionStatus::from_json(j);
+    } catch (const hwyz::store::StoreException& e) {
+        if (e.getError().code != hwyz::store::StoreError::kKeyNotFound) {
+            std::cerr << "[SEC] Failed to load provision status from store: " << e.what() << std::endl;
+        }
+        ProvisionStatus status;
+        status.state = ProvisionState::NONE;
+        return status;
+    } catch (const std::exception& e) {
+        std::cerr << "[SEC] Failed to parse provision status from store: " << e.what() << std::endl;
+        ProvisionStatus status;
+        status.state = ProvisionState::NONE;
+        return status;
+    }
+}
+
+std::string SecService::base64_encode(const std::vector<uint8_t>& data) {
+    BIO* bio = BIO_new(BIO_s_mem());
+    BIO* b64 = BIO_new(BIO_f_base64());
+    bio = BIO_push(b64, bio);
+
+    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
+    BIO_write(bio, data.data(), data.size());
+    BIO_flush(bio);
+
+    BUF_MEM* buffer_ptr;
+    BIO_get_mem_ptr(bio, &buffer_ptr);
+
+    std::string result(buffer_ptr->data, buffer_ptr->length);
+    BIO_free_all(bio);
+
+    return result;
+}
+
+std::vector<uint8_t> SecService::base64_decode(const std::string& encoded) {
+    BIO* bio = BIO_new_mem_buf(encoded.data(), encoded.size());
+    BIO* b64 = BIO_new(BIO_f_base64());
+    bio = BIO_push(b64, bio);
+
+    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
+
+    std::vector<uint8_t> result(encoded.size());
+    int decoded_length = BIO_read(bio, result.data(), encoded.size());
+    BIO_free_all(bio);
+
+    if (decoded_length < 0) {
+        return {};
+    }
+
+    result.resize(decoded_length);
+    return result;
 }
 
 } // namespace sec
