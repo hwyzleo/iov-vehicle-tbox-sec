@@ -107,3 +107,7 @@ add_test(NAME TboxSecTests COMMAND TboxSecTests)
 # Example program
 add_executable(GenerateKeysAndCsr examples/generate_keys_and_csr.cpp)
 target_link_libraries(GenerateKeysAndCsr PRIVATE TboxSecLib ${FRAMEWORK_LIB})
+
+# CLI tool for testing
+add_executable(sec_cli src/sec_cli.cpp)
+target_link_libraries(sec_cli PRIVATE TboxSecLib ${FRAMEWORK_LIB})
