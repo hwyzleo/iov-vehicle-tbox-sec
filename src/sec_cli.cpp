@@ -295,6 +295,18 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
+    else if (command == "show_config") {
+        std::cout << "HSM Type: " << config.get_hsm_type() << std::endl;
+        std::cout << "HSM Library Path: " << config.get_hsm_library_path() << std::endl;
+        std::cout << "Key Provisioning Mode: " << config.get_key_provisioning_mode() << std::endl;
+        std::cout << "Cloud Endpoint: " << config.get_cloud_endpoint() << std::endl;
+        std::cout << "Cloud Timeout: " << config.get_cloud_timeout_ms() << " ms" << std::endl;
+        std::cout << "State File: " << config.get_state_file_path() << std::endl;
+        std::cout << "CA Cert: " << (config.get_ca_cert_path().empty() ? "(not set)" : config.get_ca_cert_path()) << std::endl;
+        std::cout << "Cert Store: " << config.get_cert_store_path() << std::endl;
+        std::cout << "Soft Key Path: " << config.get_soft_key_path() << std::endl;
+        std::cout << "Is Production: " << (config.get_is_production() ? "true" : "false") << std::endl;
+    }
     else {
         std::cerr << "Unknown command: " << command << std::endl;
         print_usage();
