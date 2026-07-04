@@ -59,7 +59,10 @@ std::string der_to_pem(const std::vector<uint8_t>& der, const std::string& type)
 
 void print_usage() {
     std::cout << "SEC CLI Tool" << std::endl;
-    std::cout << "Usage: sec_cli <command> [args...]" << std::endl;
+    std::cout << "Usage: sec_cli [-c <config_root>] <command> [args...]" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Options:" << std::endl;
+    std::cout << "  -c, --config <config_root>  - Specify config root directory (default: /etc/tbox/)" << std::endl;
     std::cout << std::endl;
     std::cout << "Commands:" << std::endl;
     std::cout << "  init                         - Initialize SEC service" << std::endl;
@@ -85,9 +88,23 @@ int main(int argc, char* argv[]) {
     }
 
     std::string command = argv[1];
+    std::string configRoot = "/etc/tbox/";
+
+    // Check for config root parameter
+    if (command == "-c" || command == "--config") {
+        if (argc < 4) {
+            std::cerr << "Usage: sec_cli -c <config_root> <command> [args...]" << std::endl;
+            return 1;
+        }
+        configRoot = argv[2];
+        command = argv[3];
+        // Adjust argc/argv for remaining arguments
+        argc -= 2;
+        argv += 2;
+    }
 
     // Load framework configuration
-    auto err = CONFIG_MANAGER.load("sec");
+    auto err = CONFIG_MANAGER.load("sec", configRoot);
     if (err != hwyz::config::ConfigError::kOk) {
         auto info = CONFIG_MANAGER.getLastError();
         std::cerr << "Config load failed: " << info.message << std::endl;

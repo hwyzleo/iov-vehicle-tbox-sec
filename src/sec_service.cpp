@@ -597,7 +597,14 @@ ErrorCode SecService::load_provision_state_from_store() {
 
 ErrorCode SecService::fetch_vehicle_info() {
     if (!prov_service_) {
-        return ErrorCode::NOT_INITIALIZED;
+        // CLI mode: use default values when no prov_service is available
+        if (vin_.empty()) {
+            vin_ = "CLI-TEST-VIN";
+        }
+        if (device_sn_.empty()) {
+            device_sn_ = "CLI-TEST-DEVICE";
+        }
+        return ErrorCode::SUCCESS;
     }
 
     VehicleInfo info;

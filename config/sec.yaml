@@ -23,3 +23,9 @@ soft_key:
 
 environment:
   is_production: false
+
+log:
+  level: "INFO"
+  file: "/var/log/tbox/sec_service.log"
+  max_size_mb: 10
+  max_files: 5
