@@ -248,6 +248,31 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
+    else if (command == "verify_key") {
+        if (argc < 4) {
+            std::cerr << "Usage: sec_cli verify_key <level> <hex_key>" << std::endl;
+            return 1;
+        }
+        uint8_t level = static_cast<uint8_t>(std::stoul(argv[2], nullptr, 0));
+        std::string hex_key = argv[3];
+        
+        // Convert hex string to bytes
+        std::vector<uint8_t> key;
+        for (size_t i = 0; i < hex_key.length(); i += 2) {
+            std::string byte_string = hex_key.substr(i, 2);
+            uint8_t byte = static_cast<uint8_t>(std::stoul(byte_string, nullptr, 16));
+            key.push_back(byte);
+        }
+        
+        result = service.verify_key(level, key);
+        if (result == ErrorCode::SUCCESS) {
+            std::cout << "Key verification successful" << std::endl;
+        } else {
+            std::cerr << "Key verification failed: " 
+                      << error_code_to_string(result) << std::endl;
+            return 1;
+        }
+    }
     else {
         std::cerr << "Unknown command: " << command << std::endl;
         print_usage();
