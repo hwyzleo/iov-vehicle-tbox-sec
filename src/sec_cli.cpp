@@ -285,6 +285,16 @@ int main(int argc, char* argv[]) {
         std::string device_info = service.get_device_info();
         std::cout << device_info;
     }
+    else if (command == "reset_status") {
+        result = service.reset_provision_status();
+        if (result == ErrorCode::SUCCESS) {
+            std::cout << "Provision status reset successfully" << std::endl;
+        } else {
+            std::cerr << "Failed to reset provision status: " 
+                      << error_code_to_string(result) << std::endl;
+            return 1;
+        }
+    }
     else {
         std::cerr << "Unknown command: " << command << std::endl;
         print_usage();
