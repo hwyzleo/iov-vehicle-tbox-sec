@@ -59,7 +59,14 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // TODO: Handle commands
-    
+    if (command == "init") {
+        std::cout << "SEC service initialized successfully" << std::endl;
+    }
+    else {
+        std::cerr << "Unknown command: " << command << std::endl;
+        print_usage();
+        return 1;
+    }
+
     return 0;
 }
