@@ -273,6 +273,14 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
+    else if (command == "get_status") {
+        ProvisionStatus status = service.get_provision_status();
+        std::cout << "Provision State: " << provision_state_to_string(status.state) << std::endl;
+        std::cout << "VIN: " << (status.vin.empty() ? "(not available)" : status.vin) << std::endl;
+        std::cout << "Device SN: " << (status.ecu_uid.empty() ? "(not available)" : status.ecu_uid) << std::endl;
+        std::cout << "Retry Count: " << status.retry_count << std::endl;
+        std::cout << "Last Error: " << (status.last_error.empty() ? "(none)" : status.last_error) << std::endl;
+    }
     else {
         std::cerr << "Unknown command: " << command << std::endl;
         print_usage();
