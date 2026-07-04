@@ -36,8 +36,29 @@ int main(int argc, char* argv[]) {
 
     std::string command = argv[1];
 
-    // TODO: Load configuration and initialize service
-    
+    // Load framework configuration
+    auto err = CONFIG_MANAGER.load("sec");
+    if (err != hwyz::config::ConfigError::kOk) {
+        auto info = CONFIG_MANAGER.getLastError();
+        std::cerr << "Config load failed: " << info.message << std::endl;
+        return 1;
+    }
+
+    // Read service parameters from configuration
+    auto cfg = CONFIG_SNAPSHOT;
+    SecServiceConfig config;
+    config.config_snapshot = cfg;
+
+    // Create and initialize SEC service
+    SecService service(config);
+    auto result = service.initialize();
+
+    if (result != ErrorCode::SUCCESS) {
+        std::cerr << "Failed to initialize SEC service: " 
+                  << error_code_to_string(result) << std::endl;
+        return 1;
+    }
+
     // TODO: Handle commands
     
     return 0;
