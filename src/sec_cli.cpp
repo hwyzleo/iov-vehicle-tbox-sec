@@ -191,6 +191,16 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
+    else if (command == "apply_cert") {
+        result = service.apply_certificate();
+        if (result == ErrorCode::SUCCESS) {
+            std::cout << "Certificate application completed" << std::endl;
+        } else {
+            std::cerr << "Failed to apply certificate: " 
+                      << error_code_to_string(result) << std::endl;
+            return 1;
+        }
+    }
     else {
         std::cerr << "Unknown command: " << command << std::endl;
         print_usage();
