@@ -281,6 +281,10 @@ int main(int argc, char* argv[]) {
         std::cout << "Retry Count: " << status.retry_count << std::endl;
         std::cout << "Last Error: " << (status.last_error.empty() ? "(none)" : status.last_error) << std::endl;
     }
+    else if (command == "get_device_info") {
+        std::string device_info = service.get_device_info();
+        std::cout << device_info;
+    }
     else {
         std::cerr << "Unknown command: " << command << std::endl;
         print_usage();
