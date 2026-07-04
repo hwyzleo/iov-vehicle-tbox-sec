@@ -35,7 +35,7 @@ struct ProvisionStatus {
     std::string ecu_uid;
     ProvisionState state;
     std::string last_error;
-    int retry_count;
+    int retry_count = 0;
     std::chrono::system_clock::time_point last_updated;
 
     nlohmann::json to_json() const;
