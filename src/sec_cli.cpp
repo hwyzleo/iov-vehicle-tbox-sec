@@ -62,6 +62,16 @@ int main(int argc, char* argv[]) {
     if (command == "init") {
         std::cout << "SEC service initialized successfully" << std::endl;
     }
+    else if (command == "generate_key") {
+        result = service.generate_key_pair();
+        if (result == ErrorCode::SUCCESS) {
+            std::cout << "Key pair generated successfully" << std::endl;
+        } else {
+            std::cerr << "Failed to generate key pair: " 
+                      << error_code_to_string(result) << std::endl;
+            return 1;
+        }
+    }
     else {
         std::cerr << "Unknown command: " << command << std::endl;
         print_usage();
