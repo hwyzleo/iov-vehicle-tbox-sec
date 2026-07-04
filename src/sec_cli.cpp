@@ -7,6 +7,55 @@
 
 using namespace tbox::sec;
 
+std::string der_to_pem(const std::vector<uint8_t>& der, const std::string& type) {
+    std::string pem;
+    pem += "-----BEGIN " + type + "-----\n";
+    
+    const std::string base64_chars = 
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "abcdefghijklmnopqrstuvwxyz"
+        "0123456789+/";
+    
+    int i = 0;
+    int j = 0;
+    uint8_t char_array_3[3];
+    uint8_t char_array_4[4];
+    int in_len = der.size();
+    int pos = 0;
+    
+    while (in_len--) {
+        char_array_3[i++] = der[pos++];
+        if (i == 3) {
+            char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+            char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+            char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+            char_array_4[3] = char_array_3[2] & 0x3f;
+            
+            for (i = 0; (i < 4); i++)
+                pem += base64_chars[char_array_4[i]];
+            i = 0;
+        }
+    }
+    
+    if (i) {
+        for (j = i; j < 3; j++)
+            char_array_3[j] = '\0';
+        
+        char_array_4[0] = (char_array_3[0] & 0xfc) >> 2;
+        char_array_4[1] = ((char_array_3[0] & 0x03) << 4) + ((char_array_3[1] & 0xf0) >> 4);
+        char_array_4[2] = ((char_array_3[1] & 0x0f) << 2) + ((char_array_3[2] & 0xc0) >> 6);
+        
+        for (j = 0; (j < i + 1); j++)
+            pem += base64_chars[char_array_4[j]];
+        
+        while ((i++ < 3))
+            pem += '=';
+    }
+    
+    pem += "\n-----END " + type + "-----\n";
+    return pem;
+}
+
 void print_usage() {
     std::cout << "SEC CLI Tool" << std::endl;
     std::cout << "Usage: sec_cli <command> [args...]" << std::endl;
@@ -68,6 +117,41 @@ int main(int argc, char* argv[]) {
             std::cout << "Key pair generated successfully" << std::endl;
         } else {
             std::cerr << "Failed to generate key pair: " 
+                      << error_code_to_string(result) << std::endl;
+            return 1;
+        }
+    }
+    else if (command == "get_csr") {
+        std::vector<uint8_t> csr_der;
+        result = service.get_csr(csr_der);
+        if (result == ErrorCode::SUCCESS) {
+            std::cout << der_to_pem(csr_der, "CERTIFICATE REQUEST");
+        } else {
+            std::cerr << "Failed to get CSR: " 
+                      << error_code_to_string(result) << std::endl;
+            return 1;
+        }
+    }
+    else if (command == "save_csr") {
+        if (argc < 3) {
+            std::cerr << "Usage: sec_cli save_csr <file>" << std::endl;
+            return 1;
+        }
+        std::string file_path = argv[2];
+        std::vector<uint8_t> csr_der;
+        result = service.get_csr(csr_der);
+        if (result == ErrorCode::SUCCESS) {
+            std::ofstream file(file_path, std::ios::binary);
+            if (file.is_open()) {
+                file.write(reinterpret_cast<const char*>(csr_der.data()), csr_der.size());
+                file.close();
+                std::cout << "CSR saved to " << file_path << std::endl;
+            } else {
+                std::cerr << "Failed to open file: " << file_path << std::endl;
+                return 1;
+            }
+        } else {
+            std::cerr << "Failed to get CSR: " 
                       << error_code_to_string(result) << std::endl;
             return 1;
         }
