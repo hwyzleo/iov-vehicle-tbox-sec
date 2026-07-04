@@ -166,6 +166,31 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
+    else if (command == "inject_cert") {
+        if (argc < 3) {
+            std::cerr << "Usage: sec_cli inject_cert <file>" << std::endl;
+            return 1;
+        }
+        std::string file_path = argv[2];
+        std::ifstream file(file_path, std::ios::binary);
+        if (!file.is_open()) {
+            std::cerr << "Failed to open file: " << file_path << std::endl;
+            return 1;
+        }
+        std::vector<uint8_t> cert_der(
+            (std::istreambuf_iterator<char>(file)),
+            std::istreambuf_iterator<char>());
+        file.close();
+        
+        result = service.inject_certificate(cert_der);
+        if (result == ErrorCode::SUCCESS) {
+            std::cout << "Certificate injected successfully" << std::endl;
+        } else {
+            std::cerr << "Failed to inject certificate: " 
+                      << error_code_to_string(result) << std::endl;
+            return 1;
+        }
+    }
     else {
         std::cerr << "Unknown command: " << command << std::endl;
         print_usage();
