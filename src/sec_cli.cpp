@@ -4,6 +4,7 @@
 #include <string>
 #include <fstream>
 #include <vector>
+#include <iomanip>
 
 using namespace tbox::sec;
 
@@ -222,6 +223,27 @@ int main(int argc, char* argv[]) {
             std::cout << "CA certificate set successfully" << std::endl;
         } else {
             std::cerr << "Failed to set CA certificate: " 
+                      << error_code_to_string(result) << std::endl;
+            return 1;
+        }
+    }
+    else if (command == "get_seed") {
+        if (argc < 3) {
+            std::cerr << "Usage: sec_cli get_seed <level>" << std::endl;
+            return 1;
+        }
+        uint8_t level = static_cast<uint8_t>(std::stoul(argv[2], nullptr, 0));
+        std::vector<uint8_t> seed;
+        result = service.get_seed(level, seed);
+        if (result == ErrorCode::SUCCESS) {
+            std::cout << "Seed: ";
+            for (auto b : seed) {
+                std::cout << std::hex << std::setw(2) << std::setfill('0') 
+                          << static_cast<int>(b);
+            }
+            std::cout << std::endl;
+        } else {
+            std::cerr << "Failed to get seed: " 
                       << error_code_to_string(result) << std::endl;
             return 1;
         }
