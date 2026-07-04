@@ -156,6 +156,16 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
+    else if (command == "submit_csr") {
+        result = service.submit_csr();
+        if (result == ErrorCode::SUCCESS) {
+            std::cout << "CSR submitted successfully" << std::endl;
+        } else {
+            std::cerr << "Failed to submit CSR: " 
+                      << error_code_to_string(result) << std::endl;
+            return 1;
+        }
+    }
     else {
         std::cerr << "Unknown command: " << command << std::endl;
         print_usage();
