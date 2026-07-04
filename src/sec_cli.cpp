@@ -201,6 +201,31 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
+    else if (command == "set_ca_cert") {
+        if (argc < 3) {
+            std::cerr << "Usage: sec_cli set_ca_cert <file>" << std::endl;
+            return 1;
+        }
+        std::string file_path = argv[2];
+        std::ifstream file(file_path, std::ios::binary);
+        if (!file.is_open()) {
+            std::cerr << "Failed to open file: " << file_path << std::endl;
+            return 1;
+        }
+        std::vector<uint8_t> ca_cert_der(
+            (std::istreambuf_iterator<char>(file)),
+            std::istreambuf_iterator<char>());
+        file.close();
+        
+        result = service.set_ca_certificate(ca_cert_der);
+        if (result == ErrorCode::SUCCESS) {
+            std::cout << "CA certificate set successfully" << std::endl;
+        } else {
+            std::cerr << "Failed to set CA certificate: " 
+                      << error_code_to_string(result) << std::endl;
+            return 1;
+        }
+    }
     else {
         std::cerr << "Unknown command: " << command << std::endl;
         print_usage();
