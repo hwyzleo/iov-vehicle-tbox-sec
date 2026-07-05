@@ -69,12 +69,7 @@ ErrorCode SecService::initialize() {
         return ErrorCode::CONFIG_ERROR;
     }
 
-    ErrorCode result = fetch_vehicle_info();
-    if (result != ErrorCode::SUCCESS) {
-        return result;
-    }
-
-    result = initialize_hsm();
+    ErrorCode result = initialize_hsm();
     if (result != ErrorCode::SUCCESS) {
         return result;
     }
@@ -170,6 +165,11 @@ ErrorCode SecService::generate_key_pair() {
         return ErrorCode::NOT_INITIALIZED;
     }
 
+    ErrorCode prov_result = ensure_vehicle_info();
+    if (prov_result != ErrorCode::SUCCESS) {
+        return prov_result;
+    }
+
     ProvisionStatus status = get_provision_status();
 
     // 检查密钥是否真正存在于 HSM 中
@@ -213,6 +213,11 @@ ErrorCode SecService::get_csr(std::vector<uint8_t>& csr_der) {
         return ErrorCode::NOT_INITIALIZED;
     }
 
+    ErrorCode prov_result = ensure_vehicle_info();
+    if (prov_result != ErrorCode::SUCCESS) {
+        return prov_result;
+    }
+
     ProvisionStatus status = get_provision_status();
     std::cout << "[SEC] get_csr: state=" << static_cast<int>(status.state) << std::endl;
 
@@ -241,6 +246,11 @@ ErrorCode SecService::get_csr(std::vector<uint8_t>& csr_der) {
 ErrorCode SecService::submit_csr() {
     if (!initialized_) {
         return ErrorCode::NOT_INITIALIZED;
+    }
+
+    ErrorCode prov_result = ensure_vehicle_info();
+    if (prov_result != ErrorCode::SUCCESS) {
+        return prov_result;
     }
 
     ProvisionStatus status = get_provision_status();
@@ -276,6 +286,11 @@ ErrorCode SecService::submit_csr() {
 ErrorCode SecService::inject_certificate(const std::vector<uint8_t>& cert_der) {
     if (!initialized_) {
         return ErrorCode::NOT_INITIALIZED;
+    }
+
+    ErrorCode prov_result = ensure_vehicle_info();
+    if (prov_result != ErrorCode::SUCCESS) {
+        return prov_result;
     }
 
     ProvisionStatus status = get_provision_status();
@@ -541,8 +556,8 @@ ErrorCode SecService::reset_provision_status() {
 
 std::string SecService::get_device_info() const {
     std::stringstream ss;
-    ss << "VIN: " << vin_ << "\n";
-    ss << "ECU UID: " << ecu_uid_ << "\n";
+    ss << "VIN: " << (vin_.empty() ? "(not configured)" : vin_) << "\n";
+    ss << "ECU UID: " << (ecu_uid_.empty() ? "(not configured)" : ecu_uid_) << "\n";
     ss << "HSM Type: " << config_.get_hsm_type() << "\n";
     ss << "Initialized: " << (initialized_ ? "Yes" : "No") << "\n";
     ss << "DIAG Service: " << (diag_service_ ? (diag_service_->is_connected() ? "Connected" : "Disconnected") : "Not available") << "\n";
@@ -629,28 +644,34 @@ ErrorCode SecService::load_provision_state_from_store() {
     }
 }
 
-ErrorCode SecService::fetch_vehicle_info() {
+ErrorCode SecService::ensure_vehicle_info() {
+    if (!vin_.empty() && !ecu_uid_.empty()) {
+        return ErrorCode::SUCCESS;
+    }
+
     if (!prov_service_) {
-        std::cerr << "[SEC] ProvService not available - cannot fetch vehicle info" << std::endl;
-        return ErrorCode::NOT_INITIALIZED;
+        std::cerr << "[SEC] Cannot fetch vehicle info: ProvService not available"
+                  << std::endl;
+        return ErrorCode::PROV_NOT_CONFIGURED;
     }
 
     VehicleInfo info;
     ErrorCode result = prov_service_->get_vehicle_info(info);
     if (result != ErrorCode::SUCCESS) {
-        std::cerr << "[SEC] Failed to get vehicle info from ProvService: " 
-                  << static_cast<int>(result) << std::endl;
         return result;
     }
 
     if (info.vin.empty() || info.ecu_uid.empty()) {
-        std::cerr << "[SEC] Invalid vehicle info: vin='" << info.vin 
-                  << "' ecu_uid='" << info.ecu_uid << "'" << std::endl;
-        return ErrorCode::INVALID_PARAMETER;
+        std::cerr << "[SEC] VIN/ECU UID still not configured in PROV - "
+                  << "cannot proceed with provisioning operation"
+                  << std::endl;
+        return ErrorCode::PROV_NOT_CONFIGURED;
     }
 
     vin_ = info.vin;
     ecu_uid_ = info.ecu_uid;
+    std::cout << "[SEC] Lazily fetched vehicle info: vin=" << vin_
+              << " ecu_uid=" << ecu_uid_ << std::endl;
     return ErrorCode::SUCCESS;
 }
 

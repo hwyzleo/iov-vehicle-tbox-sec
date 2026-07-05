@@ -233,7 +233,7 @@ private:
     ErrorCode initialize_hsm();
     ErrorCode initialize_cloud_client();
     ErrorCode load_provision_state_from_store();
-    ErrorCode fetch_vehicle_info();
+    ErrorCode ensure_vehicle_info();
 
 public:
     ErrorCode generate_and_store_key_pair();

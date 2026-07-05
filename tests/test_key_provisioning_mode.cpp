@@ -27,6 +27,28 @@ public:
     }
 };
 
+// Mock PROV service that returns empty VIN/ECU UID (not configured yet)
+class UnconfiguredProvService : public ProvServiceInterface {
+public:
+    ErrorCode initialize() override {
+        return ErrorCode::SUCCESS;
+    }
+
+    ErrorCode get_vehicle_info(VehicleInfo& info) override {
+        info.vin = "";
+        info.ecu_uid = "";
+        return ErrorCode::SUCCESS;
+    }
+
+    bool is_connected() const override {
+        return true;
+    }
+
+    std::string get_service_status() const override {
+        return "Unconfigured";
+    }
+};
+
 class KeyProvisioningModeTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -139,4 +161,36 @@ TEST_F(KeyProvisioningModeTest, InvalidModeDefaultsToHsm) {
     auto service = std::make_unique<SecService>(config, nullptr, prov_service);
     auto err = service->initialize();
     EXPECT_EQ(err, ErrorCode::SUCCESS);
+}
+
+TEST_F(KeyProvisioningModeTest, InitWithUnconfiguredProv) {
+    SecServiceConfig config;
+    config.hsm_type = "software";
+    config.key_provisioning_mode = "hsm";
+    config.state_file_path = state_file_;
+    config.is_production = false;
+    config.store_root = test_dir_;
+
+    auto prov_service = std::make_shared<UnconfiguredProvService>();
+    auto service = std::make_unique<SecService>(config, nullptr, prov_service);
+    auto err = service->initialize();
+    EXPECT_EQ(err, ErrorCode::SUCCESS);
+    EXPECT_TRUE(service->is_initialized());
+}
+
+TEST_F(KeyProvisioningModeTest, GenerateKeyFailsWhenProvNotConfigured) {
+    SecServiceConfig config;
+    config.hsm_type = "software";
+    config.key_provisioning_mode = "hsm";
+    config.state_file_path = state_file_;
+    config.is_production = false;
+    config.store_root = test_dir_;
+
+    auto prov_service = std::make_shared<UnconfiguredProvService>();
+    auto service = std::make_unique<SecService>(config, nullptr, prov_service);
+    auto err = service->initialize();
+    ASSERT_EQ(err, ErrorCode::SUCCESS);
+
+    err = service->generate_key_pair();
+    EXPECT_EQ(err, ErrorCode::PROV_NOT_CONFIGURED);
 }

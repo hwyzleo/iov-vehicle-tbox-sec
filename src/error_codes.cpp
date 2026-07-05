@@ -38,6 +38,7 @@ std::string error_code_to_string(ErrorCode code) {
         case ErrorCode::OPERATION_IN_PROGRESS: return "OPERATION_IN_PROGRESS";
         case ErrorCode::NOT_IMPLEMENTED: return "NOT_IMPLEMENTED";
         case ErrorCode::CONNECTION_FAILED: return "CONNECTION_FAILED";
+        case ErrorCode::PROV_NOT_CONFIGURED: return "PROV_NOT_CONFIGURED";
         case ErrorCode::SOFT_KEY_MODE_NOT_ALLOWED: return "SOFT_KEY_MODE_NOT_ALLOWED";
         case ErrorCode::CONFIG_ERROR: return "CONFIG_ERROR";
         case ErrorCode::INTERNAL_ERROR: return "INTERNAL_ERROR";
@@ -80,6 +81,7 @@ std::string error_code_to_description(ErrorCode code) {
         case ErrorCode::OPERATION_IN_PROGRESS: return "Another operation is already in progress";
         case ErrorCode::NOT_IMPLEMENTED: return "Operation not implemented";
         case ErrorCode::CONNECTION_FAILED: return "Failed to connect to service";
+        case ErrorCode::PROV_NOT_CONFIGURED: return "PROV service has not configured VIN/ECU UID yet";
         case ErrorCode::SOFT_KEY_MODE_NOT_ALLOWED: return "Software key file mode not allowed in production environment";
         case ErrorCode::CONFIG_ERROR: return "Configuration error";
         case ErrorCode::INTERNAL_ERROR: return "Internal error";

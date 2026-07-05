@@ -22,8 +22,9 @@ ErrorCode IpcProvService::get_vehicle_info(VehicleInfo& info) {
     info.ecu_uid = binding.ecu_uid;
 
     if (info.vin.empty() || info.ecu_uid.empty()) {
-        std::cerr << "[SEC] Empty VIN or ECU UID from PROV service" << std::endl;
-        return ErrorCode::INVALID_PARAMETER;
+        std::cerr << "[SEC] PROV service connected but VIN/ECU UID not configured yet"
+                  << std::endl;
+        return ErrorCode::SUCCESS;
     }
 
     std::cout << "[SEC] Vehicle info from PROV: vin=" << info.vin
