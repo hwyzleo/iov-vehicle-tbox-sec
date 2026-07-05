@@ -63,7 +63,8 @@ public:
     };
 
     static std::unique_ptr<HsmInterface> create(HsmType type,
-                                               const std::string& config_path = "");
+                                               const std::string& config_path = "",
+                                               const std::string& store_root = "");
 };
 
 } // namespace sec

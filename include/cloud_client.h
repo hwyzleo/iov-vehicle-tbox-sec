@@ -14,9 +14,9 @@ namespace sec {
 
 struct CloudConfig {
     std::string oapi_endpoint;
-    int timeout_ms;
-    int retry_count;
-    int retry_delay_ms;
+    int timeout_ms = 5000;
+    int retry_count = 3;
+    int retry_delay_ms = 1000;
 };
 
 struct CertificateRequest {

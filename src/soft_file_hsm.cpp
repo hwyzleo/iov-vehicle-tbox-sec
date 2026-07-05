@@ -47,6 +47,9 @@ ErrorCode SoftFileHsm::initialize() {
     if (fs::exists(encryption_key_path_)) {
         auto rc = load_encryption_key();
         if (rc != ErrorCode::SUCCESS) return rc;
+    } else {
+        auto rc = generate_encryption_key();
+        if (rc != ErrorCode::SUCCESS) return rc;
     }
 
     return ErrorCode::SUCCESS;

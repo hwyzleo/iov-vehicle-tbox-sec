@@ -8,7 +8,7 @@ namespace sec {
 
 struct VehicleInfo {
     std::string vin;           // 保留但不再用于证书
-    std::string device_sn;     // 设备序列号，出厂锁定绑定芯片UID
+    std::string ecu_uid;       // ECU硬件序列号，出厂锁定绑定芯片UID
 };
 
 class ProvServiceInterface {

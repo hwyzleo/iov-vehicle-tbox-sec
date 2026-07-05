@@ -64,7 +64,7 @@ public:
     
     ErrorCode get_vehicle_info(VehicleInfo& info) override {
         info.vin = "TESTVIN1234567890";
-        info.device_sn = "TBOX-DEV-001";
+        info.ecu_uid = "TBOX-DEV-001";
         return ErrorCode::SUCCESS;
     }
     
@@ -128,6 +128,8 @@ protected:
 TEST_F(SecServiceWithDiagTest, InitializeWithDiagService) {
     SecServiceConfig config;
     config.config_snapshot = config_snapshot_;
+    config.store_root = store_dir_;
+    config.soft_key_config.key_path = store_dir_;
     
     auto prov_service = std::make_shared<SimpleProvService>();
 
@@ -143,6 +145,8 @@ TEST_F(SecServiceWithDiagTest, InitializeWithDiagService) {
 TEST_F(SecServiceWithDiagTest, GenerateKeyPairViaDiag) {
     SecServiceConfig config;
     config.config_snapshot = config_snapshot_;
+    config.store_root = store_dir_;
+    config.soft_key_config.key_path = store_dir_;
 
     auto prov_service = std::make_shared<SimpleProvService>();
     SecService service(config, mock_diag_service, prov_service, std::move(*store_));
@@ -158,6 +162,8 @@ TEST_F(SecServiceWithDiagTest, GenerateKeyPairViaDiag) {
 TEST_F(SecServiceWithDiagTest, ApplyCertificateViaDiag) {
     SecServiceConfig config;
     config.config_snapshot = config_snapshot_;
+    config.store_root = store_dir_;
+    config.soft_key_config.key_path = store_dir_;
 
     auto prov_service = std::make_shared<SimpleProvService>();
     SecService service(config, mock_diag_service, prov_service, std::move(*store_));
@@ -251,6 +257,8 @@ protected:
 TEST_F(SecServiceDiagFailureTest, GenerateKeyPairFailsWhenDisconnected) {
     SecServiceConfig config;
     config.config_snapshot = config_snapshot_;
+    config.store_root = store_dir_;
+    config.soft_key_config.key_path = store_dir_;
 
     auto prov_service = std::make_shared<SimpleProvService>();
     SecService service(config, failing_diag_service, prov_service, std::move(*store_));
@@ -264,6 +272,8 @@ TEST_F(SecServiceDiagFailureTest, GenerateKeyPairFailsWhenDisconnected) {
 TEST_F(SecServiceDiagFailureTest, ApplyCertificateFailsWhenDisconnected) {
     SecServiceConfig config;
     config.config_snapshot = config_snapshot_;
+    config.store_root = store_dir_;
+    config.soft_key_config.key_path = store_dir_;
 
     auto prov_service = std::make_shared<SimpleProvService>();
     SecService service(config, failing_diag_service, prov_service, std::move(*store_));
@@ -321,6 +331,8 @@ protected:
 TEST_F(SecServiceFallbackTest, GenerateKeyPairWithoutDiagService) {
     SecServiceConfig config;
     config.config_snapshot = config_snapshot_;
+    config.store_root = store_dir_;
+    config.soft_key_config.key_path = store_dir_;
 
     auto prov_service = std::make_shared<SimpleProvService>();
     SecService service(config, nullptr, prov_service, std::move(*store_));
@@ -334,6 +346,8 @@ TEST_F(SecServiceFallbackTest, GenerateKeyPairWithoutDiagService) {
 TEST_F(SecServiceFallbackTest, ApplyCertificateWithoutDiagService) {
     SecServiceConfig config;
     config.config_snapshot = config_snapshot_;
+    config.store_root = store_dir_;
+    config.soft_key_config.key_path = store_dir_;
 
     auto prov_service = std::make_shared<SimpleProvService>();
     SecService service(config, nullptr, prov_service, std::move(*store_));

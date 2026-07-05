@@ -1,6 +1,7 @@
 #include "sec_service.h"
 #include "hsm_interface.h"
 #include "constants.h"
+#include "ipc_server.h"
 #include <sstream>
 #include <iomanip>
 #include <random>
@@ -20,6 +21,10 @@ namespace tbox {
 namespace sec {
 
 SecService::SecService() : initialized_(false), store_(std::nullopt) {}
+
+SecService::~SecService() {
+    stop_ipc_server();
+}
 
 SecService::SecService(const SecServiceConfig& config)
     : config_(config), initialized_(false), store_(std::nullopt) {}
@@ -135,6 +140,31 @@ ErrorCode SecService::initialize() {
     return ErrorCode::SUCCESS;
 }
 
+bool SecService::start_ipc_server() {
+    if (!initialized_) {
+        return false;
+    }
+
+    if (ipc_server_) {
+        return true;
+    }
+
+    ipc_server_ = std::make_unique<ipc::IpcServer>(ipc_socket_path_);
+    if (!ipc_server_->start(this)) {
+        ipc_server_.reset();
+        return false;
+    }
+
+    return true;
+}
+
+void SecService::stop_ipc_server() {
+    if (ipc_server_) {
+        ipc_server_->stop();
+        ipc_server_.reset();
+    }
+}
+
 ErrorCode SecService::generate_key_pair() {
     if (!initialized_) {
         return ErrorCode::NOT_INITIALIZED;
@@ -146,7 +176,7 @@ ErrorCode SecService::generate_key_pair() {
     if (status.state != ProvisionState::NONE &&
         status.state != ProvisionState::FAILED) {
         // 检查 HSM 中是否真的有密钥
-        if (key_engine_ && key_engine_->device_key_exists(vin_, device_sn_)) {
+        if (key_engine_ && key_engine_->device_key_exists(vin_, ecu_uid_)) {
             // 密钥确实存在，静默返回成功
             return ErrorCode::SUCCESS;
         }
@@ -512,7 +542,7 @@ ErrorCode SecService::reset_provision_status() {
 std::string SecService::get_device_info() const {
     std::stringstream ss;
     ss << "VIN: " << vin_ << "\n";
-    ss << "Device SN: " << device_sn_ << "\n";
+    ss << "ECU UID: " << ecu_uid_ << "\n";
     ss << "HSM Type: " << config_.get_hsm_type() << "\n";
     ss << "Initialized: " << (initialized_ ? "Yes" : "No") << "\n";
     ss << "DIAG Service: " << (diag_service_ ? (diag_service_->is_connected() ? "Connected" : "Disconnected") : "Not available") << "\n";
@@ -551,6 +581,10 @@ ErrorCode SecService::initialize_hsm() {
             // 软件落盘模式
             hsm_type = HsmFactory::HsmType::SOFT_FILE;
             config_path = config_.get_soft_key_path();
+            std::string store_root = config_.get_store_root();
+            if (!store_root.empty()) {
+                config_path = store_root;
+            }
         } else {
             // HSM 模式（默认）
             std::string hsm_type_str = config_.get_hsm_type();
@@ -566,7 +600,7 @@ ErrorCode SecService::initialize_hsm() {
             config_path = config_.get_hsm_library_path();
         }
 
-        auto hsm = HsmFactory::create(hsm_type, config_path);
+        auto hsm = HsmFactory::create(hsm_type, config_path, config_.get_store_root());
         key_engine_ = std::make_unique<KeyEngine>(std::move(hsm));
 
         return key_engine_->initialize();
@@ -597,26 +631,34 @@ ErrorCode SecService::load_provision_state_from_store() {
 
 ErrorCode SecService::fetch_vehicle_info() {
     if (!prov_service_) {
-        // No prov_service available - VIN and device SN remain empty
-        return ErrorCode::SUCCESS;
+        std::cerr << "[SEC] ProvService not available - cannot fetch vehicle info" << std::endl;
+        return ErrorCode::NOT_INITIALIZED;
     }
 
     VehicleInfo info;
     ErrorCode result = prov_service_->get_vehicle_info(info);
     if (result != ErrorCode::SUCCESS) {
+        std::cerr << "[SEC] Failed to get vehicle info from ProvService: " 
+                  << static_cast<int>(result) << std::endl;
         return result;
     }
 
+    if (info.vin.empty() || info.ecu_uid.empty()) {
+        std::cerr << "[SEC] Invalid vehicle info: vin='" << info.vin 
+                  << "' ecu_uid='" << info.ecu_uid << "'" << std::endl;
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
     vin_ = info.vin;
-    device_sn_ = info.device_sn;
+    ecu_uid_ = info.ecu_uid;
     return ErrorCode::SUCCESS;
 }
 
 ErrorCode SecService::generate_and_store_key_pair() {
     KeyPair key_pair;
-    std::cout << "[SEC] Generating key pair with vin=" << vin_ << " device_sn=" << device_sn_ << std::endl;
+    std::cout << "[SEC] Generating key pair with vin=" << vin_ << " ecu_uid=" << ecu_uid_ << std::endl;
 
-    auto err = key_engine_->generate_device_key(vin_, device_sn_, key_pair);
+    auto err = key_engine_->generate_device_key(vin_, ecu_uid_, key_pair);
     if (err != ErrorCode::SUCCESS) {
         return err;
     }
@@ -637,11 +679,11 @@ ErrorCode SecService::build_and_store_csr() {
     }
 
     CsrConfig csr_config;
-    csr_config.device_sn = device_sn_;
-    csr_config.key_id = device_sn_;  // key_id 暂时使用 device_sn
+    csr_config.device_sn = ecu_uid_;
+    csr_config.key_id = ecu_uid_;  // key_id 使用 ecu_uid
     csr_config.algorithm = "ecdsa-p256";
 
-    std::cout << "[SEC] Building CSR with vin=" << vin_ << " device_sn=" << device_sn_ << std::endl;
+    std::cout << "[SEC] Building CSR with vin=" << vin_ << " ecu_uid=" << ecu_uid_ << std::endl;
     ErrorCode result = csr_builder_->build_csr(vin_, csr_config, csr_der_);
     std::cout << "[SEC] build_csr result=" << static_cast<int>(result)
               << " csr_der_.size()=" << csr_der_.size() << std::endl;
@@ -650,7 +692,7 @@ ErrorCode SecService::build_and_store_csr() {
 
 ErrorCode SecService::submit_csr_to_cloud() {
     CertificateRequest request;
-    request.device_sn = device_sn_;
+    request.device_sn = ecu_uid_;
     request.csr_der = {0x30, 0x82, 0x01, 0x00};
 
     CertificateResponse response;
@@ -663,7 +705,7 @@ ErrorCode SecService::validate_and_store_certificate(const std::vector<uint8_t>&
     }
 
     bool valid = false;
-    ErrorCode result = cert_validator_->validate_certificate(vin_, device_sn_, cert_der, valid);
+    ErrorCode result = cert_validator_->validate_certificate(vin_, ecu_uid_, cert_der, valid);
 
     if (result != ErrorCode::SUCCESS) {
         return result;
@@ -688,7 +730,7 @@ ErrorCode SecService::store_certificate_to_file(const std::vector<uint8_t>& cert
     // Try store first
     if (store_.has_value() && store_->isReady()) {
         try {
-            std::string cert_key = "device_cert:" + vin_ + ":" + device_sn_;
+            std::string cert_key = "device_cert:" + vin_ + ":" + ecu_uid_;
             std::string encoded = base64_encode(cert_der);
             store_->save(cert_key, encoded);
             std::cout << "[SEC] Certificate stored in store with key: " << cert_key << std::endl;
@@ -718,7 +760,7 @@ ErrorCode SecService::store_certificate_to_file(const std::vector<uint8_t>& cert
     }
 
     // Generate certificate filename: {vin}_{ecu_uid}.der
-    std::string cert_path = cert_dir + "/" + vin_ + "_" + device_sn_ + ".der";
+    std::string cert_path = cert_dir + "/" + vin_ + "_" + ecu_uid_ + ".der";
 
     // Write certificate to file
     std::ofstream cert_file(cert_path, std::ios::binary);

@@ -18,6 +18,10 @@
 namespace tbox {
 namespace sec {
 
+namespace ipc {
+class IpcServer;
+}
+
 enum class ProvisionState {
     NONE,
     KEY_GENERATED,
@@ -59,6 +63,7 @@ struct SecServiceConfig {
     bool is_production = false;
     SoftKeyConfig soft_key_config;
     CloudConfig cloud_config;
+    std::string store_root;  // Store root path (empty = default)
 
     // New config snapshot (optional, takes precedence when set)
     std::shared_ptr<const hwyz::config::ImmutableConfigView> config_snapshot;
@@ -142,6 +147,12 @@ struct SecServiceConfig {
         config.retry_delay_ms = get_cloud_retry_delay_ms();
         return config;
     }
+
+    std::string get_store_root() const {
+        if (config_snapshot) return config_snapshot->getString("store.root", "/var/lib/tbox");
+        if (!store_root.empty()) return store_root;
+        return "/var/lib/tbox";
+    }
 };
 
 class SecService : public std::enable_shared_from_this<SecService> {
@@ -159,9 +170,12 @@ public:
                std::shared_ptr<ProvServiceInterface> prov_service,
                hwyz::store::Store store);
 
-    virtual ~SecService() = default;
+    virtual ~SecService();
 
     virtual ErrorCode initialize();
+
+    virtual bool start_ipc_server();
+    virtual void stop_ipc_server();
 
     virtual ErrorCode generate_key_pair();
 
@@ -203,9 +217,11 @@ private:
     std::shared_ptr<DiagServiceInterface> diag_service_;
     std::shared_ptr<ProvServiceInterface> prov_service_;
     std::optional<hwyz::store::Store> store_;
+    std::unique_ptr<ipc::IpcServer> ipc_server_;
+    std::string ipc_socket_path_ = "/tmp/tbox-sec.sock";
 
     std::string vin_;
-    std::string device_sn_;
+    std::string ecu_uid_;
 
     std::unique_ptr<KeyEngine> key_engine_;
     std::unique_ptr<CsrBuilder> csr_builder_;

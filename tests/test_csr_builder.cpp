@@ -132,7 +132,7 @@ TEST_F(CsrBuilderTest, SanExtensionWithoutVin) {
     config.algorithm = "SHA256withECDSA";
 
     std::vector<uint8_t> csr_der;
-    ASSERT_EQ(builder->build_csr("", config, csr_der), ErrorCode::SUCCESS);
+    ASSERT_EQ(builder->build_csr(test_vin, config, csr_der), ErrorCode::SUCCESS);
 
     const unsigned char* p = csr_der.data();
     X509_REQ* req = d2i_X509_REQ(nullptr, &p, static_cast<long>(csr_der.size()));

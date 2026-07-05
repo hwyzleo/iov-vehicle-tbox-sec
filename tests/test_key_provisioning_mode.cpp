@@ -14,7 +14,7 @@ public:
 
     ErrorCode get_vehicle_info(VehicleInfo& info) override {
         info.vin = "TESTVIN1234567890";
-        info.device_sn = "00000000000000000000000000000001";
+        info.ecu_uid = "00000000000000000000000000000001";
         return ErrorCode::SUCCESS;
     }
 
@@ -54,6 +54,7 @@ TEST_F(KeyProvisioningModeTest, HsmModeDefault) {
     config.key_provisioning_mode = "hsm";
     config.state_file_path = state_file_;
     config.is_production = false;
+    config.store_root = test_dir_;
 
     auto prov_service = std::make_shared<MockProvServiceForModeTest>();
     auto service = std::make_unique<SecService>(config, nullptr, prov_service);
@@ -68,6 +69,7 @@ TEST_F(KeyProvisioningModeTest, SoftFileModeInTestEnv) {
     config.soft_key_config.key_path = test_dir_;
     config.state_file_path = state_file_;
     config.is_production = false;
+    config.store_root = test_dir_;
 
     auto prov_service = std::make_shared<MockProvServiceForModeTest>();
     auto service = std::make_unique<SecService>(config, nullptr, prov_service);
@@ -82,6 +84,7 @@ TEST_F(KeyProvisioningModeTest, SoftFileModeInProductionFails) {
     config.soft_key_config.key_path = test_dir_;
     config.state_file_path = state_file_;
     config.is_production = true;
+    config.store_root = test_dir_;
 
     auto prov_service = std::make_shared<MockProvServiceForModeTest>();
     auto service = std::make_unique<SecService>(config, nullptr, prov_service);
@@ -95,6 +98,7 @@ TEST_F(KeyProvisioningModeTest, GenerateKeyInHsmMode) {
     config.key_provisioning_mode = "hsm";
     config.state_file_path = state_file_;
     config.is_production = false;
+    config.store_root = test_dir_;
 
     auto prov_service = std::make_shared<MockProvServiceForModeTest>();
     auto service = std::make_unique<SecService>(config, nullptr, prov_service);
@@ -112,6 +116,7 @@ TEST_F(KeyProvisioningModeTest, GenerateKeyInSoftFileMode) {
     config.soft_key_config.key_path = test_dir_;
     config.state_file_path = state_file_;
     config.is_production = false;
+    config.store_root = test_dir_;
 
     auto prov_service = std::make_shared<MockProvServiceForModeTest>();
     auto service = std::make_unique<SecService>(config, nullptr, prov_service);
@@ -128,6 +133,7 @@ TEST_F(KeyProvisioningModeTest, InvalidModeDefaultsToHsm) {
     config.key_provisioning_mode = "invalid_mode";
     config.state_file_path = state_file_;
     config.is_production = false;
+    config.store_root = test_dir_;
 
     auto prov_service = std::make_shared<MockProvServiceForModeTest>();
     auto service = std::make_unique<SecService>(config, nullptr, prov_service);

@@ -1,4 +1,7 @@
 # TBOX 公共配置
+store:
+  root: "/var/lib/tbox"
+
 cloud:
   endpoint: "https://api.example.com"
   timeout_ms: 5000

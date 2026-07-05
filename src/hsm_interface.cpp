@@ -144,12 +144,15 @@ private:
 };
 
 std::unique_ptr<HsmInterface> HsmFactory::create(HsmType type,
-                                                 const std::string& config_path) {
+                                                 const std::string& config_path,
+                                                 const std::string& store_root) {
     switch (type) {
         case HsmType::SOFTWARE:
             return std::make_unique<SoftwareHsm>(config_path);
         case HsmType::SOFT_FILE: {
-            auto store = hwyz::store::Store::open("sec");
+            auto store = store_root.empty()
+                ? hwyz::store::Store::open("sec")
+                : hwyz::store::Store::open("sec", store_root);
             std::string enc_key_path = config_path.empty()
                 ? std::string(DEFAULT_SOFT_KEY_PATH) + "/.encryption_key"
                 : config_path + "/.encryption_key";

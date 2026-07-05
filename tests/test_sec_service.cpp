@@ -19,7 +19,7 @@ public:
     
     ErrorCode get_vehicle_info(VehicleInfo& info) override {
         info.vin = "TESTVIN1234567890";
-        info.device_sn = "TBOX-DEV-001";
+        info.ecu_uid = "TBOX-DEV-001";
         return ErrorCode::SUCCESS;
     }
     
@@ -79,6 +79,8 @@ protected:
 TEST_F(SecServiceTest, InitializeSuccess) {
     SecServiceConfig config;
     config.config_snapshot = config_snapshot_;
+    config.store_root = store_dir_;
+    config.soft_key_config.key_path = store_dir_;
     
     // Create simple prov service
     auto prov_service = std::make_shared<SimpleProvService>();

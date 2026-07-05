@@ -19,7 +19,7 @@ public:
 
     ErrorCode get_vehicle_info(VehicleInfo& info) override {
         info.vin = "TESTVIN1234567890";
-        info.device_sn = "TESTDEVICE001";
+        info.ecu_uid = "TESTDEVICE001";
         return ErrorCode::SUCCESS;
     }
 
@@ -98,6 +98,8 @@ TEST_F(FrameworkIntegrationTest, EndToEndWorkflow) {
 
     SecServiceConfig config;
     config.config_snapshot = config_snapshot;
+    config.store_root = store_dir_;
+    config.soft_key_config.key_path = store_dir_;
 
     auto prov_service = std::make_shared<MockProvService>();
     SecService service(config, nullptr, prov_service, std::move(store));
