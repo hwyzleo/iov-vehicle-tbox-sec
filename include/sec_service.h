@@ -149,7 +149,7 @@ struct SecServiceConfig {
     }
 
     std::string get_store_root() const {
-        if (config_snapshot) return config_snapshot->getString("store.root", "/var/lib/tbox");
+        if (config_snapshot) return config_snapshot->getString("common.store.root", "/var/tbox/sec");
         if (!store_root.empty()) return store_root;
         return "/var/lib/tbox";
     }

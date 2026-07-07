@@ -1,5 +1,6 @@
-store:
-  root: "."
+common:
+  store:
+    root: "."
 
 # PROV service configuration
 prov:
