@@ -270,6 +270,17 @@ std::string IpcServer::handle_request(const std::string& request_data) {
                 status_code = static_cast<int32_t>(result);
                 break;
             }
+            case MethodId::EXPORT_PRIVATE_KEY: {
+                std::vector<uint8_t> priv_key;
+                auto result = service_->export_private_key(priv_key);
+                if (result == ErrorCode::SUCCESS) {
+                    result_json = "{\"private_key\":\"" + IpcSerializer::base64_encode(priv_key) + "\"}";
+                } else {
+                    result_json = "{\"success\":false}";
+                }
+                status_code = static_cast<int32_t>(result);
+                break;
+            }
             case MethodId::GET_CSR: {
                 std::vector<uint8_t> csr_der;
                 auto result = service_->get_csr(csr_der);

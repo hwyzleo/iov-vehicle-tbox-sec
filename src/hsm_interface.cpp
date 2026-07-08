@@ -121,6 +121,16 @@ public:
         return ErrorCode::SUCCESS;
     }
 
+    ErrorCode export_private_key(const std::string& key_id,
+                                 std::vector<uint8_t>& private_key) override {
+        auto it = keys_.find(key_id);
+        if (it == keys_.end()) {
+            return ErrorCode::KEY_NOT_FOUND;
+        }
+        private_key = it->second.priv;
+        return ErrorCode::SUCCESS;
+    }
+
     bool key_exists(const std::string& key_id) override {
         return keys_.find(key_id) != keys_.end();
     }

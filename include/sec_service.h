@@ -179,6 +179,8 @@ public:
 
     virtual ErrorCode generate_key_pair();
 
+    virtual ErrorCode export_private_key(std::vector<uint8_t>& private_key);
+
     virtual ErrorCode get_csr(std::vector<uint8_t>& csr_der);
 
     virtual ErrorCode submit_csr();

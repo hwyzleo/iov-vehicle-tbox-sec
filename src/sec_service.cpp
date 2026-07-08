@@ -694,6 +694,23 @@ ErrorCode SecService::generate_and_store_key_pair() {
     return ErrorCode::SUCCESS;
 }
 
+ErrorCode SecService::export_private_key(std::vector<uint8_t>& private_key) {
+    if (!initialized_) {
+        return ErrorCode::NOT_INITIALIZED;
+    }
+
+    ErrorCode prov_result = ensure_vehicle_info();
+    if (prov_result != ErrorCode::SUCCESS) {
+        return prov_result;
+    }
+
+    if (!key_engine_ || !key_engine_->device_key_exists(vin_, ecu_uid_)) {
+        return ErrorCode::KEY_NOT_FOUND;
+    }
+
+    return key_engine_->export_device_private_key(vin_, ecu_uid_, private_key);
+}
+
 ErrorCode SecService::build_and_store_csr() {
     if (!csr_builder_) {
         csr_builder_ = std::make_unique<CsrBuilder>(key_engine_.get());

@@ -34,6 +34,11 @@ public:
                   const std::vector<uint8_t>& data,
                   std::vector<uint8_t>& signature);
     
+    // Export device private key (only available in SOFT_FILE mode)
+    ErrorCode export_device_private_key(const std::string& vin,
+                                        const std::string& ecu_uid,
+                                        std::vector<uint8_t>& private_key);
+    
     // Delete device key
     ErrorCode delete_device_key(const std::string& vin, const std::string& ecu_uid);
     

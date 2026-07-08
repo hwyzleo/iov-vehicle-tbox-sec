@@ -102,6 +102,22 @@ ErrorCode KeyEngine::delete_device_key(const std::string& vin, const std::string
     return hsm_->delete_key(key_id);
 }
 
+ErrorCode KeyEngine::export_device_private_key(const std::string& vin,
+                                                const std::string& ecu_uid,
+                                                std::vector<uint8_t>& private_key) {
+    if (!initialized_) {
+        return ErrorCode::NOT_INITIALIZED;
+    }
+
+    std::string key_id = make_key_id(vin, ecu_uid);
+
+    if (!hsm_->key_exists(key_id)) {
+        return ErrorCode::KEY_NOT_FOUND;
+    }
+
+    return hsm_->export_private_key(key_id, private_key);
+}
+
 std::string KeyEngine::make_key_id(const std::string& device_sn, const std::string& key_id) const {
     return device_sn + "+" + key_id;
 }

@@ -21,6 +21,7 @@ enum class MethodId : uint32_t {
     GET_STATUS = 10,
     GET_DEVICE_INFO = 11,
     RESET_STATUS = 12,
+    EXPORT_PRIVATE_KEY = 13,
 };
 
 struct RequestHeader {

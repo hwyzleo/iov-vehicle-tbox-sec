@@ -27,6 +27,7 @@ public:
 
     ErrorCode initialize();
     ErrorCode generate_key_pair();
+    ErrorCode export_private_key(std::vector<uint8_t>& private_key);
     ErrorCode get_csr(std::vector<uint8_t>& csr_der);
     ErrorCode submit_csr();
     ErrorCode inject_certificate(const std::vector<uint8_t>& cert_der);

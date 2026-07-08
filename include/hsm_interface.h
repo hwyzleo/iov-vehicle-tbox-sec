@@ -46,6 +46,13 @@ public:
     virtual ErrorCode export_public_key(const std::string& key_id,
                                        std::vector<uint8_t>& public_key) = 0;
 
+    virtual ErrorCode export_private_key(const std::string& key_id,
+                                         std::vector<uint8_t>& private_key) {
+        (void)key_id;
+        (void)private_key;
+        return ErrorCode::NOT_IMPLEMENTED;
+    }
+
     virtual bool key_exists(const std::string& key_id) = 0;
 
     virtual ErrorCode delete_key(const std::string& key_id) = 0;

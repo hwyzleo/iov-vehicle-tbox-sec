@@ -5,6 +5,9 @@
 #include <vector>
 #include <iomanip>
 #include <nlohmann/json.hpp>
+#include <openssl/ec.h>
+#include <openssl/bn.h>
+#include <openssl/obj_mac.h>
 
 using namespace tbox::sec;
 
@@ -57,6 +60,32 @@ std::string der_to_pem(const std::vector<uint8_t>& der, const std::string& type)
     return pem;
 }
 
+std::string ec_priv_raw_to_pem(const std::vector<uint8_t>& raw_priv) {
+    EC_KEY* ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (!ec) return "";
+
+    BIGNUM* priv_bn = BN_bin2bn(raw_priv.data(), static_cast<int>(raw_priv.size()), nullptr);
+    if (!priv_bn) { EC_KEY_free(ec); return ""; }
+    EC_KEY_set_private_key(ec, priv_bn);
+    BN_free(priv_bn);
+
+    const EC_GROUP* group = EC_KEY_get0_group(ec);
+    EC_POINT* pub = EC_POINT_new(group);
+    if (!pub) { EC_KEY_free(ec); return ""; }
+    EC_POINT_mul(group, pub, EC_KEY_get0_private_key(ec), nullptr, nullptr, nullptr);
+    EC_KEY_set_public_key(ec, pub);
+    EC_POINT_free(pub);
+
+    int der_len = i2d_ECPrivateKey(ec, nullptr);
+    if (der_len <= 0) { EC_KEY_free(ec); return ""; }
+    std::vector<uint8_t> der(der_len);
+    unsigned char* p = der.data();
+    i2d_ECPrivateKey(ec, &p);
+    EC_KEY_free(ec);
+
+    return der_to_pem(der, "EC PRIVATE KEY");
+}
+
 void print_usage() {
     std::cout << "SEC CLI Tool (IPC Client)" << std::endl;
     std::cout << "Usage: sec_cli [-s <socket_path>] <command> [args...]" << std::endl;
@@ -67,6 +96,7 @@ void print_usage() {
     std::cout << "Commands:" << std::endl;
     std::cout << "  init                         - Initialize SEC service" << std::endl;
     std::cout << "  generate_key                 - Generate device key pair" << std::endl;
+    std::cout << "  export_private_key [file]    - Export decrypted private key (PEM format)" << std::endl;
     std::cout << "  get_csr                      - Get CSR (PEM format)" << std::endl;
     std::cout << "  save_csr <file>              - Save CSR to file" << std::endl;
     std::cout << "  submit_csr                   - Submit CSR to cloud" << std::endl;
@@ -125,6 +155,35 @@ int main(int argc, char* argv[]) {
             std::cout << "Key pair generated successfully" << std::endl;
         } else {
             std::cerr << "Failed to generate key pair: "
+                      << error_code_to_string(result) << std::endl;
+            return 1;
+        }
+    }
+    else if (command == "export_private_key") {
+        std::vector<uint8_t> priv_key;
+        auto result = client.export_private_key(priv_key);
+        if (result == ErrorCode::SUCCESS) {
+            std::string pem = ec_priv_raw_to_pem(priv_key);
+            if (pem.empty()) {
+                std::cerr << "Failed to convert private key to PEM" << std::endl;
+                return 1;
+            }
+            if (argc >= 3) {
+                std::string file_path = argv[2];
+                std::ofstream file(file_path);
+                if (file.is_open()) {
+                    file << pem;
+                    file.close();
+                    std::cout << "Private key saved to " << file_path << std::endl;
+                } else {
+                    std::cerr << "Failed to open file: " << file_path << std::endl;
+                    return 1;
+                }
+            } else {
+                std::cout << pem;
+            }
+        } else {
+            std::cerr << "Failed to export private key: "
                       << error_code_to_string(result) << std::endl;
             return 1;
         }

@@ -2,11 +2,6 @@ common:
   store:
     root: "."
 
-# PROV service configuration
-prov:
-  storage_path: "/var/tbox/prov"
-  enable_write_protection: true
-
 hsm:
   type: "soft_file"
   library_path: ""

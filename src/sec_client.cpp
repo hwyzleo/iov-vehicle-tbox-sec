@@ -76,6 +76,27 @@ ErrorCode SecClient::generate_key_pair() {
     return static_cast<ErrorCode>(status_code);
 }
 
+ErrorCode SecClient::export_private_key(std::vector<uint8_t>& private_key) {
+    int32_t status_code;
+    std::string response_json;
+    if (!send_request(static_cast<uint32_t>(ipc::MethodId::EXPORT_PRIVATE_KEY), "{}", status_code, response_json)) {
+        return ErrorCode::CONNECTION_FAILED;
+    }
+
+    if (status_code == 0) {
+        try {
+            auto j = nlohmann::json::parse(response_json);
+            std::string priv_b64 = j.value("private_key", "");
+            private_key = ipc::IpcSerializer::base64_decode(priv_b64);
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to parse private key response: " << e.what() << std::endl;
+            return ErrorCode::INTERNAL_ERROR;
+        }
+    }
+
+    return static_cast<ErrorCode>(status_code);
+}
+
 ErrorCode SecClient::get_csr(std::vector<uint8_t>& csr_der) {
     int32_t status_code;
     std::string response_json;

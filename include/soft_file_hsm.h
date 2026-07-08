@@ -43,7 +43,7 @@ public:
     std::string get_status() const override;
 
     ErrorCode export_private_key(const std::string& key_id,
-                                 std::vector<uint8_t>& private_key);
+                                 std::vector<uint8_t>& private_key) override;
 
 private:
     hwyz::store::Store store_;
