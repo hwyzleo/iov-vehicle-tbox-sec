@@ -655,23 +655,29 @@ ErrorCode SecService::ensure_vehicle_info() {
         return ErrorCode::PROV_NOT_CONFIGURED;
     }
 
-    VehicleInfo info;
-    ErrorCode result = prov_service_->get_vehicle_info(info);
-    if (result != ErrorCode::SUCCESS) {
-        return result;
-    }
+    try {
+        VehicleInfo info;
+        ErrorCode result = prov_service_->get_vehicle_info(info);
+        if (result != ErrorCode::SUCCESS) {
+            return result;
+        }
 
-    if (info.vin.empty() || info.ecu_uid.empty()) {
-        std::cerr << "[SEC] VIN/ECU UID still not configured in PROV - "
-                  << "cannot proceed with provisioning operation"
-                  << std::endl;
+        if (info.vin.empty() || info.ecu_uid.empty()) {
+            std::cerr << "[SEC] VIN/ECU UID still not configured in PROV - "
+                      << "cannot proceed with provisioning operation"
+                      << std::endl;
+            return ErrorCode::PROV_NOT_CONFIGURED;
+        }
+
+        vin_ = info.vin;
+        ecu_uid_ = info.ecu_uid;
+        std::cout << "[SEC] Lazily fetched vehicle info: vin=" << vin_
+                  << " ecu_uid=" << ecu_uid_ << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "[SEC] ensure_vehicle_info exception: " << e.what() << std::endl;
         return ErrorCode::PROV_NOT_CONFIGURED;
     }
 
-    vin_ = info.vin;
-    ecu_uid_ = info.ecu_uid;
-    std::cout << "[SEC] Lazily fetched vehicle info: vin=" << vin_
-              << " ecu_uid=" << ecu_uid_ << std::endl;
     return ErrorCode::SUCCESS;
 }
 

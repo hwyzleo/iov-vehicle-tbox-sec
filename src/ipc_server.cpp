@@ -241,11 +241,11 @@ std::string IpcServer::handle_request(const std::string& request_data) {
 
     try {
         if (!IpcSerializer::deserialize_request(std::vector<uint8_t>(request_data.begin(), request_data.end()), method, params_json)) {
-            auto resp = IpcSerializer::serialize_response(-1, "{\"error\":\"Invalid request\"}");
+            auto resp = IpcSerializer::serialize_response(static_cast<int32_t>(ErrorCode::INVALID_PARAMETER), "{\"error\":\"Invalid request\"}");
             return std::string(resp.begin(), resp.end());
         }
     } catch (const std::exception& e) {
-        auto resp = IpcSerializer::serialize_response(-1, "{\"error\":\"Deserialize failed\"}");
+        auto resp = IpcSerializer::serialize_response(static_cast<int32_t>(ErrorCode::INVALID_PARAMETER), "{\"error\":\"Deserialize failed\"}");
         return std::string(resp.begin(), resp.end());
     }
 
@@ -369,22 +369,22 @@ std::string IpcServer::handle_request(const std::string& request_data) {
             }
             default:
                 result_json = "{\"error\":\"Unknown method\"}";
-                status_code = -1;
+                status_code = static_cast<int32_t>(ErrorCode::INVALID_PARAMETER);
                 break;
         }
     } catch (const std::exception& e) {
         std::cerr << "[dispatch] caught std::exception: " << e.what() << std::endl;
         result_json = "{\"error\":\"" + std::string(e.what()) + "\"}";
-        status_code = -1;
+        status_code = static_cast<int32_t>(ErrorCode::INTERNAL_ERROR);
     } catch (...) {
         std::cerr << "[dispatch] caught unknown exception" << std::endl;
         result_json = "{\"error\":\"Unknown exception in dispatch\"}";
-        status_code = -1;
+        status_code = static_cast<int32_t>(ErrorCode::INTERNAL_ERROR);
     }
 
     if (result_json.empty()) {
         result_json = "{\"error\":\"Unknown error\"}";
-        status_code = -1;
+        status_code = static_cast<int32_t>(ErrorCode::INTERNAL_ERROR);
     }
 
     std::cout << "[dispatch] result_json=" << result_json << " status_code=" << status_code << std::endl;
