@@ -723,11 +723,11 @@ ErrorCode SecService::build_and_store_csr() {
     }
 
     CsrConfig csr_config;
-    csr_config.device_sn = ecu_uid_;
-    csr_config.key_id = ecu_uid_;  // key_id 使用 ecu_uid
+    csr_config.hsm_uid = ecu_uid_;    // HSM 身份用于 CSR CN
+    csr_config.key_id = ecu_uid_;     // key_id 使用 ecu_uid
     csr_config.algorithm = "ecdsa-p256";
 
-    std::cout << "[SEC] Building CSR with vin=" << vin_ << " ecu_uid=" << ecu_uid_ << std::endl;
+    std::cout << "[SEC] Building CSR with vin=" << vin_ << " hsm_uid=" << ecu_uid_ << std::endl;
     ErrorCode result = csr_builder_->build_csr(vin_, csr_config, csr_der_);
     std::cout << "[SEC] build_csr result=" << static_cast<int>(result)
               << " csr_der_.size()=" << csr_der_.size() << std::endl;
@@ -736,8 +736,8 @@ ErrorCode SecService::build_and_store_csr() {
 
 ErrorCode SecService::submit_csr_to_cloud() {
     CertificateRequest request;
-    request.device_sn = ecu_uid_;
-    request.csr_der = {0x30, 0x82, 0x01, 0x00};
+    request.ecu_uid = ecu_uid_;       // HSM 身份用于云端签发
+    request.csr_der = csr_der_;       // 使用存储的 CSR
 
     CertificateResponse response;
     return cloud_client_->submit_csr(request, response);
