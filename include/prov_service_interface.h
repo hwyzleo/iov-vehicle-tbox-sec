@@ -17,7 +17,7 @@ public:
 
     virtual ErrorCode initialize() = 0;
 
-    // 获取设备信息，VIN 保留但不再用于证书 Subject，证书使用 device_sn
+    // 获取设备信息，VIN 保留但不再用于证书 Subject，证书使用 HSM UID (ecu_uid)
     virtual ErrorCode get_vehicle_info(VehicleInfo& info) = 0;
 
     virtual bool is_connected() const = 0;
