@@ -92,7 +92,7 @@ target_include_directories(SecClient PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(SecClient PUBLIC OpenSSL::Crypto nlohmann_json::nlohmann_json)
 
 # Main executable
-add_executable(TboxSecService src/main.cpp src/ipc_prov_service.cpp)
+add_executable(tbox_sec src/main.cpp src/ipc_prov_service.cpp)
 
 # Find framework library properly
 find_library(FRAMEWORK_LIB hwyz PATHS ${FRAMEWORK_DIR}/build NO_DEFAULT_PATH)
@@ -106,8 +106,8 @@ if(NOT PROV_CLIENT_LIB)
     message(FATAL_ERROR "ProvClient library not found in ${PROV_DIR}/build")
 endif()
 
-target_include_directories(TboxSecService PRIVATE ${PROV_INCLUDE_DIR})
-target_link_libraries(TboxSecService PRIVATE TboxSecLib ${FRAMEWORK_LIB} ${PROV_CLIENT_LIB})
+target_include_directories(tbox_sec PRIVATE ${PROV_INCLUDE_DIR})
+target_link_libraries(tbox_sec PRIVATE TboxSecLib ${FRAMEWORK_LIB} ${PROV_CLIENT_LIB})
 
 # Tests
 enable_testing()

@@ -28,9 +28,31 @@ int main(int argc, char* argv[]) {
     std::cout << "TBOX Security Service Starting..." << std::endl;
 
     std::string config_root = "/etc/tbox";
+    
+    // 多层配置查找：当前目录 -> config目录 -> 上级config目录 -> 系统目录
     if (argc > 1) {
+        // 命令行参数优先
         config_root = argv[1];
+    } else {
+        // 检查当前目录是否有 common.yaml
+        if (access("common.yaml", F_OK) == 0) {
+            config_root = ".";
+        }
+        // 检查 config 目录
+        else if (access("config/common.yaml", F_OK) == 0) {
+            config_root = "config";
+        }
+        // 检查上级 config 目录（用于在 build 目录中运行）
+        else if (access("../config/common.yaml", F_OK) == 0) {
+            config_root = "../config";
+        }
+        // 否则使用默认系统目录 /etc/tbox
+        else {
+            config_root = "/etc/tbox";
+        }
     }
+    
+    std::cout << "Using config root: " << config_root << std::endl;
 
     auto& config_manager = hwyz::config::ConfigManager::instance();
     auto config_result = config_manager.load("sec", config_root);
