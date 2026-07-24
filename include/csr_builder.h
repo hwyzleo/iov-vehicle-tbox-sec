@@ -10,13 +10,13 @@ namespace tbox {
 namespace sec {
 
 struct CsrConfig {
-    std::string device_sn;        // 设备序列号（ECU UID / 芯片UID）
+    std::string hsm_uid;        // HSM 身份（ECU UID / 芯片UID），用于证书 CN 和车云鉴权
     std::string key_id;           // 密钥标识
     std::string algorithm;        // 签名算法（如 SHA256withECDSA）
 };
 
 // CSR 构建器
-// Subject DN 格式: CN=device_sn, OU=TBOX-TSP, O=OpenIOV, C=CN
+// Subject DN 格式: CN=HSM UID, OU=TBOX-TSP, O=OpenIOV, C=CN
 class CsrBuilder {
 public:
     CsrBuilder(KeyEngine* key_engine);
@@ -31,10 +31,10 @@ private:
     ErrorCode marshal_ec_pubkey_info(const std::vector<uint8_t>& raw_pubkey,
                                      std::vector<uint8_t>& out_der);
 
-    ErrorCode marshal_x509_name(const std::string& device_sn,
+    ErrorCode marshal_x509_name(const std::string& hsm_uid,
                                 std::vector<uint8_t>& out_der);
 
-    ErrorCode marshal_san_extension(const std::string& device_sn,
+    ErrorCode marshal_san_extension(const std::string& hsm_uid,
                                     std::vector<uint8_t>& ext_der);
 
     ErrorCode marshal_ku_extension(std::vector<uint8_t>& ext_der);
