@@ -124,7 +124,7 @@ ErrorCode CsrBuilder::marshal_ec_pubkey_info(
     return ErrorCode::SUCCESS;
 }
 
-ErrorCode CsrBuilder::marshal_x509_name(const std::string& device_sn,
+ErrorCode CsrBuilder::marshal_x509_name(const std::string& hsm_uid,
                                         std::vector<uint8_t>& out_der) {
     // OID definitions for X.509 Name attributes
     static const uint8_t OID_CN[] = {0x55, 0x04, 0x03};  // 2.5.4.3
@@ -132,13 +132,13 @@ ErrorCode CsrBuilder::marshal_x509_name(const std::string& device_sn,
     static const uint8_t OID_O[]  = {0x55, 0x04, 0x0A};  // 2.5.4.10
     static const uint8_t OID_C[]  = {0x55, 0x04, 0x06};  // 2.5.4.6
 
-    // Subject DN: CN=device_sn, OU=TBOX-TSP, O=OpenIOV, C=CN
+    // Subject DN: CN=HSM UID, OU=TBOX-TSP, O=OpenIOV, C=CN
     struct {
         const uint8_t* oid;
         size_t oid_len;
         const char* value;
     } rdn_entries[] = {
-        {OID_CN, sizeof(OID_CN), device_sn.c_str()},
+        {OID_CN, sizeof(OID_CN), hsm_uid.c_str()},
         {OID_OU, sizeof(OID_OU), CSR_SUBJECT_OU},
         {OID_O,  sizeof(OID_O),  CSR_SUBJECT_O},
         {OID_C,  sizeof(OID_C),  CSR_SUBJECT_C},
@@ -179,18 +179,18 @@ ErrorCode CsrBuilder::marshal_x509_name(const std::string& device_sn,
 }
 
 ErrorCode CsrBuilder::marshal_san_extension(
-    const std::string& device_sn,
+    const std::string& hsm_uid,
     std::vector<uint8_t>& ext_der) {
 
     static const uint8_t OID_SAN[] = {0x55, 0x1D, 0x11};
 
     std::vector<uint8_t> san_entries;
 
-    // URI for device_sn (ECU UID)
-    std::string device_sn_uri = "urn:ecu-uid:" + device_sn;
+    // URI for HSM UID (ECU UID)
+    std::string hsm_uid_uri = "urn:ecu-uid:" + hsm_uid;
     san_entries.push_back(0x86);  // [6] URI IMPLICIT
-    der_encode_length(static_cast<uint16_t>(device_sn_uri.size()), san_entries);
-    san_entries.insert(san_entries.end(), device_sn_uri.begin(), device_sn_uri.end());
+    der_encode_length(static_cast<uint16_t>(hsm_uid_uri.size()), san_entries);
+    san_entries.insert(san_entries.end(), hsm_uid_uri.begin(), hsm_uid_uri.end());
 
     std::vector<uint8_t> san_seq;
     der_wrap_sequence(san_entries, san_seq);
@@ -270,7 +270,7 @@ ErrorCode CsrBuilder::build_csr_info(const std::string& vin,
 
     // Subject name
     std::vector<uint8_t> subject_der;
-    if (marshal_x509_name(config.device_sn, subject_der) != ErrorCode::SUCCESS) {
+    if (marshal_x509_name(config.hsm_uid, subject_der) != ErrorCode::SUCCESS) {
         return ErrorCode::CSR_BUILD_FAILED;
     }
 
@@ -306,7 +306,7 @@ ErrorCode CsrBuilder::build_csr_info(const std::string& vin,
 
     // Build extensions
     std::vector<uint8_t> san_ext, ku_ext, eku_ext;
-    if (marshal_san_extension(config.device_sn, san_ext) != ErrorCode::SUCCESS ||
+    if (marshal_san_extension(config.hsm_uid, san_ext) != ErrorCode::SUCCESS ||
         marshal_ku_extension(ku_ext) != ErrorCode::SUCCESS ||
         marshal_eku_extension(eku_ext) != ErrorCode::SUCCESS) {
         return ErrorCode::CSR_BUILD_FAILED;
@@ -367,7 +367,7 @@ ErrorCode CsrBuilder::build_csr(const std::string& vin,
 
     KeyPair key_pair;
     ErrorCode result = key_engine_->get_device_key(
-        vin, config.device_sn, key_pair);
+        vin, config.hsm_uid, key_pair);
     if (result != ErrorCode::SUCCESS) {
         return result;
     }
@@ -381,7 +381,7 @@ ErrorCode CsrBuilder::build_csr(const std::string& vin,
 
     // Sign TBS via HSM
     std::vector<uint8_t> signature;
-    result = key_engine_->sign(vin, config.device_sn,
+    result = key_engine_->sign(vin, config.hsm_uid,
                                csr_info, signature);
     if (result != ErrorCode::SUCCESS) {
         return ErrorCode::CSR_SIGN_FAILED;
