@@ -36,9 +36,9 @@ TEST(ShowCsr, GenerateAndDisplay) {
     
     // 生成密钥对
     std::string vin = "TESTVIN1234567890";
-    std::string device_sn = "00000000000000000000000000000001";
+    std::string hsm_uid = "00000000000000000000000000000001";
     KeyPair key_pair;
-    ASSERT_EQ(key_engine.generate_device_key(vin, device_sn, key_pair), ErrorCode::SUCCESS);
+    ASSERT_EQ(key_engine.generate_device_key(vin, hsm_uid, key_pair), ErrorCode::SUCCESS);
     
     std::cout << "\n=== 生成的密钥信息 ===" << std::endl;
     std::cout << "Key ID: " << key_pair.key_id << std::endl;
@@ -50,8 +50,8 @@ TEST(ShowCsr, GenerateAndDisplay) {
     
     // 配置 CSR
     CsrConfig config;
-    config.device_sn = device_sn;
-    config.key_id = device_sn;
+    config.hsm_uid = hsm_uid;
+    config.key_id = hsm_uid;
     config.algorithm = "ecdsa-p256";
     
     // 构建 CSR
@@ -65,18 +65,18 @@ TEST(ShowCsr, GenerateAndDisplay) {
     
     // 显示 Subject DN 格式
     std::cout << "\n=== Subject DN 格式 ===" << std::endl;
-    std::cout << "CN = " << device_sn << " (ECU UID)" << std::endl;
+    std::cout << "CN = " << hsm_uid << " (ECU UID)" << std::endl;
     std::cout << "OU = " << CSR_SUBJECT_OU << std::endl;
     std::cout << "O = " << CSR_SUBJECT_O << std::endl;
     std::cout << "C = " << CSR_SUBJECT_C << std::endl;
     
     // 显示 SAN 扩展
     std::cout << "\n=== SAN 扩展 ===" << std::endl;
-    std::cout << "URI: urn:ecu-uid:" << device_sn << std::endl;
+    std::cout << "URI: urn:ecu-uid:" << hsm_uid << std::endl;
     std::cout << "(注意: 不包含 VIN)" << std::endl;
     
     // 显示幂等键格式
     std::cout << "\n=== 幂等键格式 ===" << std::endl;
     std::cout << "Key ID: " << key_pair.key_id << std::endl;
-    std::cout << "格式: {device_sn}+{key_id}" << std::endl;
+    std::cout << "格式: {hsm_uid}+{key_id}" << std::endl;
 }

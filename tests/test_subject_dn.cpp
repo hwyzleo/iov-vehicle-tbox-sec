@@ -43,7 +43,7 @@ protected:
 
 TEST_F(SubjectDnTest, FullSubjectDn) {
     CsrConfig config;
-    config.device_sn = test_ecu_uid;
+    config.hsm_uid = test_ecu_uid;
     config.key_id = test_ecu_uid;
     config.algorithm = "SHA256withECDSA";
 
@@ -79,7 +79,7 @@ TEST_F(SubjectDnTest, FullSubjectDn) {
 
 TEST_F(SubjectDnTest, SubjectDnFixedFields) {
     CsrConfig config;
-    config.device_sn = test_ecu_uid;
+    config.hsm_uid = test_ecu_uid;
     config.key_id = test_ecu_uid;
     config.algorithm = "SHA256withECDSA";
 
@@ -110,7 +110,7 @@ TEST_F(SubjectDnTest, SubjectDnFixedFields) {
 
 TEST_F(SubjectDnTest, SanContainsDeviceSn) {
     CsrConfig config;
-    config.device_sn = test_ecu_uid;
+    config.hsm_uid = test_ecu_uid;
     config.key_id = test_ecu_uid;
     config.algorithm = "SHA256withECDSA";
 
@@ -134,7 +134,7 @@ TEST_F(SubjectDnTest, SanContainsDeviceSn) {
                 X509V3_EXT_d2i(ext));
             ASSERT_NE(gens, nullptr);
 
-            bool has_device_sn = false;
+            bool has_hsm_uid = false;
             for (int j = 0; j < sk_GENERAL_NAME_num(gens); j++) {
                 GENERAL_NAME* gn = sk_GENERAL_NAME_value(gens, j);
                 if (gn->type == GEN_URI) {
@@ -143,11 +143,11 @@ TEST_F(SubjectDnTest, SanContainsDeviceSn) {
                             ASN1_STRING_get0_data(gn->d.uniformResourceIdentifier)),
                         ASN1_STRING_length(gn->d.uniformResourceIdentifier));
                     if (uri.find(test_ecu_uid) != std::string::npos)
-                        has_device_sn = true;
+                        has_hsm_uid = true;
                 }
             }
             sk_GENERAL_NAME_pop_free(gens, GENERAL_NAME_free);
-            EXPECT_TRUE(has_device_sn) << "device_sn should be in SAN";
+            EXPECT_TRUE(has_hsm_uid) << "hsm_uid should be in SAN";
             break;
         }
     }
