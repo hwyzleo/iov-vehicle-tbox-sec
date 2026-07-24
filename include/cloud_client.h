@@ -21,7 +21,7 @@ struct CloudConfig {
 
 struct CertificateRequest {
     std::vector<uint8_t> csr_der;
-    std::string device_sn;
+    std::string ecu_uid;    // HSM 身份（ECU UID），与 CSR CN 一致
 };
 
 struct CertificateResponse {

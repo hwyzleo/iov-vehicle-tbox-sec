@@ -86,7 +86,7 @@ ErrorCode CloudClient::submit_csr(const CertificateRequest& request,
 
     nlohmann::json payload;
     payload["csr_der"] = base64_encode(request.csr_der);
-    payload["device_sn"] = request.device_sn;
+    payload["ecu_uid"] = request.ecu_uid;
 
     int max_attempts = config_.retry_count > 0 ? config_.retry_count : 1;
     ErrorCode last_result = ErrorCode::PKI_CONNECTION_FAILED;
