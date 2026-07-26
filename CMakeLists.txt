@@ -43,7 +43,7 @@ find_package(nlohmann_json REQUIRED)
 find_package(CURL REQUIRED)
 include_directories(${CURL_INCLUDE_DIRS})
 
-# Framework (hwyz) - config and store
+# Framework (hwyz) - config, store and log
 set(FRAMEWORK_DIR ${PROJECT_SOURCE_DIR}/../iov-vehicle-tbox-framework)
 if(EXISTS ${FRAMEWORK_DIR}/include)
     set(FRAMEWORK_INCLUDE_DIR ${FRAMEWORK_DIR}/include)
@@ -76,6 +76,7 @@ set(LIB_SOURCES
     src/service_dispatcher.cpp
     src/ipc_protocol.cpp
     src/ipc_server.cpp
+    src/sec_log_adapter.cpp
 )
 
 add_library(TboxSecLib STATIC ${LIB_SOURCES})
@@ -128,6 +129,12 @@ add_executable(TboxSecTests
     tests/test_config_snapshot.cpp
     tests/test_framework_integration.cpp
     tests/test_device_identity.cpp
+    tests/test_sec_log_adapter.cpp
+    tests/test_sec_log_events.cpp
+    tests/test_sec_log_context.cpp
+    tests/test_sec_log_redaction.cpp
+    tests/test_sec_log_fault.cpp
+    tests/test_sec_log_security.cpp
 )
 target_link_libraries(TboxSecTests PRIVATE TboxSecLib ${FRAMEWORK_LIB} GTest::GTest GTest::gmock GTest::Main)
 add_test(NAME TboxSecTests COMMAND TboxSecTests)
