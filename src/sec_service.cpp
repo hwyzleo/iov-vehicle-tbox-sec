@@ -92,12 +92,12 @@ ErrorCode SecService::initialize() {
     // Load CA certificate
     std::string ca_cert_path = config_.get_ca_cert_path();
 
-    std::cerr << "[SEC] Initializing CA cert, ca_cert_path='" << ca_cert_path << "'" << std::endl;
+    std::cout << "[SEC] Initializing CA cert, ca_cert_path='" << ca_cert_path << "'" << std::endl;
 
     // If ca_cert_path is empty, try to load from default config
     if (ca_cert_path.empty()) {
         ca_cert_path = find_ca_cert_from_config();
-        std::cerr << "[SEC] find_ca_cert_from_config returned: '" << ca_cert_path << "'" << std::endl;
+        std::cout << "[SEC] find_ca_cert_from_config returned: '" << ca_cert_path << "'" << std::endl;
     }
 
     if (!ca_cert_path.empty()) {
@@ -115,7 +115,7 @@ ErrorCode SecService::initialize() {
                               << ca_cert_path << std::endl;
                     // Continue initialization - CA cert is optional for self-signed certs
                 } else {
-                    std::cerr << "[SEC] CA certificate loaded from: "
+                    std::cout << "[SEC] CA certificate loaded from: "
                               << ca_cert_path << std::endl;
                 }
             }
@@ -1116,7 +1116,7 @@ std::string SecService::find_ca_cert_from_config() {
             if (tbox && tbox["storage"] && tbox["storage"]["ca_cert"]) {
                 std::string ca_cert_path = tbox["storage"]["ca_cert"].as<std::string>();
                 if (!ca_cert_path.empty()) {
-                    std::cerr << "[SEC] Found CA cert path in config: " << config_path
+                    std::cout << "[SEC] Found CA cert path in config: " << config_path
                               << " -> " << ca_cert_path << std::endl;
                     return ca_cert_path;
                 }
