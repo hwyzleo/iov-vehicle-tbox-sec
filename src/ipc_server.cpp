@@ -1,6 +1,8 @@
 #include "ipc_server.h"
 #include "sec_service.h"
 #include "ipc_protocol.h"
+#include "sec_log_adapter.h"
+#include "log_types.h"
 #include <iostream>
 #include <cstring>
 #include <sys/socket.h>
@@ -75,7 +77,11 @@ bool IpcServer::start(SecService* service) {
     running_ = true;
     accept_thread_ = std::thread(&IpcServer::accept_connections, this);
 
-    std::cout << "IPC server started on " << socket_path_ << std::endl;
+    SecLogAdapter::ipc().info(
+        "sec.ipc.server_started",
+        "IPC 服务启动",
+        {"socket_path", tbox::fw::log::FieldValue::makeString(socket_path_)}
+    );
     return true;
 }
 

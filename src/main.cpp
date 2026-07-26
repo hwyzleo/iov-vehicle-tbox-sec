@@ -7,8 +7,62 @@
 #include "ipc_prov_service.h"
 #include "config.h"
 #include "store.h"
+#include "sec_log_adapter.h"
+#include "log_types.h"
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 using namespace tbox::sec;
+
+// 重定向 stdout/stderr 到日志系统
+void redirect_stdio_to_log() {
+    // 保存原始的 cout/cerr 缓冲区
+    static std::streambuf* orig_cout = std::cout.rdbuf();
+    static std::streambuf* orig_cerr = std::cerr.rdbuf();
+
+    // 创建自定义缓冲区，将输出重定向到日志
+    class LogBuf : public std::streambuf {
+    public:
+        LogBuf(std::streambuf* orig, bool is_err) : orig_(orig), is_err_(is_err) {}
+    protected:
+        int overflow(int c) override {
+            if (c == '\n') {
+                flush_line();
+            } else {
+                line_ += static_cast<char>(c);
+            }
+            return c;
+        }
+        int sync() override {
+            flush_line();
+            return 0;
+        }
+    private:
+        void flush_line() {
+            if (!line_.empty()) {
+                if (is_err_) {
+                    SecLogAdapter::ipc().error("sec.external.stderr", "外部库输出", {
+                        {"message", tbox::fw::log::FieldValue::makeString(line_)}
+                    });
+                } else {
+                    SecLogAdapter::ipc().info("sec.external.stdout", "外部库输出", {
+                        {"message", tbox::fw::log::FieldValue::makeString(line_)}
+                    });
+                }
+                line_.clear();
+            }
+        }
+        std::streambuf* orig_;
+        bool is_err_;
+        std::string line_;
+    };
+
+    static LogBuf cout_log_buf(orig_cout, false);
+    static LogBuf cerr_log_buf(orig_cerr, true);
+
+    std::cout.rdbuf(&cout_log_buf);
+    std::cerr.rdbuf(&cerr_log_buf);
+}
 
 std::shared_ptr<SecService> g_sec_service;
 std::atomic<bool> g_running{true};
@@ -26,6 +80,45 @@ int main(int argc, char* argv[]) {
     signal(SIGPIPE, SIG_IGN);
 
     std::cout << "TBOX Security Service Starting..." << std::endl;
+
+    // framework-log 初始化
+    {
+        tbox::fw::log::LogConfig logConfig;
+        logConfig.level = tbox::fw::log::LogLevel::kInfo;
+        logConfig.console_config.enabled = true;
+        logConfig.format = "standard";
+
+        // 从 common.log 读取配置
+        auto& config_manager_init = hwyz::config::ConfigManager::instance();
+        // 注意：这里需要先加载配置才能读取日志配置
+        // 实际配置读取会在后面的配置加载完成后进行
+
+        auto logResult = SecLogAdapter::init("sec", logConfig);
+        if (logResult.error != tbox::fw::log::LogError::kOk) {
+            // 严格模式失败，非严格模式继续（降级到 console + INFO）
+            spdlog::warn("framework-log 初始化降级: {}", logResult.error_message);
+        } else {
+            // 覆盖 spdlog 默认 logger 为 "sec"
+            auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+            console_sink->set_level(spdlog::level::debug);
+            auto sec_logger = std::make_shared<spdlog::logger>("sec", console_sink);
+            sec_logger->set_level(spdlog::level::debug);
+            spdlog::set_default_logger(sec_logger);
+        }
+    }
+
+    // 重定向 stdout/stderr 以捕获外部库输出
+    redirect_stdio_to_log();
+
+    // Logger 初始化成功事件
+    SecLogAdapter::service().info(
+        "sec.service.log_initialized",
+        "SEC 日志系统初始化成功",
+        {
+            {"service", tbox::fw::log::FieldValue::makeString("sec")},
+            {"sink_mode", tbox::fw::log::FieldValue::makeString("console")}
+        }
+    );
 
     std::string config_root = "/etc/tbox";
     

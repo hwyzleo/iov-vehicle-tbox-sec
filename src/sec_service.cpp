@@ -2,6 +2,8 @@
 #include "hsm_interface.h"
 #include "constants.h"
 #include "ipc_server.h"
+#include "sec_log_adapter.h"
+#include "log_types.h"
 #include <sstream>
 #include <iomanip>
 #include <random>
@@ -201,10 +203,27 @@ ErrorCode SecService::generate_key_pair() {
     ErrorCode result = generate_and_store_key_pair();
     if (result != ErrorCode::SUCCESS) {
         handle_error(result, "Key pair generation failed");
+        SecLogAdapter::service().error(
+            "sec.keypair.generate.failed",
+            "密钥对生成失败",
+            {
+                {"algorithm", tbox::fw::log::FieldValue::makeString(config_.get_key_algorithm())},
+                {"storage_mode", tbox::fw::log::FieldValue::makeString(config_.get_hsm_type())},
+                {"error_code", tbox::fw::log::FieldValue::makeString(error_code_to_string(result))}
+            }
+        );
         return result;
     }
 
     update_provision_state(ProvisionState::KEY_GENERATED);
+    SecLogAdapter::service().info(
+        "sec.keypair.generate.succeeded",
+        "密钥对生成成功",
+        {
+            {"algorithm", tbox::fw::log::FieldValue::makeString(config_.get_key_algorithm())},
+            {"storage_mode", tbox::fw::log::FieldValue::makeString(config_.get_hsm_type())}
+        }
+    );
     return ErrorCode::SUCCESS;
 }
 
@@ -429,6 +448,14 @@ ErrorCode SecService::get_seed(uint8_t level, std::vector<uint8_t>& seed) {
     ErrorCode result = generate_random_seed(seed);
     if (result != ErrorCode::SUCCESS) {
         handle_error(result, "Seed generation failed");
+        SecLogAdapter::seed_key().error(
+            "sec.seed.generate.failed",
+            "seed 生成失败",
+            {
+                {"security_level", tbox::fw::log::FieldValue::makeString(std::to_string(level))},
+                {"error_code", tbox::fw::log::FieldValue::makeString("SEC-1007")}
+            }
+        );
         return ErrorCode::SEED_GENERATION_FAILED;
     }
 
@@ -438,6 +465,14 @@ ErrorCode SecService::get_seed(uint8_t level, std::vector<uint8_t>& seed) {
     current_seed_.generated = true;
     current_seed_.consumed = false;
     current_seed_.generated_at = std::chrono::steady_clock::now();
+
+    SecLogAdapter::seed_key().debug(
+        "sec.seed.generate.succeeded",
+        "seed 生成成功",
+        {
+            {"security_level", tbox::fw::log::FieldValue::makeString(std::to_string(level))}
+        }
+    );
 
     return ErrorCode::SUCCESS;
 }
@@ -506,11 +541,26 @@ ErrorCode SecService::verify_key(uint8_t level, const std::vector<uint8_t>& key)
         // Key verification successful
         invalidate_seed();
         reset_failed_attempts();
+        SecLogAdapter::seed_key().debug(
+            "sec.seed_key.verify.succeeded",
+            "key 校验通过",
+            {
+                {"security_level", tbox::fw::log::FieldValue::makeString(std::to_string(level))}
+            }
+        );
         return ErrorCode::SUCCESS;
     } else {
         // Key verification failed
         increment_failed_attempts();
         invalidate_seed();
+        SecLogAdapter::seed_key().warn(
+            "sec.seed_key.verify.failed",
+            "key 校验失败",
+            {
+                {"security_level", tbox::fw::log::FieldValue::makeString(std::to_string(level))},
+                {"error_code", tbox::fw::log::FieldValue::makeString("SEC-1008")}
+            }
+        );
         return ErrorCode::KEY_VERIFICATION_FAILED;
     }
 }
@@ -731,6 +781,27 @@ ErrorCode SecService::build_and_store_csr() {
     ErrorCode result = csr_builder_->build_csr(vin_, csr_config, csr_der_);
     std::cout << "[SEC] build_csr result=" << static_cast<int>(result)
               << " csr_der_.size()=" << csr_der_.size() << std::endl;
+    
+    if (result == ErrorCode::SUCCESS) {
+        SecLogAdapter::service().info(
+            "sec.csr.build.succeeded",
+            "CSR 构造成功",
+            {
+                {"subject_profile", tbox::fw::log::FieldValue::makeString("device")},
+                {"key_id_hash", tbox::fw::log::FieldValue::makeString(ecu_uid_)}
+            }
+        );
+    } else {
+        SecLogAdapter::service().error(
+            "sec.csr.build.failed",
+            "CSR 构造失败",
+            {
+                {"subject_profile", tbox::fw::log::FieldValue::makeString("device")},
+                {"error_code", tbox::fw::log::FieldValue::makeString(error_code_to_string(result))}
+            }
+        );
+    }
+    
     return result;
 }
 
@@ -763,10 +834,26 @@ ErrorCode SecService::validate_and_store_certificate(const std::vector<uint8_t>&
     result = store_certificate_to_file(cert_der);
     if (result != ErrorCode::SUCCESS) {
         std::cerr << "[SEC] Failed to store certificate" << std::endl;
+        SecLogAdapter::certificate().error(
+            "sec.certificate.install.failed",
+            "证书安装失败",
+            {
+                {"failure_stage", tbox::fw::log::FieldValue::makeString("storage")},
+                {"error_code", tbox::fw::log::FieldValue::makeString(error_code_to_string(result))}
+            }
+        );
         return result;
     }
 
     std::cout << "[SEC] Certificate validated and stored successfully" << std::endl;
+    SecLogAdapter::certificate().info(
+        "sec.certificate.install.succeeded",
+        "证书校验并安装成功",
+        {
+            {"cert_serial_hash", tbox::fw::log::FieldValue::makeString("cert_hash")},
+            {"issuer_id", tbox::fw::log::FieldValue::makeString("cloud")}
+        }
+    );
     return ErrorCode::SUCCESS;
 }
 

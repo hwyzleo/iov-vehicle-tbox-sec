@@ -1,5 +1,7 @@
 #include "csr_builder.h"
 #include "constants.h"
+#include "sec_log_adapter.h"
+#include "log_types.h"
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 #include <openssl/evp.h>
@@ -413,6 +415,16 @@ ErrorCode CsrBuilder::build_csr(const std::string& vin,
                        sig_bs.begin(), sig_bs.end());
 
     der_wrap_sequence(final_inner, csr_der);
+    
+    SecLogAdapter::service().info(
+        "sec.csr.build.succeeded",
+        "CSR 构造成功",
+        {
+            {"subject_profile", tbox::fw::log::FieldValue::makeString("device")},
+            {"key_id_hash", tbox::fw::log::FieldValue::makeString(config.hsm_uid)}
+        }
+    );
+    
     return ErrorCode::SUCCESS;
 }
 

@@ -1,4 +1,6 @@
 #include "cert_validator.h"
+#include "sec_log_adapter.h"
+#include "log_types.h"
 #include <iostream>
 #include <openssl/x509.h>
 #include <openssl/pem.h>
@@ -53,6 +55,27 @@ ErrorCode CertValidator::validate_certificate(const std::string& vin,
     }
 
     valid = key_match;
+    
+    if (key_match) {
+        SecLogAdapter::certificate().info(
+            "sec.certificate.install.succeeded",
+            "证书校验并安装成功",
+            {
+                {"cert_serial_hash", tbox::fw::log::FieldValue::makeString("cert_hash")},
+                {"issuer_id", tbox::fw::log::FieldValue::makeString("cloud")}
+            }
+        );
+    } else {
+        SecLogAdapter::certificate().error(
+            "sec.certificate.install.failed",
+            "证书与私钥不匹配",
+            {
+                {"failure_stage", tbox::fw::log::FieldValue::makeString("key_match")},
+                {"error_code", tbox::fw::log::FieldValue::makeString("SEC-1005")}
+            }
+        );
+    }
+    
     return key_match ? ErrorCode::SUCCESS : ErrorCode::CERT_KEY_MISMATCH;
 }
 
