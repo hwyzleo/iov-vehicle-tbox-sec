@@ -80,7 +80,7 @@ bool IpcServer::start(SecService* service) {
     SecLogAdapter::ipc().info(
         "sec.ipc.server_started",
         "IPC 服务启动",
-        {"socket_path", tbox::fw::log::FieldValue::makeString(socket_path_)}
+        {tbox::fw::log::Field("socket_path", tbox::fw::log::FieldValue::makeString(socket_path_))}
     );
     return true;
 }

@@ -96,7 +96,7 @@ target_link_libraries(SecClient PUBLIC OpenSSL::Crypto nlohmann_json::nlohmann_j
 add_executable(tbox_sec src/main.cpp src/ipc_prov_service.cpp)
 
 # Find framework library properly
-find_library(FRAMEWORK_LIB hwyz PATHS ${FRAMEWORK_DIR}/build NO_DEFAULT_PATH)
+find_library(FRAMEWORK_LIB tbox-framework PATHS ${FRAMEWORK_DIR}/build NO_DEFAULT_PATH)
 if(NOT FRAMEWORK_LIB)
     message(FATAL_ERROR "Framework library not found in ${FRAMEWORK_DIR}/build")
 endif()

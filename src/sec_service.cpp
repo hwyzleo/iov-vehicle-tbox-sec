@@ -207,7 +207,7 @@ ErrorCode SecService::generate_key_pair() {
             "sec.keypair.generate.failed",
             "密钥对生成失败",
             {
-                {"algorithm", tbox::fw::log::FieldValue::makeString(config_.get_key_algorithm())},
+                {"algorithm", tbox::fw::log::FieldValue::makeString("ecdsa-p256")},
                 {"storage_mode", tbox::fw::log::FieldValue::makeString(config_.get_hsm_type())},
                 {"error_code", tbox::fw::log::FieldValue::makeString(error_code_to_string(result))}
             }
@@ -220,7 +220,7 @@ ErrorCode SecService::generate_key_pair() {
         "sec.keypair.generate.succeeded",
         "密钥对生成成功",
         {
-            {"algorithm", tbox::fw::log::FieldValue::makeString(config_.get_key_algorithm())},
+            {"algorithm", tbox::fw::log::FieldValue::makeString("ecdsa-p256")},
             {"storage_mode", tbox::fw::log::FieldValue::makeString(config_.get_hsm_type())}
         }
     );
