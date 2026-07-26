@@ -1,12 +1,21 @@
 #include <gtest/gtest.h>
 #include "key_engine.h"
 #include "hsm_interface.h"
+#include "sec_log_adapter.h"
+#include "log_types.h"
 
 using namespace tbox::sec;
+using namespace tbox::fw::log;
 
 class KeyEngineTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        // 初始化日志系统
+        LogConfig logConfig;
+        logConfig.level = LogLevel::kInfo;
+        logConfig.console_config.enabled = true;
+        SecLogAdapter::init("sec_test", logConfig);
+        
         auto hsm = HsmFactory::create(HsmFactory::HsmType::SOFTWARE, "/tmp/test_keys");
         engine = std::make_unique<KeyEngine>(std::move(hsm));
         engine->initialize();

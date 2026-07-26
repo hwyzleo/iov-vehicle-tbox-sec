@@ -41,12 +41,12 @@ void redirect_stdio_to_log() {
         void flush_line() {
             if (!line_.empty()) {
                 if (is_err_) {
-                    SecLogAdapter::ipc().error("sec.external.stderr", "外部库输出", {
-                        {"message", tbox::fw::log::FieldValue::makeString(line_)}
+                    SecLogAdapter::ipc().error("sec.external.stderr", line_, {
+                        {"source", tbox::fw::log::FieldValue::makeString(is_err_ ? "stderr" : "stdout")}
                     });
                 } else {
-                    SecLogAdapter::ipc().info("sec.external.stdout", "外部库输出", {
-                        {"message", tbox::fw::log::FieldValue::makeString(line_)}
+                    SecLogAdapter::ipc().info("sec.external.stdout", line_, {
+                        {"source", tbox::fw::log::FieldValue::makeString(is_err_ ? "stderr" : "stdout")}
                     });
                 }
                 line_.clear();
@@ -96,6 +96,7 @@ int main(int argc, char* argv[]) {
         auto logResult = SecLogAdapter::init("sec", logConfig);
         if (logResult.error != tbox::fw::log::LogError::kOk) {
             // 严格模式失败，非严格模式继续（降级到 console + INFO）
+            std::cerr << "[SEC] framework-log 初始化降级: " << logResult.error_message << std::endl;
             spdlog::warn("framework-log 初始化降级: {}", logResult.error_message);
         } else {
             // 覆盖 spdlog 默认 logger 为 "sec"

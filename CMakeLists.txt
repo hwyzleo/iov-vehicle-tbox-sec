@@ -27,6 +27,9 @@ endif ()
 find_package(OpenSSL REQUIRED)
 include_directories(${OPENSSL_INCLUDE_DIR})
 
+# fmt (required by spdlog)
+find_package(fmt REQUIRED)
+
 # YAML-CPP
 find_package(yaml-cpp REQUIRED)
 include_directories(${YAML_CPP_INCLUDE_DIRS})
@@ -108,7 +111,7 @@ if(NOT PROV_CLIENT_LIB)
 endif()
 
 target_include_directories(tbox_sec PRIVATE ${PROV_INCLUDE_DIR})
-target_link_libraries(tbox_sec PRIVATE TboxSecLib ${FRAMEWORK_LIB} ${PROV_CLIENT_LIB})
+target_link_libraries(tbox_sec PRIVATE TboxSecLib ${FRAMEWORK_LIB} ${PROV_CLIENT_LIB} fmt::fmt)
 
 # Tests
 enable_testing()
