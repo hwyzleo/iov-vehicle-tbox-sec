@@ -1,7 +1,6 @@
 #include "sec_service.h"
 #include "hsm_interface.h"
 #include "constants.h"
-#include "ipc_server.h"
 #include "sec_log_adapter.h"
 #include "log_types.h"
 #include <sstream>
@@ -17,6 +16,13 @@
 
 #ifdef USE_YAML_CPP
 #include <yaml-cpp/yaml.h>
+#endif
+
+#if defined(TBOX_SEC_USE_FRAMEWORK_IPC)
+#include "sec_ipc_dispatcher.h"
+#include "ipc.h"
+#else
+#include "ipc_server.h"
 #endif
 
 namespace tbox {
@@ -142,6 +148,52 @@ bool SecService::start_ipc_server() {
         return false;
     }
 
+#if defined(TBOX_SEC_USE_FRAMEWORK_IPC)
+    if (fw_ipc_server_) {
+        return true;  // already started
+    }
+
+    // Update socket path from config
+    ipc_socket_path_ = config_.ipc_socket_path;
+
+    // Create dispatcher
+    ipc_dispatcher_ = std::make_unique<SecIpcDispatcher>(this);
+
+    // Create framework-ipc Server
+    fw_ipc_server_ = std::make_unique<::tbox::fw::ipc::Server>(
+        ipc_socket_path_, config_.ipc_config);
+
+    // Register RequestHandler (adapt to dispatcher)
+    auto* dispatcher_ptr = ipc_dispatcher_.get();
+    auto request_handler = [dispatcher_ptr](uint32_t method_id,
+                                            std::string_view params_json,
+                                            int client_fd) -> std::string {
+        return dispatcher_ptr->dispatch(method_id, params_json, client_fd);
+    };
+
+    // disconnect handler: only clean SEC business references
+    // framework handles fd and subscription cleanup
+    auto disconnect_handler = [](int client_fd) {
+        SecLogAdapter::ipc().debug(
+            "sec.ipc.client_disconnected",
+            "Client disconnected (framework)",
+            {tbox::fw::log::Field("client_fd", tbox::fw::log::FieldValue::makeInt(client_fd))}
+        );
+    };
+
+    if (!fw_ipc_server_->start(std::move(request_handler), std::move(disconnect_handler))) {
+        fw_ipc_server_.reset();
+        ipc_dispatcher_.reset();
+        return false;
+    }
+
+    SecLogAdapter::ipc().info(
+        "sec.ipc.server_started",
+        "IPC server started (framework-ipc)",
+        {tbox::fw::log::Field("socket_path", tbox::fw::log::FieldValue::makeString(ipc_socket_path_))}
+    );
+    return true;
+#else
     if (ipc_server_) {
         return true;
     }
@@ -153,13 +205,26 @@ bool SecService::start_ipc_server() {
     }
 
     return true;
+#endif
 }
 
 void SecService::stop_ipc_server() {
+#if defined(TBOX_SEC_USE_FRAMEWORK_IPC)
+    if (fw_ipc_server_) {
+        fw_ipc_server_->stop();
+        fw_ipc_server_.reset();
+        ipc_dispatcher_.reset();
+        SecLogAdapter::ipc().info(
+            "sec.ipc.server_stopped",
+            "IPC server stopped (framework-ipc)"
+        );
+    }
+#else
     if (ipc_server_) {
         ipc_server_->stop();
         ipc_server_.reset();
     }
+#endif
 }
 
 ErrorCode SecService::generate_key_pair() {

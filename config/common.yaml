@@ -11,6 +11,16 @@ cloud:
 environment:
   is_production: false
 
+ipc:
+  max_frame_bytes: 10485760    # 10 MiB
+  receive_timeout_ms: 60000    # 60 秒空闲超时
+  connect_timeout_ms: 3000
+  listen_backlog: 5
+  reconnect:
+    initial_backoff_ms: 100
+    max_backoff_ms: 5000
+    multiplier: 2.0
+
 log:
   level: "INFO"
   file: "/var/log/tbox/tbox.log"

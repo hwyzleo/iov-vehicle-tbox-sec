@@ -161,6 +161,24 @@ int main(int argc, char* argv[]) {
     SecServiceConfig sec_config;
     sec_config.config_snapshot = config_snapshot;
 
+    // Read IPC configuration from common.ipc.* and sec.ipc.*
+    sec_config.ipc_config.max_frame_bytes = static_cast<uint32_t>(
+        config_snapshot->getInt("common.ipc.max_frame_bytes", 10485760));
+    sec_config.ipc_config.receive_timeout_ms = static_cast<uint32_t>(
+        config_snapshot->getInt("common.ipc.receive_timeout_ms", 60000));
+    sec_config.ipc_config.connect_timeout_ms = static_cast<uint32_t>(
+        config_snapshot->getInt("common.ipc.connect_timeout_ms", 3000));
+    sec_config.ipc_config.listen_backlog =
+        config_snapshot->getInt("common.ipc.listen_backlog", 5);
+    sec_config.ipc_config.reconnect.initial_backoff_ms = static_cast<uint32_t>(
+        config_snapshot->getInt("common.ipc.reconnect.initial_backoff_ms", 100));
+    sec_config.ipc_config.reconnect.max_backoff_ms = static_cast<uint32_t>(
+        config_snapshot->getInt("common.ipc.reconnect.max_backoff_ms", 5000));
+    sec_config.ipc_config.reconnect.multiplier =
+        config_snapshot->getDouble("common.ipc.reconnect.multiplier", 2.0);
+    sec_config.ipc_socket_path =
+        config_snapshot->getString("sec.ipc.socket_path", "/tmp/tbox-sec.sock");
+
     std::string prov_socket_path = config_snapshot->getString("prov.socket_path", "/tmp/tbox-prov.sock");
     auto prov_service = std::make_shared<IpcProvService>(prov_socket_path);
 

@@ -14,13 +14,26 @@
 #include "prov_service_interface.h"
 #include "config.h"
 #include "store.h"
+#include "ipc_types.h"
 
 namespace tbox {
 namespace sec {
 
+#if !defined(TBOX_SEC_USE_FRAMEWORK_IPC)
 namespace ipc {
 class IpcServer;
-}
+} // namespace ipc
+#endif
+
+class SecIpcDispatcher;
+
+} // namespace sec
+
+namespace fw { namespace ipc { class Server; } }
+} // namespace tbox
+
+namespace tbox {
+namespace sec {
 
 enum class ProvisionState {
     NONE,
@@ -64,6 +77,10 @@ struct SecServiceConfig {
     SoftKeyConfig soft_key_config;
     CloudConfig cloud_config;
     std::string store_root;  // Store root path (empty = default)
+
+    // IPC configuration (framework-ipc)
+    ::tbox::fw::ipc::IpcConfig ipc_config{};
+    std::string ipc_socket_path = "/tmp/tbox-sec.sock";
 
     // New config snapshot (optional, takes precedence when set)
     std::shared_ptr<const hwyz::config::ImmutableConfigView> config_snapshot;
@@ -205,7 +222,7 @@ public:
     void set_prov_service(std::shared_ptr<ProvServiceInterface> prov_service);
 
     // Set CA certificate for signature verification
-    ErrorCode set_ca_certificate(const std::vector<uint8_t>& ca_cert_der);
+    virtual ErrorCode set_ca_certificate(const std::vector<uint8_t>& ca_cert_der);
 
     // Save current provision state to store
     bool save_state();
@@ -219,7 +236,12 @@ private:
     std::shared_ptr<DiagServiceInterface> diag_service_;
     std::shared_ptr<ProvServiceInterface> prov_service_;
     std::optional<hwyz::store::Store> store_;
+#if !defined(TBOX_SEC_USE_FRAMEWORK_IPC)
     std::unique_ptr<ipc::IpcServer> ipc_server_;
+#else
+    std::unique_ptr<::tbox::fw::ipc::Server> fw_ipc_server_;
+    std::unique_ptr<SecIpcDispatcher> ipc_dispatcher_;
+#endif
     std::string ipc_socket_path_ = "/tmp/tbox-sec.sock";
 
     std::string vin_;
