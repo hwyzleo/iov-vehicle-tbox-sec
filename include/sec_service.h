@@ -19,12 +19,6 @@
 namespace tbox {
 namespace sec {
 
-#if !defined(TBOX_SEC_USE_FRAMEWORK_IPC)
-namespace ipc {
-class IpcServer;
-} // namespace ipc
-#endif
-
 class SecIpcDispatcher;
 
 } // namespace sec
@@ -236,12 +230,8 @@ private:
     std::shared_ptr<DiagServiceInterface> diag_service_;
     std::shared_ptr<ProvServiceInterface> prov_service_;
     std::optional<hwyz::store::Store> store_;
-#if !defined(TBOX_SEC_USE_FRAMEWORK_IPC)
-    std::unique_ptr<ipc::IpcServer> ipc_server_;
-#else
     std::unique_ptr<::tbox::fw::ipc::Server> fw_ipc_server_;
     std::unique_ptr<SecIpcDispatcher> ipc_dispatcher_;
-#endif
     std::string ipc_socket_path_ = "/tmp/tbox-sec.sock";
 
     std::string vin_;

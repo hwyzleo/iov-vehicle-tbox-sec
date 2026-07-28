@@ -13,7 +13,6 @@ include(GNUInstallDirs)
 # ============================================================
 # Build options
 # ============================================================
-option(TBOX_SEC_USE_FRAMEWORK_IPC "Use framework-ipc transport (ON) or legacy socket (OFF)" ON)
 
 # Platform-specific library directories
 if (CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
@@ -104,26 +103,14 @@ set(LIB_SOURCES
     src/sec_log_adapter.cpp
 )
 
-if(TBOX_SEC_USE_FRAMEWORK_IPC)
-    list(APPEND LIB_SOURCES
-        src/sec_ipc_dispatcher.cpp
-        src/sec_retry_policy.cpp
-    )
-    message(STATUS "SEC IPC: framework-ipc mode (TBOX_SEC_USE_FRAMEWORK_IPC=ON)")
-else()
-    list(APPEND LIB_SOURCES
-        src/ipc_protocol.cpp
-        src/ipc_server.cpp
-    )
-    message(STATUS "SEC IPC: legacy socket mode (TBOX_SEC_USE_FRAMEWORK_IPC=OFF)")
-endif()
+list(APPEND LIB_SOURCES
+    src/sec_ipc_dispatcher.cpp
+    src/sec_retry_policy.cpp
+)
 
 add_library(TboxSecLib STATIC ${LIB_SOURCES})
 target_include_directories(TboxSecLib PUBLIC ${PROJECT_SOURCE_DIR}/include ${FRAMEWORK_INCLUDE_DIR})
 target_link_libraries(TboxSecLib PUBLIC OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json CURL::libcurl)
-if(TBOX_SEC_USE_FRAMEWORK_IPC)
-    target_compile_definitions(TboxSecLib PUBLIC TBOX_SEC_USE_FRAMEWORK_IPC)
-endif()
 
 # ============================================================
 # Client SDK library (tbox_sec_client / tbox::sec_client)
@@ -133,10 +120,6 @@ set(CLIENT_SOURCES
     src/sec_retry_policy.cpp
     src/error_codes.cpp
 )
-
-if(NOT TBOX_SEC_USE_FRAMEWORK_IPC)
-    list(APPEND CLIENT_SOURCES src/ipc_protocol.cpp)
-endif()
 
 add_library(tbox_sec_client STATIC ${CLIENT_SOURCES})
 add_library(tbox::sec_client ALIAS tbox_sec_client)
@@ -154,9 +137,6 @@ target_link_libraries(tbox_sec_client
     PRIVATE ${FRAMEWORK_LIB}
 )
 target_include_directories(tbox_sec_client PRIVATE ${FRAMEWORK_INCLUDE_DIR})
-if(TBOX_SEC_USE_FRAMEWORK_IPC)
-    target_compile_definitions(tbox_sec_client PRIVATE TBOX_SEC_USE_FRAMEWORK_IPC)
-endif()
 
 # Install public SDK headers
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/tbox/sec/
@@ -225,10 +205,8 @@ set(TEST_SOURCES
     tests/test_sec_log_fault.cpp
     tests/test_sec_log_security.cpp
     tests/test_sec_retry_policy.cpp
+    tests/test_sec_ipc_dispatcher.cpp
 )
-if(TBOX_SEC_USE_FRAMEWORK_IPC)
-    list(APPEND TEST_SOURCES tests/test_sec_ipc_dispatcher.cpp)
-endif()
 add_executable(TboxSecTests ${TEST_SOURCES})
 target_link_libraries(TboxSecTests PRIVATE TboxSecLib tbox_sec_client ${FRAMEWORK_LIB} GTest::GTest GTest::gmock GTest::Main)
 add_test(NAME TboxSecTests COMMAND TboxSecTests)

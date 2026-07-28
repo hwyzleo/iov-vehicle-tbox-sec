@@ -18,12 +18,8 @@
 #include <yaml-cpp/yaml.h>
 #endif
 
-#if defined(TBOX_SEC_USE_FRAMEWORK_IPC)
 #include "sec_ipc_dispatcher.h"
 #include "ipc.h"
-#else
-#include "ipc_server.h"
-#endif
 
 namespace tbox {
 namespace sec {
@@ -148,7 +144,6 @@ bool SecService::start_ipc_server() {
         return false;
     }
 
-#if defined(TBOX_SEC_USE_FRAMEWORK_IPC)
     if (fw_ipc_server_) {
         return true;  // already started
     }
@@ -193,23 +188,9 @@ bool SecService::start_ipc_server() {
         {tbox::fw::log::Field("socket_path", tbox::fw::log::FieldValue::makeString(ipc_socket_path_))}
     );
     return true;
-#else
-    if (ipc_server_) {
-        return true;
-    }
-
-    ipc_server_ = std::make_unique<ipc::IpcServer>(ipc_socket_path_);
-    if (!ipc_server_->start(this)) {
-        ipc_server_.reset();
-        return false;
-    }
-
-    return true;
-#endif
 }
 
 void SecService::stop_ipc_server() {
-#if defined(TBOX_SEC_USE_FRAMEWORK_IPC)
     if (fw_ipc_server_) {
         fw_ipc_server_->stop();
         fw_ipc_server_.reset();
@@ -219,12 +200,6 @@ void SecService::stop_ipc_server() {
             "IPC server stopped (framework-ipc)"
         );
     }
-#else
-    if (ipc_server_) {
-        ipc_server_->stop();
-        ipc_server_.reset();
-    }
-#endif
 }
 
 ErrorCode SecService::generate_key_pair() {
