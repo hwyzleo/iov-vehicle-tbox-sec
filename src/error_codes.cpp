@@ -1,4 +1,5 @@
 #include "error_codes.h"
+#include "tbox/sec/types.h"
 
 namespace tbox {
 namespace sec {
@@ -40,6 +41,12 @@ std::string error_code_to_string(ErrorCode code) {
         case ErrorCode::CONNECTION_FAILED: return "CONNECTION_FAILED";
         case ErrorCode::PROV_NOT_CONFIGURED: return "PROV_NOT_CONFIGURED";
         case ErrorCode::SOFT_KEY_MODE_NOT_ALLOWED: return "SOFT_KEY_MODE_NOT_ALLOWED";
+        case ErrorCode::TLS_CREDENTIAL_NOT_READY: return "TLS_CREDENTIAL_NOT_READY";
+        case ErrorCode::TLS_CREDENTIAL_INVALID: return "TLS_CREDENTIAL_INVALID";
+        case ErrorCode::TLS_KEY_REF_INVALID: return "TLS_KEY_REF_INVALID";
+        case ErrorCode::TLS_SIGN_ALGORITHM_NOT_ALLOWED: return "TLS_SIGN_ALGORITHM_NOT_ALLOWED";
+        case ErrorCode::TLS_HSM_SIGN_FAILED: return "TLS_HSM_SIGN_FAILED";
+        case ErrorCode::ACL_DENIED: return "ACL_DENIED";
         case ErrorCode::CONFIG_ERROR: return "CONFIG_ERROR";
         case ErrorCode::INTERNAL_ERROR: return "INTERNAL_ERROR";
         default: return "UNKNOWN";
@@ -83,10 +90,64 @@ std::string error_code_to_description(ErrorCode code) {
         case ErrorCode::CONNECTION_FAILED: return "Failed to connect to service";
         case ErrorCode::PROV_NOT_CONFIGURED: return "PROV service has not configured VIN/ECU UID yet";
         case ErrorCode::SOFT_KEY_MODE_NOT_ALLOWED: return "Software key file mode not allowed in production environment";
+        case ErrorCode::TLS_CREDENTIAL_NOT_READY: return "MQTT TLS credential not ready";
+        case ErrorCode::TLS_CREDENTIAL_INVALID: return "TLS credential invalid, expired or revoked";
+        case ErrorCode::TLS_KEY_REF_INVALID: return "TLS private key reference invalid or expired";
+        case ErrorCode::TLS_SIGN_ALGORITHM_NOT_ALLOWED: return "TLS signature algorithm or usage not allowed";
+        case ErrorCode::TLS_HSM_SIGN_FAILED: return "HSM/SE TLS signing failed";
+        case ErrorCode::ACL_DENIED: return "Caller not authorized for this profile";
         case ErrorCode::CONFIG_ERROR: return "Configuration error";
         case ErrorCode::INTERNAL_ERROR: return "Internal error";
         default: return "Unknown error";
     }
+}
+
+// ============================================================
+// TLS 枚举与字符串互转（TBOX-SEC-DSN-CR-010）
+// ============================================================
+
+std::string tls_credential_status_to_string(TlsCredentialStatus s) {
+    switch (s) {
+        case TlsCredentialStatus::READY: return "READY";
+        case TlsCredentialStatus::NOT_READY: return "NOT_READY";
+        case TlsCredentialStatus::EXPIRED: return "EXPIRED";
+        case TlsCredentialStatus::REVOKED: return "REVOKED";
+        case TlsCredentialStatus::ERROR: return "ERROR";
+        default: return "UNKNOWN";
+    }
+}
+
+TlsCredentialStatus string_to_tls_credential_status(const std::string& s) {
+    if (s == "READY") return TlsCredentialStatus::READY;
+    if (s == "NOT_READY") return TlsCredentialStatus::NOT_READY;
+    if (s == "EXPIRED") return TlsCredentialStatus::EXPIRED;
+    if (s == "REVOKED") return TlsCredentialStatus::REVOKED;
+    if (s == "ERROR") return TlsCredentialStatus::ERROR;
+    return TlsCredentialStatus::NOT_READY;
+}
+
+std::string key_algorithm_to_string(KeyAlgorithm a) {
+    switch (a) {
+        case KeyAlgorithm::ECDSA_P256: return "ecdsa-p256";
+        default: return "unknown";
+    }
+}
+
+KeyAlgorithm string_to_key_algorithm(const std::string& s) {
+    if (s == "ecdsa-p256") return KeyAlgorithm::ECDSA_P256;
+    return KeyAlgorithm::UNKNOWN;
+}
+
+std::string signature_algorithm_to_string(SignatureAlgorithm a) {
+    switch (a) {
+        case SignatureAlgorithm::ECDSA_SECP256R1_SHA256: return "ecdsa_secp256r1_sha256";
+        default: return "unknown";
+    }
+}
+
+SignatureAlgorithm string_to_signature_algorithm(const std::string& s) {
+    if (s == "ecdsa_secp256r1_sha256") return SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
+    return SignatureAlgorithm::UNKNOWN;
 }
 
 } // namespace sec

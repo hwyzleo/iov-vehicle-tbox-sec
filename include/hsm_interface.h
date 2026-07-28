@@ -38,6 +38,19 @@ public:
                           const std::vector<uint8_t>& data,
                           std::vector<uint8_t>& signature) = 0;
 
+    /// 对预计算摘要直接进行 ECDSA 签名（不再二次哈希）。
+    /// 用于 TLS CertificateVerify：调用方（OpenSSL adapter）已计算 transcript digest，
+    /// SEC/HSM 仅对该 digest 做 ECDSA。
+    /// 默认返回 NOT_IMPLEMENTED，由支持 TLS 的 HSM 实现覆写。
+    virtual ErrorCode sign_digest(const std::string& key_id,
+                                  const std::vector<uint8_t>& digest,
+                                  std::vector<uint8_t>& signature) {
+        (void)key_id;
+        (void)digest;
+        (void)signature;
+        return ErrorCode::NOT_IMPLEMENTED;
+    }
+
     virtual ErrorCode verify(const std::string& key_id,
                             const std::vector<uint8_t>& data,
                             const std::vector<uint8_t>& signature,

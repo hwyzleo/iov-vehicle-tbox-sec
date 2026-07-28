@@ -89,6 +89,13 @@ public:
         return std::vector<uint8_t>(decoded.begin(), decoded.end());
     }
 
+    /// 订阅包装（framework Client::subscribe 使用独立连接）
+    ::tbox::fw::ipc::Subscription subscribe(uint32_t method_id,
+                                             uint32_t event_type,
+                                             ::tbox::fw::ipc::EventCallback cb) {
+        return fw_client_->subscribe(method_id, event_type, std::move(cb));
+    }
+
 private:
     std::string socket_path_;
     std::unique_ptr<::tbox::fw::ipc::Client> fw_client_;
@@ -264,6 +271,139 @@ ErrorCode SecClient::reset_provision_status() {
         static_cast<uint32_t>(ipc::MethodId::RESET_STATUS), "{}");
     if (!ok) return ErrorCode::CONNECTION_FAILED;
     return static_cast<ErrorCode>(status);
+}
+
+// ============================================================
+// MQTT TLS Credential Provider（TBOX-SEC-DSN-CR-010）
+// ============================================================
+
+ErrorCode SecClient::get_tls_credential(const std::string& profile,
+                                        TlsCredentialBundle& bundle) {
+    nlohmann::json params;
+    params["profile"] = profile;
+    auto [ok, status, response_json] = impl_->send_request(
+        static_cast<uint32_t>(ipc::MethodId::GET_TLS_CREDENTIAL), params.dump());
+    if (!ok) return ErrorCode::CONNECTION_FAILED;
+    if (status != 0) return static_cast<ErrorCode>(status);
+
+    try {
+        auto j = nlohmann::json::parse(response_json);
+        bundle.credential_id = j.value("credential_id", "");
+        bundle.version = j.value("version", 0ULL);
+        bundle.root_ca_bundle_der = impl_->b64_decode(j.value("root_ca_bundle", ""));
+        bundle.client_cert_chain_der = impl_->b64_decode(j.value("client_cert_chain", ""));
+        bundle.private_key_ref.data = impl_->b64_decode(j.value("private_key_ref", ""));
+        bundle.key_algorithm = string_to_key_algorithm(j.value("key_algorithm", ""));
+        bundle.not_before = j.value("not_before", 0LL);
+        bundle.not_after = j.value("not_after", 0LL);
+        bundle.status = string_to_tls_credential_status(j.value("credential_status", "NOT_READY"));
+        return ErrorCode::SUCCESS;
+    } catch (const std::exception&) {
+        return ErrorCode::INTERNAL_ERROR;
+    }
+}
+
+ErrorCode SecClient::get_tls_credential_state(const std::string& profile,
+                                              TlsCredentialState& state) {
+    nlohmann::json params;
+    params["profile"] = profile;
+    auto [ok, status, response_json] = impl_->send_request(
+        static_cast<uint32_t>(ipc::MethodId::GET_TLS_CREDENTIAL_STATE), params.dump());
+    if (!ok) return ErrorCode::CONNECTION_FAILED;
+    if (status != 0) return static_cast<ErrorCode>(status);
+
+    try {
+        auto j = nlohmann::json::parse(response_json);
+        state.credential_id = j.value("credential_id", "");
+        state.version = j.value("version", 0ULL);
+        state.status = string_to_tls_credential_status(j.value("credential_status", "NOT_READY"));
+        state.reason_code = j.value("reason_code", 0);
+        return ErrorCode::SUCCESS;
+    } catch (const std::exception&) {
+        return ErrorCode::INTERNAL_ERROR;
+    }
+}
+
+ErrorCode SecClient::sign_tls(const TlsSignRequest& request,
+                              std::vector<uint8_t>& signature) {
+    nlohmann::json params;
+    params["private_key_ref"] = impl_->b64_encode(request.private_key_ref.data);
+    params["algorithm"] = signature_algorithm_to_string(request.algorithm);
+    params["digest"] = impl_->b64_encode(request.digest);
+    if (!request.context.empty()) {
+        params["context"] = impl_->b64_encode(request.context);
+    }
+    params["request_id"] = request.request_id;
+
+    // SIGN_TLS 禁止自动重放：send_request 内部根据 retry policy 使用 callOnce
+    auto [ok, status, response_json] = impl_->send_request(
+        static_cast<uint32_t>(ipc::MethodId::SIGN_TLS), params.dump());
+    if (!ok) return ErrorCode::CONNECTION_FAILED;
+    if (status != 0) return static_cast<ErrorCode>(status);
+
+    try {
+        auto j = nlohmann::json::parse(response_json);
+        signature = impl_->b64_decode(j.value("signature", ""));
+        return ErrorCode::SUCCESS;
+    } catch (const std::exception&) {
+        return ErrorCode::INTERNAL_ERROR;
+    }
+}
+
+// 订阅句柄实现：持有 framework Subscription 以维持独立连接生命周期
+struct TlsCredentialSubscription::Impl {
+    bool active = false;
+    std::function<void(const TlsCredentialChangedEvent&)> callback;
+    ::tbox::fw::ipc::Subscription fw_sub;
+};
+
+TlsCredentialSubscription::TlsCredentialSubscription(std::shared_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+TlsCredentialSubscription::~TlsCredentialSubscription() { cancel(); }
+TlsCredentialSubscription::TlsCredentialSubscription(TlsCredentialSubscription&&) noexcept = default;
+TlsCredentialSubscription& TlsCredentialSubscription::operator=(TlsCredentialSubscription&&) noexcept = default;
+void TlsCredentialSubscription::cancel() {
+    if (impl_) {
+        impl_->active = false;
+        impl_->fw_sub.cancel();
+        impl_.reset();
+    }
+}
+bool TlsCredentialSubscription::isActive() const {
+    return impl_ && impl_->active;
+}
+
+TlsCredentialSubscription SecClient::subscribe_tls_credential_changed(
+        const std::string& profile,
+        std::function<void(const TlsCredentialChangedEvent&)> callback) {
+    auto sub_impl = std::make_shared<TlsCredentialSubscription::Impl>();
+    sub_impl->active = true;
+    sub_impl->callback = std::move(callback);
+    (void)profile;  // framework subscribe 不支持传 params，server 缺省 mqtt
+
+    // 订阅使用独立 framework-ipc 连接（SUBSCRIBE 握手后进入 event-only）
+    // profile 由 server 端缺省为 mqtt（framework subscribe 不支持传 params）
+    sub_impl->fw_sub = impl_->subscribe(
+        static_cast<uint32_t>(ipc::MethodId::SUBSCRIBE_TLS_CREDENTIAL_CHANGED),
+        static_cast<uint32_t>(ipc::EventId::TLS_CREDENTIAL_CHANGED),
+        [sub_impl](uint32_t event_type, std::string_view payload_json) {
+            (void)event_type;
+            if (!sub_impl->active || !sub_impl->callback) return;
+            try {
+                auto j = nlohmann::json::parse(payload_json);
+                TlsCredentialChangedEvent ev;
+                ev.profile = j.value("profile", "");
+                ev.credential_id = j.value("credential_id", "");
+                ev.version = j.value("version", 0ULL);
+                ev.status = string_to_tls_credential_status(j.value("status", "NOT_READY"));
+                ev.reason_code = j.value("reason_code", 0);
+                sub_impl->callback(ev);
+            } catch (const std::exception&) {
+                // 忽略畸形事件
+            }
+        });
+
+    return TlsCredentialSubscription(sub_impl);
 }
 
 } // namespace sec

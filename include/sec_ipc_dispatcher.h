@@ -4,11 +4,15 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <functional>
 
 namespace tbox {
 namespace sec {
 
 class SecService;
+class TlsCredentialProvider;
+class PeerCredentialResolver;
+struct PeerIdentity;
 
 /// SEC IPC 请求分发适配器
 ///
@@ -23,6 +27,14 @@ class SecService;
 class SecIpcDispatcher {
 public:
     explicit SecIpcDispatcher(SecService* service);
+    ~SecIpcDispatcher();
+
+    /// 注入 TLS 凭据提供者与 peer credential 解析器（用于 TLS method ACL）
+    void setTlsCredentialProvider(TlsCredentialProvider* provider);
+    void setPeerCredentialResolver(std::shared_ptr<PeerCredentialResolver> resolver);
+
+    /// 注入订阅注册回调（由 SecService 接线到 framework-ipc Server::add_subscription）
+    void setAddSubscriptionCallback(std::function<bool(int, uint32_t)> cb);
 
     /// framework RequestHandler 回调入口
     /// @param method_id   SEC method ID
@@ -35,6 +47,12 @@ public:
 
 private:
     SecService* service_;
+    TlsCredentialProvider* tls_provider_ = nullptr;
+    std::shared_ptr<PeerCredentialResolver> peer_resolver_;
+    std::function<bool(int, uint32_t)> add_subscription_fn_;
+
+    /// 解析 client_fd 的调用方身份
+    PeerIdentity resolvePeer(int client_fd);
 
     // 各 method handler，返回 (status_code, response_json)
     std::pair<int32_t, std::string> handle_initialize();
@@ -50,6 +68,12 @@ private:
     std::pair<int32_t, std::string> handle_get_status();
     std::pair<int32_t, std::string> handle_get_device_info();
     std::pair<int32_t, std::string> handle_reset_status();
+
+    // TLS Credential Provider handlers (TBOX-SEC-DSN-CR-010)
+    std::pair<int32_t, std::string> handle_get_tls_credential(std::string_view params, int client_fd);
+    std::pair<int32_t, std::string> handle_get_tls_credential_state(std::string_view params);
+    std::pair<int32_t, std::string> handle_sign_tls(std::string_view params, int client_fd);
+    std::pair<int32_t, std::string> handle_subscribe_tls_credential_changed(std::string_view params, int client_fd);
 };
 
 } // namespace sec

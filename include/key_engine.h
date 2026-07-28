@@ -42,6 +42,9 @@ public:
     // Delete device key
     ErrorCode delete_device_key(const std::string& vin, const std::string& ecu_uid);
     
+    // Access underlying HSM (for TlsCredentialProvider remote signing)
+    HsmInterface* hsm() { return hsm_.get(); }
+    
 private:
     std::unique_ptr<HsmInterface> hsm_;
     bool initialized_;

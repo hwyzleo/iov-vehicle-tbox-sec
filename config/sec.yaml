@@ -1,6 +1,6 @@
 common:
   store:
-    root: "."
+    root: "./data"
 
 ipc:
   max_frame_bytes: 10485760
@@ -41,6 +41,25 @@ environment:
 sec:
   ipc:
     socket_path: "/tmp/tbox-sec.sock"
+  # MQTT TLS Credential Provider (TBOX-SEC-DSN-CR-010)
+  # 提供该 profile 后 SEC 才会创建 TlsCredentialProvider；
+  # 缺失时 getTlsCredential 直接返回 NOT_IMPLEMENTED (SEC-8004)
+  tls:
+    # 开发/测试专用：非生产环境下用固定服务名放行 TLS ACL，
+    # 绕过 macOS 无 SO_PEERCRED 的限制。生产环境请删除或置空此项！
+    dev_peer_service: "tbox-mqtt.service"
+    profiles:
+      mqtt:
+        credential_id: mqtt-primary
+        key_usage: clientAuth
+        allowed_signature_algorithms:
+          - ecdsa_secp256r1_sha256
+        peer_service: tbox-mqtt.service
+        notify_on_change: true
+        # SEC 受控存储路径；量产由注入流程写入，测试环境指向测试证书
+        root_ca_path: "./data/root_ca.crt"
+        client_cert_chain_path: "./data/tbox_chain.crt"
+        ref_ttl_sec: 3600
 
 log:
   level: "INFO"

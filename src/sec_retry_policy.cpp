@@ -33,6 +33,19 @@ SecRetryPolicy::Category SecRetryPolicy::categorize(uint32_t method_id) {
         case ipc::MethodId::INITIALIZE:
             return Category::kReadOnly;
 
+        // TLS 只读查询：允许一次重试
+        case ipc::MethodId::GET_TLS_CREDENTIAL:
+        case ipc::MethodId::GET_TLS_CREDENTIAL_STATE:
+            return Category::kReadOnly;
+
+        // TLS 签名：一次性/禁止自动重放（超时为 unknown outcome）
+        case ipc::MethodId::SIGN_TLS:
+            return Category::kOneShot;
+
+        // TLS 订阅：独立连接，不归入 call/callOnce 重试
+        case ipc::MethodId::SUBSCRIBE_TLS_CREDENTIAL_CHANGED:
+            return Category::kOneShot;
+
         default:
             return Category::kOneShot;  // 未知方法保守处理
     }

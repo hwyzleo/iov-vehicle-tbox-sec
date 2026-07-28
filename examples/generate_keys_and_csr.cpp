@@ -106,7 +106,7 @@ int main() {
 
     // 加密密钥
     std::cout << "2. Encryption Key:" << std::endl;
-    std::cout << "   - ./data/soft_keys/.encryption_key" << std::endl;
+    std::cout << "   - ./data/soft_keys/..encryption_key" << std::endl;
     std::cout << std::endl;
 
     // CSR 文件

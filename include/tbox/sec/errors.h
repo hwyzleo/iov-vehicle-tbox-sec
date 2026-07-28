@@ -55,6 +55,16 @@ enum class ErrorCode : uint32_t {
     // Soft key errors (SEC-1009)
     SOFT_KEY_MODE_NOT_ALLOWED = 1009,
 
+    // MQTT TLS credential errors (SEC-1010..1014, TBOX-SEC-DSN-CR-010)
+    TLS_CREDENTIAL_NOT_READY = 1010,          ///< SEC-1010: TLS 凭据未就绪
+    TLS_CREDENTIAL_INVALID = 1011,            ///< SEC-1011: 凭据无效、过期或撤销
+    TLS_KEY_REF_INVALID = 1012,               ///< SEC-1012: 私钥引用无效或已失效
+    TLS_SIGN_ALGORITHM_NOT_ALLOWED = 1013,    ///< SEC-1013: 签名算法或用途不允许
+    TLS_HSM_SIGN_FAILED = 1014,               ///< SEC-1014: HSM/SE TLS 签名失败
+
+    // ACL errors
+    ACL_DENIED = 1020,                        ///< 调用方未授权访问该 profile
+
     // Configuration errors
     CONFIG_ERROR = 1100,
 

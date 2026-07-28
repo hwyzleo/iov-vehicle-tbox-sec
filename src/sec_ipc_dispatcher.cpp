@@ -2,6 +2,9 @@
 #include "sec_service.h"
 #include "sec_log_adapter.h"
 #include "ipc_protocol.h"
+#include "tls_credential_provider.h"
+#include "peer_credential.h"
+#include "tbox/sec/types.h"
 #include "utils.h"
 #include <nlohmann/json.hpp>
 #include <chrono>
@@ -38,6 +41,30 @@ std::vector<uint8_t> b64_decode(const std::string& encoded) {
 
 SecIpcDispatcher::SecIpcDispatcher(SecService* service)
     : service_(service) {
+}
+
+SecIpcDispatcher::~SecIpcDispatcher() = default;
+
+void SecIpcDispatcher::setTlsCredentialProvider(TlsCredentialProvider* provider) {
+    tls_provider_ = provider;
+}
+
+void SecIpcDispatcher::setPeerCredentialResolver(std::shared_ptr<PeerCredentialResolver> resolver) {
+    peer_resolver_ = std::move(resolver);
+}
+
+void SecIpcDispatcher::setAddSubscriptionCallback(std::function<bool(int, uint32_t)> cb) {
+    add_subscription_fn_ = std::move(cb);
+}
+
+PeerIdentity SecIpcDispatcher::resolvePeer(int client_fd) {
+    if (peer_resolver_) {
+        return peer_resolver_->resolve(client_fd);
+    }
+    // 无解析器时 fail-closed
+    PeerIdentity identity;
+    identity.valid = false;
+    return identity;
 }
 
 std::string SecIpcDispatcher::dispatch(uint32_t method_id,
@@ -97,6 +124,18 @@ std::string SecIpcDispatcher::dispatch(uint32_t method_id,
                 break;
             case ipc::MethodId::RESET_STATUS:
                 result = handle_reset_status();
+                break;
+            case ipc::MethodId::GET_TLS_CREDENTIAL:
+                result = handle_get_tls_credential(params_json, client_fd);
+                break;
+            case ipc::MethodId::GET_TLS_CREDENTIAL_STATE:
+                result = handle_get_tls_credential_state(params_json);
+                break;
+            case ipc::MethodId::SIGN_TLS:
+                result = handle_sign_tls(params_json, client_fd);
+                break;
+            case ipc::MethodId::SUBSCRIBE_TLS_CREDENTIAL_CHANGED:
+                result = handle_subscribe_tls_credential_changed(params_json, client_fd);
                 break;
             default:
                 SecLogAdapter::ipc().warn(
@@ -323,6 +362,171 @@ std::pair<int32_t, std::string> SecIpcDispatcher::handle_reset_status() {
     nlohmann::json j;
     j["success"] = (result == ErrorCode::SUCCESS);
     return {static_cast<int32_t>(result), j.dump()};
+}
+
+// ============================================================
+// TLS Credential Provider handlers (TBOX-SEC-DSN-CR-010)
+// ============================================================
+
+std::pair<int32_t, std::string> SecIpcDispatcher::handle_get_tls_credential(
+        std::string_view params, int client_fd) {
+    if (!tls_provider_) {
+        nlohmann::json resp;
+        resp["success"] = false;
+        resp["error"] = "TLS provider not configured";
+        return {static_cast<int32_t>(ErrorCode::NOT_IMPLEMENTED), resp.dump()};
+    }
+    std::string profile = ipc::kTlsProfileMqtt;
+    try {
+        auto j = nlohmann::json::parse(params);
+        profile = j.value("profile", ipc::kTlsProfileMqtt);
+    } catch (...) {
+        // 缺省 mqtt
+    }
+
+    PeerIdentity caller = resolvePeer(client_fd);
+    if (!tls_provider_->isAuthorized(profile, caller)) {
+        SecLogAdapter::ipc().warn(
+            "sec.ipc.acl_denied",
+            "TLS getTlsCredential ACL 拒绝",
+            {tbox::fw::log::Field("method_id", tbox::fw::log::FieldValue::makeInt(
+                static_cast<int>(ipc::MethodId::GET_TLS_CREDENTIAL))),
+             tbox::fw::log::Field("profile", tbox::fw::log::FieldValue::makeString(profile)),
+             tbox::fw::log::Field("peer_valid", tbox::fw::log::FieldValue::makeInt(caller.valid))}
+        );
+        nlohmann::json resp;
+        resp["success"] = false;
+        return {static_cast<int32_t>(ErrorCode::ACL_DENIED), resp.dump()};
+    }
+
+    TlsCredentialBundle bundle;
+    // 自愈：材料未就绪时按需解析 VIN/ECU_UID 并重载（避免启动时 PROV 未就绪导致永久 NOT_READY）
+    if (service_) {
+        service_->ensure_tls_material_ready(profile);
+    }
+    auto rc = tls_provider_->getTlsCredential(profile, caller, bundle);
+    nlohmann::json resp;
+    if (rc == ErrorCode::SUCCESS) {
+        resp["credential_id"] = bundle.credential_id;
+        resp["version"] = bundle.version;
+        resp["root_ca_bundle"] = b64_encode(bundle.root_ca_bundle_der);
+        resp["client_cert_chain"] = b64_encode(bundle.client_cert_chain_der);
+        resp["private_key_ref"] = b64_encode(bundle.private_key_ref.data);
+        resp["key_algorithm"] = key_algorithm_to_string(bundle.key_algorithm);
+        resp["not_before"] = bundle.not_before;
+        resp["not_after"] = bundle.not_after;
+        resp["credential_status"] = tls_credential_status_to_string(bundle.status);
+    } else {
+        resp["success"] = false;
+    }
+    return {static_cast<int32_t>(rc), resp.dump()};
+}
+
+std::pair<int32_t, std::string> SecIpcDispatcher::handle_get_tls_credential_state(
+        std::string_view params) {
+    if (!tls_provider_) {
+        nlohmann::json resp;
+        resp["success"] = false;
+        return {static_cast<int32_t>(ErrorCode::NOT_IMPLEMENTED), resp.dump()};
+    }
+    std::string profile = ipc::kTlsProfileMqtt;
+    try {
+        auto j = nlohmann::json::parse(params);
+        profile = j.value("profile", ipc::kTlsProfileMqtt);
+    } catch (...) {
+        // 缺省 mqtt
+    }
+
+    TlsCredentialState state;
+    // 自愈：材料未就绪时按需解析 VIN/ECU_UID 并重载
+    if (service_) {
+        service_->ensure_tls_material_ready(profile);
+    }
+    auto rc = tls_provider_->getTlsCredentialState(profile, state);
+    nlohmann::json resp;
+    if (rc == ErrorCode::SUCCESS) {
+        resp["credential_id"] = state.credential_id;
+        resp["version"] = state.version;
+        resp["credential_status"] = tls_credential_status_to_string(state.status);
+        resp["reason_code"] = state.reason_code;
+    } else {
+        resp["success"] = false;
+    }
+    return {static_cast<int32_t>(rc), resp.dump()};
+}
+
+std::pair<int32_t, std::string> SecIpcDispatcher::handle_sign_tls(
+        std::string_view params, int client_fd) {
+    if (!tls_provider_) {
+        nlohmann::json resp;
+        resp["success"] = false;
+        return {static_cast<int32_t>(ErrorCode::NOT_IMPLEMENTED), resp.dump()};
+    }
+    TlsSignRequest req;
+    std::string alg_str;
+    try {
+        auto j = nlohmann::json::parse(params);
+        req.private_key_ref.data = b64_decode(j.value("private_key_ref", ""));
+        alg_str = j.value("algorithm", "");
+        req.algorithm = string_to_signature_algorithm(alg_str);
+        req.digest = b64_decode(j.value("digest", ""));
+        req.context = b64_decode(j.value("context", ""));
+        req.request_id = j.value("request_id", "");
+    } catch (const nlohmann::json::exception&) {
+        nlohmann::json resp;
+        resp["success"] = false;
+        resp["error"] = "Invalid JSON";
+        return {FW_SERIALIZATION_FAILED, resp.dump()};
+    }
+
+    PeerIdentity caller = resolvePeer(client_fd);
+    std::vector<uint8_t> signature;
+    auto rc = tls_provider_->signTls(req, caller, signature);
+    nlohmann::json resp;
+    if (rc == ErrorCode::SUCCESS) {
+        resp["signature"] = b64_encode(signature);
+    } else {
+        resp["success"] = false;
+    }
+    // 安全清零临时签名缓冲
+    std::fill(signature.begin(), signature.end(), 0);
+    return {static_cast<int32_t>(rc), resp.dump()};
+}
+
+std::pair<int32_t, std::string> SecIpcDispatcher::handle_subscribe_tls_credential_changed(
+        std::string_view params, int client_fd) {
+    if (!tls_provider_) {
+        nlohmann::json resp;
+        resp["success"] = false;
+        return {static_cast<int32_t>(ErrorCode::NOT_IMPLEMENTED), resp.dump()};
+    }
+    std::string profile = ipc::kTlsProfileMqtt;
+    try {
+        auto j = nlohmann::json::parse(params);
+        profile = j.value("profile", ipc::kTlsProfileMqtt);
+    } catch (...) {
+        // 缺省 mqtt
+    }
+
+    PeerIdentity caller = resolvePeer(client_fd);
+    if (!tls_provider_->isAuthorized(profile, caller)) {
+        nlohmann::json resp;
+        resp["success"] = false;
+        return {static_cast<int32_t>(ErrorCode::ACL_DENIED), resp.dump()};
+    }
+
+    if (!add_subscription_fn_ ||
+        !add_subscription_fn_(client_fd, static_cast<uint32_t>(ipc::EventId::TLS_CREDENTIAL_CHANGED))) {
+        nlohmann::json resp;
+        resp["success"] = false;
+        resp["error"] = "Subscription failed";
+        return {static_cast<int32_t>(ErrorCode::INTERNAL_ERROR), resp.dump()};
+    }
+
+    nlohmann::json resp;
+    resp["success"] = true;
+    resp["event_type"] = static_cast<uint32_t>(ipc::EventId::TLS_CREDENTIAL_CHANGED);
+    return {0, resp.dump()};
 }
 
 } // namespace sec

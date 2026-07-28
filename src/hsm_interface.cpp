@@ -103,6 +103,37 @@ public:
         return ErrorCode::SUCCESS;
     }
 
+    ErrorCode sign_digest(const std::string& key_id,
+                          const std::vector<uint8_t>& digest,
+                          std::vector<uint8_t>& signature) override {
+        auto it = keys_.find(key_id);
+        if (it == keys_.end()) {
+            return ErrorCode::KEY_NOT_FOUND;
+        }
+        if (digest.size() != SHA256_DIGEST_LENGTH) {
+            return ErrorCode::INVALID_PARAMETER;
+        }
+        EC_KEY* ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+        if (!ec) return ErrorCode::HSM_SIGN_FAILED;
+        BIGNUM* priv_bn = BN_bin2bn(it->second.priv.data(),
+                                     static_cast<int>(it->second.priv.size()),
+                                     nullptr);
+        if (!priv_bn) { EC_KEY_free(ec); return ErrorCode::HSM_SIGN_FAILED; }
+        EC_KEY_set_private_key(ec, priv_bn);
+        BN_free(priv_bn);
+        // 直接对传入 digest 做 ECDSA，不再二次哈希
+        unsigned int sig_len = ECDSA_size(ec);
+        signature.resize(sig_len);
+        if (ECDSA_sign(0, digest.data(), static_cast<int>(digest.size()),
+                       signature.data(), &sig_len, ec) != 1) {
+            EC_KEY_free(ec);
+            return ErrorCode::HSM_SIGN_FAILED;
+        }
+        signature.resize(sig_len);
+        EC_KEY_free(ec);
+        return ErrorCode::SUCCESS;
+    }
+
     ErrorCode verify(const std::string& key_id,
                     const std::vector<uint8_t>& data,
                     const std::vector<uint8_t>& signature,
@@ -164,8 +195,8 @@ std::unique_ptr<HsmInterface> HsmFactory::create(HsmType type,
                 ? hwyz::store::Store::open("sec")
                 : hwyz::store::Store::open("sec", store_root);
             std::string enc_key_path = config_path.empty()
-                ? std::string(DEFAULT_SOFT_KEY_PATH) + "/.encryption_key"
-                : config_path + "/.encryption_key";
+                ? std::string(DEFAULT_SOFT_KEY_PATH) + "/..encryption_key"
+                : config_path + "/..encryption_key";
             return std::make_unique<SoftFileHsm>(
                 std::move(store),
                 DEFAULT_SOFT_KEY_ENC_ALGO,

@@ -4,11 +4,31 @@
 #include <vector>
 #include <cstdint>
 #include <memory>
+#include <functional>
 #include "tbox/sec/types.h"
 #include "tbox/sec/errors.h"
 
 namespace tbox {
 namespace sec {
+
+/// 订阅句柄（RAII，析构取消订阅）
+class TlsCredentialSubscription {
+public:
+    TlsCredentialSubscription() = default;
+    ~TlsCredentialSubscription();
+    TlsCredentialSubscription(TlsCredentialSubscription&&) noexcept;
+    TlsCredentialSubscription& operator=(TlsCredentialSubscription&&) noexcept;
+    TlsCredentialSubscription(const TlsCredentialSubscription&) = delete;
+    TlsCredentialSubscription& operator=(const TlsCredentialSubscription&) = delete;
+
+    void cancel();
+    bool isActive() const;
+private:
+    friend class SecClient;
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
+    explicit TlsCredentialSubscription(std::shared_ptr<Impl> impl);
+};
 
 /// SEC 客户端 facade
 ///
@@ -51,6 +71,21 @@ public:
 
     // 重置状态
     ErrorCode reset_provision_status();
+
+    // ---- MQTT TLS Credential Provider（TBOX-SEC-DSN-CR-010）----
+    /// 获取完整凭据 bundle（根 CA + 客户端证书链 + opaque private_key_ref）
+    ErrorCode get_tls_credential(const std::string& profile,
+                                 TlsCredentialBundle& bundle);
+    /// 查询凭据状态摘要（不含凭据内容）
+    ErrorCode get_tls_credential_state(const std::string& profile,
+                                       TlsCredentialState& state);
+    /// 远程 TLS 签名（禁止自动重放；超时为 unknown outcome）
+    ErrorCode sign_tls(const TlsSignRequest& request,
+                       std::vector<uint8_t>& signature);
+    /// 订阅凭据变更事件（独立连接，RAII 句柄）
+    TlsCredentialSubscription subscribe_tls_credential_changed(
+        const std::string& profile,
+        std::function<void(const TlsCredentialChangedEvent&)> callback);
 
 private:
     class Impl;

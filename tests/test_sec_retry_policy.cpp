@@ -119,3 +119,37 @@ TEST_F(SecRetryPolicyTest, ShouldNotRetryUnknown) {
     EXPECT_FALSE(SecRetryPolicy::should_retry(9999));
     EXPECT_FALSE(SecRetryPolicy::should_retry(0));
 }
+
+// ============================================================
+// TLS method 重试策略（TBOX-SEC-DSN-CR-010）
+// ============================================================
+
+TEST_F(SecRetryPolicyTest, TlsReadOnly_AllowRetry) {
+    EXPECT_EQ(SecRetryPolicy::categorize(
+        static_cast<uint32_t>(ipc::MethodId::GET_TLS_CREDENTIAL)),
+        SecRetryPolicy::Category::kReadOnly);
+    EXPECT_EQ(SecRetryPolicy::categorize(
+        static_cast<uint32_t>(ipc::MethodId::GET_TLS_CREDENTIAL_STATE)),
+        SecRetryPolicy::Category::kReadOnly);
+    EXPECT_TRUE(SecRetryPolicy::should_retry(
+        static_cast<uint32_t>(ipc::MethodId::GET_TLS_CREDENTIAL)));
+    EXPECT_TRUE(SecRetryPolicy::should_retry(
+        static_cast<uint32_t>(ipc::MethodId::GET_TLS_CREDENTIAL_STATE)));
+}
+
+TEST_F(SecRetryPolicyTest, TlsSign_NoReplay) {
+    EXPECT_EQ(SecRetryPolicy::categorize(
+        static_cast<uint32_t>(ipc::MethodId::SIGN_TLS)),
+        SecRetryPolicy::Category::kOneShot);
+    EXPECT_FALSE(SecRetryPolicy::should_retry(
+        static_cast<uint32_t>(ipc::MethodId::SIGN_TLS)));
+}
+
+TEST_F(SecRetryPolicyTest, TlsSubscribe_NoCallRetry) {
+    // 订阅使用独立连接，不归入 call/callOnce 重试
+    EXPECT_EQ(SecRetryPolicy::categorize(
+        static_cast<uint32_t>(ipc::MethodId::SUBSCRIBE_TLS_CREDENTIAL_CHANGED)),
+        SecRetryPolicy::Category::kOneShot);
+    EXPECT_FALSE(SecRetryPolicy::should_retry(
+        static_cast<uint32_t>(ipc::MethodId::SUBSCRIBE_TLS_CREDENTIAL_CHANGED)));
+}

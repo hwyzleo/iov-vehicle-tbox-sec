@@ -19,6 +19,9 @@
 #endif
 
 #include "sec_ipc_dispatcher.h"
+#include "tls_credential_provider.h"
+#include "peer_credential.h"
+#include "ipc_protocol.h"
 #include "ipc.h"
 
 namespace tbox {
@@ -135,6 +138,9 @@ ErrorCode SecService::initialize() {
         }
     }
 
+    // 初始化 TLS Credential Provider（TBOX-SEC-DSN-CR-010）
+    initializeTlsCredentialProvider();
+
     initialized_ = true;
     return ErrorCode::SUCCESS;
 }
@@ -154,9 +160,43 @@ bool SecService::start_ipc_server() {
     // Create dispatcher
     ipc_dispatcher_ = std::make_unique<SecIpcDispatcher>(this);
 
+    // 注入 TLS provider 与 peer credential 解析器（TBOX-SEC-DSN-CR-010）
+    if (tls_provider_) {
+        ipc_dispatcher_->setTlsCredentialProvider(tls_provider_.get());
+    }
+    if (!peer_resolver_) {
+        // 开发/测试：配置了 sec.tls.dev_peer_service 且非生产环境时，
+        // 使用 DevPeerCredentialResolver 绕过 SO_PEERCRED（如 macOS 本地联调）。
+        std::string dev_peer = config_.get_tls_dev_peer_service();
+        if (!dev_peer.empty() && !config_.get_is_production()) {
+            SecLogAdapter::ipc().warn(
+                "sec.ipc.dev_peer_resolver_enabled",
+                "已启用开发用 peer 身份解析器，TLS ACL 将固定放行（仅限非生产环境）",
+                {tbox::fw::log::Field("service_name",
+                    tbox::fw::log::FieldValue::makeString(dev_peer))}
+            );
+            peer_resolver_ = std::make_shared<DevPeerCredentialResolver>(dev_peer);
+        } else {
+            peer_resolver_ = std::make_shared<SystemdPeerCredentialResolver>();
+        }
+    }
+    ipc_dispatcher_->setPeerCredentialResolver(peer_resolver_);
+    if (fw_ipc_server_) {
+        // 预留：add_subscription 在 server 创建后设置
+    }
+
     // Create framework-ipc Server
     fw_ipc_server_ = std::make_unique<::tbox::fw::ipc::Server>(
         ipc_socket_path_, config_.ipc_config);
+
+    // 接线 add_subscription 回调到 Server
+    {
+        auto* server_ptr = fw_ipc_server_.get();
+        ipc_dispatcher_->setAddSubscriptionCallback(
+            [server_ptr](int client_fd, uint32_t event_type) -> bool {
+                return server_ptr->add_subscription(client_fd, event_type);
+            });
+    }
 
     // Register RequestHandler (adapt to dispatcher)
     auto* dispatcher_ptr = ipc_dispatcher_.get();
@@ -1281,6 +1321,154 @@ ProvisionStatus ProvisionStatus::from_json(const nlohmann::json& j) {
     status.last_updated = std::chrono::system_clock::from_time_t(std::mktime(&tm));
 
     return status;
+}
+
+// ============================================================
+// TLS Credential Provider（TBOX-SEC-DSN-CR-010）
+// ============================================================
+
+void SecService::loadTlsProfileConfig() {
+    if (!config_.config_snapshot) {
+        return;
+    }
+    auto snap = config_.config_snapshot;
+    // 遍历 sec.tls.profiles.* （本期主要 mqtt）
+    // 由于 ImmutableConfigView 接口限制，这里显式读取 mqtt profile
+    std::string base = "sec.tls.profiles.mqtt";
+    if (!snap->has(base)) {
+        return;
+    }
+    SecServiceConfig::TlsProfileConf pc;
+    pc.enabled = true;
+    pc.profile_name = "mqtt";
+    pc.credential_id = snap->getString(base + ".credential_id", "mqtt-primary");
+    pc.key_usage = snap->getString(base + ".key_usage", "clientAuth");
+    pc.peer_service = snap->getString(base + ".peer_service", "tbox-mqtt.service");
+    pc.notify_on_change = snap->getBool(base + ".notify_on_change", true);
+    pc.root_ca_path = snap->getString(base + ".root_ca_path", "");
+    pc.client_cert_chain_path = snap->getString(base + ".client_cert_chain_path", "");
+    pc.ref_ttl_sec = snap->getInt(base + ".ref_ttl_sec", 3600);
+    // allowed_signature_algorithms
+    auto algs = snap->getStringList(base + ".allowed_signature_algorithms");
+    for (auto& item : algs) {
+        // 去除空白
+        auto p = item.find_first_not_of(" \t");
+        if (p != std::string::npos) item.erase(0, p);
+        auto q = item.find_last_not_of(" \t");
+        if (q != std::string::npos) item.erase(q + 1);
+        if (!item.empty()) pc.allowed_signature_algorithms.push_back(item);
+    }
+    config_.tls_profiles["mqtt"] = pc;
+}
+
+void SecService::initializeTlsCredentialProvider() {
+    loadTlsProfileConfig();
+    if (config_.tls_profiles.empty()) {
+        // 未配置 TLS profile，跳过（不阻断 SEC 启动）
+        return;
+    }
+    if (!key_engine_ || !key_engine_->hsm()) {
+        std::cerr << "[SEC] TLS provider: HSM not available, skip" << std::endl;
+        return;
+    }
+
+    // 加载 TLS 材料前先解析 VIN/ECU_UID（否则 key_id 解析为 "+"，材料会被判定为 NOT_READY）。
+    // best-effort：PROV 不可用时不阻断 SEC 启动，后续 getTlsCredential 会按需重载（见 ensure_tls_material_ready）。
+    if (vin_.empty() || ecu_uid_.empty()) {
+        ErrorCode vinfo = ensure_vehicle_info();
+        if (vinfo != ErrorCode::SUCCESS) {
+            std::cerr << "[SEC] TLS provider: vehicle info unavailable ("
+                      << error_code_to_string(vinfo)
+                      << "), TLS material 将保持 NOT_READY 直至可解析 VIN/ECU_UID" << std::endl;
+        }
+    }
+
+    // 设备 key_id 解析器：vin + "+" + ecu_uid（与 KeyEngine::make_key_id 一致）
+    DeviceKeyIdResolver key_resolver = [this]() -> std::string {
+        return vin_ + "+" + ecu_uid_;
+    };
+
+    // 事件通知回调：经 framework-ipc Server 推送 sec.tls_credential.changed
+    // Server 在 start_ipc_server 时才创建，此处先捕获 this，推送时判空
+    TlsCredentialNotifyCallback notify = [this](const std::string& profile,
+                                                const TlsCredentialChangedEvent& ev) {
+        if (!fw_ipc_server_) {
+            return;
+        }
+        nlohmann::json payload;
+        payload["profile"] = ev.profile;
+        payload["credential_id"] = ev.credential_id;
+        payload["version"] = ev.version;
+        payload["status"] = tls_credential_status_to_string(ev.status);
+        payload["reason_code"] = ev.reason_code;
+        fw_ipc_server_->push_event(
+            static_cast<uint32_t>(ipc::EventId::TLS_CREDENTIAL_CHANGED),
+            payload.dump());
+        SecLogAdapter::certificate().info(
+            "sec.tls_credential.changed",
+            "推送凭据变更事件",
+            {tbox::fw::log::Field("profile", tbox::fw::log::FieldValue::makeString(profile)),
+             tbox::fw::log::Field("version", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(ev.version))),
+             tbox::fw::log::Field("status", tbox::fw::log::FieldValue::makeString(tls_credential_status_to_string(ev.status)))}
+        );
+    };
+
+    tls_provider_ = std::make_unique<TlsCredentialProvider>(
+        key_engine_->hsm(), std::move(key_resolver), std::move(notify));
+
+    // 配置并加载各 profile 材料
+    for (auto& [name, pc] : config_.tls_profiles) {
+        if (!pc.enabled) continue;
+        TlsProfileConfig tpc;
+        tpc.profile_name = name;
+        tpc.credential_id = pc.credential_id;
+        tpc.key_usage = pc.key_usage;
+        for (auto& a : pc.allowed_signature_algorithms) {
+            tpc.allowed_signature_algorithms.push_back(string_to_signature_algorithm(a));
+        }
+        tpc.peer_service = pc.peer_service;
+        tpc.notify_on_change = pc.notify_on_change;
+        tpc.root_ca_path = pc.root_ca_path;
+        tpc.client_cert_chain_path = pc.client_cert_chain_path;
+        tpc.ref_ttl_sec = pc.ref_ttl_sec;
+        tls_provider_->configureProfile(tpc);
+
+        // 尝试加载材料；失败不阻断 SEC 启动（状态保持 NOT_READY，MQTT 查询时返回 SEC-1010）
+        ErrorCode rc = tls_provider_->loadMaterials(name);
+        if (rc != ErrorCode::SUCCESS) {
+            std::cerr << "[SEC] TLS profile '" << name
+                      << "' materials not ready: " << error_code_to_string(rc) << std::endl;
+        }
+    }
+}
+
+TlsCredentialProvider* SecService::tls_credential_provider() {
+    return tls_provider_.get();
+}
+
+ErrorCode SecService::ensure_tls_material_ready(const std::string& profile) {
+    if (!tls_provider_) {
+        return ErrorCode::NOT_INITIALIZED;
+    }
+    // 若已就绪，直接返回，避免重复触发 PROV/材料校验
+    TlsCredentialState state;
+    if (tls_provider_->getTlsCredentialState(profile, state) == ErrorCode::SUCCESS &&
+        state.status == TlsCredentialStatus::READY) {
+        return ErrorCode::SUCCESS;
+    }
+    // best-effort 解析 VIN/ECU_UID（key_id = vin + "+" + ecu_uid）
+    if (vin_.empty() || ecu_uid_.empty()) {
+        ensure_vehicle_info();
+    }
+    // 仍无法解析则不重载，保持既有 NOT_READY 状态
+    if (vin_.empty() || ecu_uid_.empty()) {
+        return ErrorCode::TLS_CREDENTIAL_NOT_READY;
+    }
+    return tls_provider_->loadMaterials(profile);
+}
+
+void SecService::set_peer_credential_resolver(std::shared_ptr<PeerCredentialResolver> resolver) {
+    peer_resolver_ = std::move(resolver);
 }
 
 } // namespace sec

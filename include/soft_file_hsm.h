@@ -28,6 +28,10 @@ public:
                    const std::vector<uint8_t>& data,
                    std::vector<uint8_t>& signature) override;
 
+    ErrorCode sign_digest(const std::string& key_id,
+                          const std::vector<uint8_t>& digest,
+                          std::vector<uint8_t>& signature) override;
+
     ErrorCode verify(const std::string& key_id,
                      const std::vector<uint8_t>& data,
                      const std::vector<uint8_t>& signature,

@@ -106,6 +106,8 @@ set(LIB_SOURCES
 list(APPEND LIB_SOURCES
     src/sec_ipc_dispatcher.cpp
     src/sec_retry_policy.cpp
+    src/tls_credential_provider.cpp
+    src/peer_credential.cpp
 )
 
 add_library(TboxSecLib STATIC ${LIB_SOURCES})
@@ -206,6 +208,9 @@ set(TEST_SOURCES
     tests/test_sec_log_security.cpp
     tests/test_sec_retry_policy.cpp
     tests/test_sec_ipc_dispatcher.cpp
+    tests/test_tls_credential_provider.cpp
+    tests/test_tls_ipc_handlers.cpp
+    tests/test_tls_integration.cpp
 )
 add_executable(TboxSecTests ${TEST_SOURCES})
 target_link_libraries(TboxSecTests PRIVATE TboxSecLib tbox_sec_client ${FRAMEWORK_LIB} GTest::GTest GTest::gmock GTest::Main)

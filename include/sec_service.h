@@ -4,6 +4,8 @@
 #include <memory>
 #include <optional>
 #include <chrono>
+#include <map>
+#include <vector>
 #include <nlohmann/json.hpp>
 #include "key_engine.h"
 #include "csr_builder.h"
@@ -20,6 +22,8 @@ namespace tbox {
 namespace sec {
 
 class SecIpcDispatcher;
+class TlsCredentialProvider;
+class PeerCredentialResolver;
 
 } // namespace sec
 
@@ -76,6 +80,22 @@ struct SecServiceConfig {
     ::tbox::fw::ipc::IpcConfig ipc_config{};
     std::string ipc_socket_path = "/tmp/tbox-sec.sock";
 
+    // TLS profile configuration (TBOX-SEC-DSN-CR-010)
+    // 从 sec.tls.profiles.<name> 读取，启动时供 TlsCredentialProvider 加载材料
+    struct TlsProfileConf {
+        bool enabled = false;
+        std::string profile_name;
+        std::string credential_id;
+        std::string key_usage;
+        std::vector<std::string> allowed_signature_algorithms;
+        std::string peer_service;
+        bool notify_on_change = true;
+        std::string root_ca_path;
+        std::string client_cert_chain_path;
+        int64_t ref_ttl_sec = 3600;
+    };
+    std::map<std::string, TlsProfileConf> tls_profiles;
+
     // New config snapshot (optional, takes precedence when set)
     std::shared_ptr<const hwyz::config::ImmutableConfigView> config_snapshot;
 
@@ -120,6 +140,14 @@ struct SecServiceConfig {
         return is_production;
     }
 
+    /// 开发/测试用：TLS ACL 放行的固定服务名（配置 sec.tls.dev_peer_service）。
+    /// 非空且非生产环境时，SEC 使用 DevPeerCredentialResolver 绕过 SO_PEERCRED 身份校验。
+    /// 生产环境或未配置时返回空（保持严格 systemd 校验）。
+    std::string get_tls_dev_peer_service() const {
+        if (config_snapshot) return config_snapshot->getString("sec.tls.dev_peer_service", "");
+        return "";
+    }
+
     std::string get_state_file_path() const {
         if (config_snapshot) return config_snapshot->getString("storage.state_file", "/var/lib/tbox/sec/provision_state.json");
         return state_file_path;
@@ -160,8 +188,14 @@ struct SecServiceConfig {
     }
 
     std::string get_store_root() const {
-        if (config_snapshot) return config_snapshot->getString("common.store.root", "/var/tbox/sec");
+        // 快照显式提供 common.store.root 时以快照为准（生产路径）。
+        // 否则回退到显式设置的 store_root（测试常用于隔离临时目录），
+        // 避免快照存在但未配置该键时错误地落到全局默认目录（会导致测试间串扰）。
+        if (config_snapshot && config_snapshot->has("common.store.root")) {
+            return config_snapshot->getString("common.store.root", "/var/tbox/sec");
+        }
         if (!store_root.empty()) return store_root;
+        if (config_snapshot) return "/var/tbox/sec";
         return "/var/lib/tbox";
     }
 };
@@ -215,6 +249,15 @@ public:
     void set_diag_service(std::shared_ptr<DiagServiceInterface> diag_service);
     void set_prov_service(std::shared_ptr<ProvServiceInterface> prov_service);
 
+    // TLS Credential Provider 访问（供测试/注入）
+    TlsCredentialProvider* tls_credential_provider();
+    void set_peer_credential_resolver(std::shared_ptr<PeerCredentialResolver> resolver);
+
+    /// 按需确保指定 profile 的 TLS 材料就绪：解析 VIN/ECU_UID（best-effort）后重载材料。
+    /// 供 IPC 分发器在收到 getTlsCredential 且状态非 READY 时自愈调用，
+    /// 避免因启动时 PROV 尚未就绪而永久停留在 NOT_READY。
+    ErrorCode ensure_tls_material_ready(const std::string& profile);
+
     // Set CA certificate for signature verification
     virtual ErrorCode set_ca_certificate(const std::vector<uint8_t>& ca_cert_der);
 
@@ -232,6 +275,8 @@ private:
     std::optional<hwyz::store::Store> store_;
     std::unique_ptr<::tbox::fw::ipc::Server> fw_ipc_server_;
     std::unique_ptr<SecIpcDispatcher> ipc_dispatcher_;
+    std::unique_ptr<TlsCredentialProvider> tls_provider_;
+    std::shared_ptr<PeerCredentialResolver> peer_resolver_;
     std::string ipc_socket_path_ = "/tmp/tbox-sec.sock";
 
     std::string vin_;
@@ -248,6 +293,10 @@ private:
     ErrorCode initialize_cloud_client();
     ErrorCode load_provision_state_from_store();
     ErrorCode ensure_vehicle_info();
+
+    // TLS Credential Provider 初始化（加载 mqtt profile 配置与材料）
+    void initializeTlsCredentialProvider();
+    void loadTlsProfileConfig();
 
 public:
     ErrorCode generate_and_store_key_pair();

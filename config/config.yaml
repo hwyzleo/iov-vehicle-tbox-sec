@@ -58,3 +58,20 @@ tbox:
     file: "/var/log/tbox/sec_service.log"
     max_size_mb: 10
     max_files: 5
+
+# MQTT TLS Credential Provider (TBOX-SEC-DSN-CR-010)
+# SEC 受控凭据材料路径；MQTT 侧仅保留 credential_profile=mqtt 与 TLS 协议参数
+sec:
+  tls:
+    profiles:
+      mqtt:
+        credential_id: mqtt-primary
+        key_usage: clientAuth
+        allowed_signature_algorithms:
+          - ecdsa_secp256r1_sha256
+        peer_service: tbox-mqtt.service
+        notify_on_change: true
+        # 以下路径为 SEC 受控存储，量产由注入流程写入；测试环境指向测试证书
+        root_ca_path: "./data/certs/ca_root.crt"
+        client_cert_chain_path: "./data/certs/device_chain.crt"
+        ref_ttl_sec: 3600

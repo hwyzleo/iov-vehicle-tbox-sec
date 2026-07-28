@@ -163,6 +163,50 @@ ErrorCode SoftFileHsm::sign(const std::string& key_id,
     return ErrorCode::SUCCESS;
 }
 
+ErrorCode SoftFileHsm::sign_digest(const std::string& key_id,
+                                   const std::vector<uint8_t>& digest,
+                                   std::vector<uint8_t>& signature) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!is_valid_key_id(key_id)) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+    // TLS ecdsa_secp256r1_sha256 期望 32 字节 SHA-256 摘要
+    if (digest.size() != SHA256_DIGEST_LENGTH) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
+    auto it = keys_.find(key_id);
+    if (it == keys_.end()) {
+        KeyData kd;
+        auto rc = load_key_from_store(key_id, kd);
+        if (rc != ErrorCode::SUCCESS) return rc;
+        keys_[key_id] = std::move(kd);
+        it = keys_.find(key_id);
+    }
+
+    EC_KEY* ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (!ec) return ErrorCode::HSM_SIGN_FAILED;
+
+    BIGNUM* priv_bn = BN_bin2bn(it->second.priv.data(),
+                                 static_cast<int>(it->second.priv.size()), nullptr);
+    if (!priv_bn) { EC_KEY_free(ec); return ErrorCode::HSM_SIGN_FAILED; }
+    EC_KEY_set_private_key(ec, priv_bn);
+    BN_free(priv_bn);
+
+    // 直接对传入 digest 做 ECDSA，不再二次哈希
+    unsigned int sig_len = ECDSA_size(ec);
+    signature.resize(sig_len);
+    if (ECDSA_sign(0, digest.data(), static_cast<int>(digest.size()),
+                   signature.data(), &sig_len, ec) != 1) {
+        EC_KEY_free(ec);
+        return ErrorCode::HSM_SIGN_FAILED;
+    }
+    signature.resize(sig_len);
+    EC_KEY_free(ec);
+    return ErrorCode::SUCCESS;
+}
+
 ErrorCode SoftFileHsm::verify(const std::string& key_id,
                               const std::vector<uint8_t>& data,
                               const std::vector<uint8_t>& signature,
