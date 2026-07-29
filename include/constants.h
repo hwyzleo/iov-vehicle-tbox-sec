@@ -47,6 +47,8 @@ constexpr const char* KEY_PROVISIONING_MODE_SOFT_FILE = "soft_file";
 // Software key file defaults
 constexpr const char* DEFAULT_SOFT_KEY_PATH = "/var/lib/tbox/sec/soft_keys";
 constexpr const char* DEFAULT_SOFT_KEY_ENC_ALGO = "aes-256-gcm";
+// 软件模式主加密密钥(KEK)默认文件名；配合 soft_key.encryption_key_path 为空时使用
+constexpr const char* DEFAULT_SOFT_KEK_FILENAME = ".soft_kek";
 
 // Error codes
 constexpr const char* ERROR_CODE_PREFIX = "SEC-";

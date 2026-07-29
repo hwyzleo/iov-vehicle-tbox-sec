@@ -22,6 +22,7 @@
 
 #include <nlohmann/json.hpp>
 #include <cstdio>
+#include <fstream>
 #include <memory>
 #include <vector>
 
@@ -150,15 +151,23 @@ protected:
         write_cert_pem(chain_path_, leaf_.get());
 
         // provider
+        auto material_resolver = [this](const std::string& key) -> std::string {
+            std::string path;
+            if (key == "root_ca") path = ca_path_;
+            else if (key == "device_cert_chain") path = chain_path_;
+            else return "";
+            std::ifstream f(path, std::ios::binary);
+            if (!f.is_open()) return "";
+            return std::string((std::istreambuf_iterator<char>(f)),
+                               std::istreambuf_iterator<char>());
+        };
         provider_ = std::make_unique<TlsCredentialProvider>(
-            hsm_.get(), [key_id]() { return key_id; }, nullptr);
+            hsm_.get(), [key_id]() { return key_id; }, material_resolver, nullptr);
         TlsProfileConfig cfg;
         cfg.profile_name = "mqtt";
         cfg.credential_id = "mqtt-primary";
         cfg.allowed_signature_algorithms = {SignatureAlgorithm::ECDSA_SECP256R1_SHA256};
         cfg.peer_service = "tbox-mqtt.service";
-        cfg.root_ca_path = ca_path_;
-        cfg.client_cert_chain_path = chain_path_;
         provider_->configureProfile(cfg);
         ASSERT_EQ(provider_->loadMaterials("mqtt"), ErrorCode::SUCCESS);
 
@@ -323,8 +332,8 @@ TEST_F(TlsIpcHandlerTest, GetTlsCredential_NotReady_1010) {
     cfg.profile_name = "mqtt2";
     cfg.credential_id = "x";
     cfg.peer_service = "tbox-mqtt.service";
-    cfg.root_ca_path = "/nope";
-    cfg.client_cert_chain_path = "/nope";
+    cfg.root_ca_key = "missing_root";
+    cfg.client_cert_chain_key = "missing_chain";
     provider_->configureProfile(cfg);
     // loadMaterials 失败
     provider_->loadMaterials("mqtt2");

@@ -345,6 +345,8 @@ std::pair<int32_t, std::string> SecIpcDispatcher::handle_get_status() {
     j["vin"] = status.vin;
     j["ecu_uid"] = status.ecu_uid;
     j["state"] = provision_state_to_string(status.state);
+    // 车辆绑定/个性化状态（PROV 权威来源），与上面的证书下发 state 区分。
+    j["prov_state"] = device_provision_state_to_string(service_->get_device_binding_state());
     j["last_error"] = status.last_error;
     j["retry_count"] = status.retry_count;
     return {0, j.dump()};

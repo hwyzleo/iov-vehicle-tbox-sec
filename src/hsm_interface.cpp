@@ -186,7 +186,8 @@ private:
 
 std::unique_ptr<HsmInterface> HsmFactory::create(HsmType type,
                                                  const std::string& config_path,
-                                                 const std::string& store_root) {
+                                                 const std::string& store_root,
+                                                 const std::string& enc_key_path) {
     switch (type) {
         case HsmType::SOFTWARE:
             return std::make_unique<SoftwareHsm>(config_path);
@@ -194,13 +195,17 @@ std::unique_ptr<HsmInterface> HsmFactory::create(HsmType type,
             auto store = store_root.empty()
                 ? hwyz::store::Store::open("sec")
                 : hwyz::store::Store::open("sec", store_root);
-            std::string enc_key_path = config_path.empty()
-                ? std::string(DEFAULT_SOFT_KEY_PATH) + "/..encryption_key"
-                : config_path + "/..encryption_key";
+            // KEK 路径：优先使用显式传入(来自 soft_key.encryption_key_path)，
+            // 为空则回退到 {config_path|默认目录}/<默认KEK文件名>
+            std::string kek_path = !enc_key_path.empty()
+                ? enc_key_path
+                : (config_path.empty()
+                    ? std::string(DEFAULT_SOFT_KEY_PATH) + "/" + DEFAULT_SOFT_KEK_FILENAME
+                    : config_path + "/" + DEFAULT_SOFT_KEK_FILENAME);
             return std::make_unique<SoftFileHsm>(
                 std::move(store),
                 DEFAULT_SOFT_KEY_ENC_ALGO,
-                enc_key_path);
+                kek_path);
         }
         default:
             throw std::invalid_argument("Unsupported HSM type");

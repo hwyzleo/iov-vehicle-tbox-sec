@@ -13,6 +13,7 @@ public:
 
     ErrorCode initialize() override;
     ErrorCode get_vehicle_info(VehicleInfo& info) override;
+    ErrorCode get_provision_state(DeviceProvisionState& state) override;
     bool is_connected() const override;
     std::string get_service_status() const override;
 

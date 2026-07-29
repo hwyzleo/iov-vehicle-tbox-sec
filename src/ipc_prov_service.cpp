@@ -32,6 +32,34 @@ ErrorCode IpcProvService::get_vehicle_info(VehicleInfo& info) {
     return ErrorCode::SUCCESS;
 }
 
+ErrorCode IpcProvService::get_provision_state(DeviceProvisionState& state) {
+    // PROV 为车辆绑定/个性化状态的权威来源。
+    if (!client_.is_connected()) {
+        state = DeviceProvisionState::UNKNOWN;
+        return ErrorCode::CONNECTION_FAILED;
+    }
+    // ProvClient::get_provision_state() 在 IPC 失败时返回 NONE（不抛异常）。
+    tbox::prov::ProvisionState ps = client_.get_provision_state();
+    switch (ps) {
+        case tbox::prov::ProvisionState::NONE:
+            state = DeviceProvisionState::NONE;
+            break;
+        case tbox::prov::ProvisionState::VIN_WRITTEN:
+            state = DeviceProvisionState::VIN_WRITTEN;
+            break;
+        case tbox::prov::ProvisionState::BOUND:
+            state = DeviceProvisionState::BOUND;
+            break;
+        case tbox::prov::ProvisionState::FAILED:
+            state = DeviceProvisionState::FAILED;
+            break;
+        default:
+            state = DeviceProvisionState::UNKNOWN;
+            break;
+    }
+    return ErrorCode::SUCCESS;
+}
+
 bool IpcProvService::is_connected() const {
     return client_.is_connected();
 }

@@ -24,8 +24,8 @@ struct TlsProfileConfig {
     std::vector<SignatureAlgorithm> allowed_signature_algorithms;
     std::string peer_service = "tbox-mqtt.service";  ///< 授权调用方 systemd unit
     bool notify_on_change = true;
-    std::string root_ca_path;            ///< SEC 受控根 CA bundle 文件（PEM/DER）
-    std::string client_cert_chain_path;  ///< SEC 受控客户端证书链文件（leaf->intermediate，PEM/DER）
+    std::string root_ca_key = "root_ca";                     ///< SEC 受控存储 key：共享信任根（PEM），多处引用
+    std::string client_cert_chain_key = "device_cert_chain"; ///< SEC 受控存储 key：设备客户端证书链（PEM，leaf->intermediate）
     int64_t ref_ttl_sec = 3600;          ///< private_key_ref 有效期（秒）
 };
 
@@ -35,6 +35,11 @@ using TlsCredentialNotifyCallback =
 
 /// 设备 HSM key_id 解析器（返回 vin+"+"+ecu_uid 形式的 key_id）
 using DeviceKeyIdResolver = std::function<std::string()>;
+
+/// TLS 材料读取器：从 SEC 受控存储（framework-store）按 key 读取 PEM 文本。
+/// 用于获取共享信任根（root_ca）与设备客户端证书链（device_cert_chain）。
+/// 返回空字符串表示该 key 不存在或存储不可用（材料将判定为 NOT_READY）。
+using TlsMaterialResolver = std::function<std::string(const std::string& key)>;
 
 /// TlsCredentialProvider
 ///
@@ -47,6 +52,7 @@ class TlsCredentialProvider {
 public:
     TlsCredentialProvider(HsmInterface* hsm,
                           DeviceKeyIdResolver key_id_resolver,
+                          TlsMaterialResolver material_resolver,
                           TlsCredentialNotifyCallback notify = {});
     ~TlsCredentialProvider();
 
@@ -110,6 +116,7 @@ private:
     HsmInterface* hsm_;
     DeviceKeyIdResolver key_id_resolver_;
     TlsCredentialNotifyCallback notify_;
+    TlsMaterialResolver material_resolver_;
 
     mutable std::mutex mutex_;
     std::map<std::string, ProfileState> profiles_;

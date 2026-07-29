@@ -186,16 +186,26 @@ protected:
 
         // 5. provider
         key_id_resolver_ = [key_id]() { return key_id; };
+        material_resolver_ = [this](const std::string& key) -> std::string {
+            std::string path;
+            if (key == "root_ca") path = ca_path_;
+            else if (key == "device_cert_chain") path = chain_path_;
+            else return "";
+            std::ifstream f(path, std::ios::binary);
+            if (!f.is_open()) return "";
+            return std::string((std::istreambuf_iterator<char>(f)),
+                               std::istreambuf_iterator<char>());
+        };
         notify_count_ = 0;
         provider_ = std::make_unique<TlsCredentialProvider>(
-            hsm_.get(), key_id_resolver_,
+            hsm_.get(), key_id_resolver_, material_resolver_,
             [this](const std::string& profile, const TlsCredentialChangedEvent& ev) {
                 (void)profile; (void)ev;
                 ++notify_count_;
                 last_event_ = ev;
             });
 
-        // 6. 配置 mqtt profile
+        // 6. 配置 mqtt profile（材料来源为 store key: root_ca / device_cert_chain，用默认值）
         TlsProfileConfig cfg;
         cfg.profile_name = "mqtt";
         cfg.credential_id = "mqtt-primary";
@@ -203,8 +213,6 @@ protected:
         cfg.allowed_signature_algorithms = {SignatureAlgorithm::ECDSA_SECP256R1_SHA256};
         cfg.peer_service = "tbox-mqtt.service";
         cfg.notify_on_change = true;
-        cfg.root_ca_path = ca_path_;
-        cfg.client_cert_chain_path = chain_path_;
         cfg.ref_ttl_sec = 3600;
         provider_->configureProfile(cfg);
     }
@@ -225,6 +233,7 @@ protected:
     std::string ca_path_;
     std::string chain_path_;
     DeviceKeyIdResolver key_id_resolver_;
+    TlsMaterialResolver material_resolver_;
     std::unique_ptr<TlsCredentialProvider> provider_;
     int notify_count_ = 0;
     TlsCredentialChangedEvent last_event_;
@@ -243,8 +252,8 @@ TEST_F(TlsCredentialProviderTest, LoadMaterials_MissingFiles_NotReady) {
     bad.profile_name = "mqtt2";
     bad.credential_id = "x";
     bad.peer_service = "tbox-mqtt.service";
-    bad.root_ca_path = "/nonexistent/ca.pem";
-    bad.client_cert_chain_path = "/nonexistent/chain.pem";
+    bad.root_ca_key = "missing_root";
+    bad.client_cert_chain_key = "missing_chain";
     provider_->configureProfile(bad);
     EXPECT_NE(provider_->loadMaterials("mqtt2"), ErrorCode::SUCCESS);
     EXPECT_EQ(provider_->getStatus("mqtt2"), TlsCredentialStatus::NOT_READY);
@@ -434,7 +443,7 @@ TEST_F(TlsCredentialProviderTest, BootEpoch_ChangesPerInstance) {
     uint64_t e1 = provider_->bootEpoch();
     // 新实例 boot_epoch 不同
     auto p2 = std::make_unique<TlsCredentialProvider>(
-        hsm_.get(), key_id_resolver_, TlsCredentialNotifyCallback{});
+        hsm_.get(), key_id_resolver_, material_resolver_, TlsCredentialNotifyCallback{});
     uint64_t e2 = p2->bootEpoch();
     EXPECT_NE(e1, e2);
 }

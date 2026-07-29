@@ -191,7 +191,10 @@ int main(int argc, char* argv[]) {
     }
 
     try {
-        auto store = hwyz::store::Store::open("sec");
+        // Store root 必须与 HSM 侧一致（HsmFactory 使用 common.store.root），
+        // 否则 TLS 材料/CA 证书会从错误的默认目录(/var/lib/tbox)读取而落空。
+        std::string store_root = config_snapshot->getString("common.store.root", "/var/lib/tbox");
+        auto store = hwyz::store::Store::open("sec", store_root);
         g_sec_service = std::make_shared<SecService>(sec_config, nullptr, prov_service, std::move(store));
         ErrorCode result = g_sec_service->initialize();
 

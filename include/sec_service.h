@@ -90,8 +90,6 @@ struct SecServiceConfig {
         std::vector<std::string> allowed_signature_algorithms;
         std::string peer_service;
         bool notify_on_change = true;
-        std::string root_ca_path;
-        std::string client_cert_chain_path;
         int64_t ref_ttl_sec = 3600;
     };
     std::map<std::string, TlsProfileConf> tls_profiles;
@@ -239,6 +237,10 @@ public:
     virtual ErrorCode verify_key(uint8_t level, const std::vector<uint8_t>& key);
 
     virtual ProvisionStatus get_provision_status() const;
+
+    // 车辆绑定/个性化状态（从 PROV 查询，PROV 为权威来源）。
+    // 与 get_provision_status().state（SEC 证书下发状态）是不同维度。
+    virtual DeviceProvisionState get_device_binding_state() const;
 
     virtual ErrorCode reset_provision_status();
 

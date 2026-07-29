@@ -1,16 +1,10 @@
+# 公共配置覆盖示例（按需启用）
 common:
   store:
     root: "./data"
-
-ipc:
-  max_frame_bytes: 10485760
-  receive_timeout_ms: 60000
-  connect_timeout_ms: 3000
-  listen_backlog: 5
-  reconnect:
-    initial_backoff_ms: 100
-    max_backoff_ms: 5000
-    multiplier: 2.0
+  log:
+    level: "debug"                       # 默认日志级别（trace/debug/info/warn/error）
+    file: "./log/sec.log"
 
 hsm:
   type: "soft_file"
@@ -33,7 +27,8 @@ storage:
 soft_key:
   path: "./"
   encryption_algo: "aes-256-gcm"
-  encryption_key_path: "./"
+  # KEK(主加密密钥)文件的完整路径；留空则默认 {common.store.root}/.soft_kek
+  encryption_key_path: ""
 
 environment:
   is_production: false
@@ -56,13 +51,9 @@ sec:
           - ecdsa_secp256r1_sha256
         peer_service: tbox-mqtt.service
         notify_on_change: true
-        # SEC 受控存储路径；量产由注入流程写入，测试环境指向测试证书
-        root_ca_path: "./data/root_ca.crt"
-        client_cert_chain_path: "./data/tbox_chain.crt"
+        # TLS 材料来源：SEC 受控存储 framework-store（服务名 sec）固定 key
+        #   root_ca            -> 共享信任根（多处引用：注入校验 + MQTT 服务端验证）
+        #   device_cert_chain  -> 设备客户端证书链（PEM，leaf->intermediate）
+        # 物理落点：{common.store.root}/sec/root_ca.dat、{common.store.root}/sec/device_cert_chain.dat
+        # 量产由注入流程写入；测试环境将证书 PEM 放入上述 .dat 文件即可，无需在此配置路径。
         ref_ttl_sec: 3600
-
-log:
-  level: "INFO"
-  file: "./sec_service.log"
-  max_size_mb: 10
-  max_files: 5

@@ -95,39 +95,62 @@ ErrorCode SecService::initialize() {
     }
 
     // Load CA certificate
-    std::string ca_cert_path = config_.get_ca_cert_path();
-
-    std::cout << "[SEC] Initializing CA cert, ca_cert_path='" << ca_cert_path << "'" << std::endl;
-
-    // If ca_cert_path is empty, try to load from default config
-    if (ca_cert_path.empty()) {
-        ca_cert_path = find_ca_cert_from_config();
-        std::cout << "[SEC] find_ca_cert_from_config returned: '" << ca_cert_path << "'" << std::endl;
-    }
-
-    if (!ca_cert_path.empty()) {
-        std::ifstream ca_file(ca_cert_path, std::ios::binary);
-        if (ca_file.is_open()) {
-            std::vector<uint8_t> ca_cert_der(
-                (std::istreambuf_iterator<char>(ca_file)),
-                std::istreambuf_iterator<char>());
-            ca_file.close();
-
-            if (!ca_cert_der.empty()) {
-                result = set_ca_certificate(ca_cert_der);
-                if (result != ErrorCode::SUCCESS) {
-                    std::cerr << "[SEC] Failed to load CA certificate from: "
-                              << ca_cert_path << std::endl;
-                    // Continue initialization - CA cert is optional for self-signed certs
-                } else {
-                    std::cout << "[SEC] CA certificate loaded from: "
-                              << ca_cert_path << std::endl;
+    // 优先从 SEC 受控存储读取共享信任根（key: root_ca，PEM），与 TLS provider 同源，
+    // 消除 storage.ca_cert 与 tls root_ca 的重复。缺失时回退到旧的配置文件路径逻辑。
+    bool ca_loaded = false;
+    if (store_.has_value() && store_->isReady()) {
+        try {
+            if (store_->has("root_ca")) {
+                std::string root_ca_pem = store_->load<std::string>("root_ca");
+                if (!root_ca_pem.empty()) {
+                    std::vector<uint8_t> ca_cert_bytes(root_ca_pem.begin(), root_ca_pem.end());
+                    if (set_ca_certificate(ca_cert_bytes) == ErrorCode::SUCCESS) {
+                        std::cout << "[SEC] CA certificate loaded from store key 'root_ca'" << std::endl;
+                        ca_loaded = true;
+                    }
                 }
             }
-        } else {
-            std::cerr << "[SEC] Cannot open CA certificate file: "
-                      << ca_cert_path << std::endl;
-            // Continue initialization - CA cert is optional
+        } catch (const std::exception& e) {
+            std::cerr << "[SEC] Failed to load root_ca from store: " << e.what() << std::endl;
+        }
+    }
+
+    if (!ca_loaded) {
+        // 回退：旧的配置文件路径（storage.ca_cert / config.yaml）
+        std::string ca_cert_path = config_.get_ca_cert_path();
+
+        std::cout << "[SEC] Initializing CA cert (fallback), ca_cert_path='" << ca_cert_path << "'" << std::endl;
+
+        // If ca_cert_path is empty, try to load from default config
+        if (ca_cert_path.empty()) {
+            ca_cert_path = find_ca_cert_from_config();
+            std::cout << "[SEC] find_ca_cert_from_config returned: '" << ca_cert_path << "'" << std::endl;
+        }
+
+        if (!ca_cert_path.empty()) {
+            std::ifstream ca_file(ca_cert_path, std::ios::binary);
+            if (ca_file.is_open()) {
+                std::vector<uint8_t> ca_cert_der(
+                    (std::istreambuf_iterator<char>(ca_file)),
+                    std::istreambuf_iterator<char>());
+                ca_file.close();
+
+                if (!ca_cert_der.empty()) {
+                    result = set_ca_certificate(ca_cert_der);
+                    if (result != ErrorCode::SUCCESS) {
+                        std::cerr << "[SEC] Failed to load CA certificate from: "
+                                  << ca_cert_path << std::endl;
+                        // Continue initialization - CA cert is optional for self-signed certs
+                    } else {
+                        std::cout << "[SEC] CA certificate loaded from: "
+                                  << ca_cert_path << std::endl;
+                    }
+                }
+            } else {
+                std::cerr << "[SEC] Cannot open CA certificate file: "
+                          << ca_cert_path << std::endl;
+                // Continue initialization - CA cert is optional
+            }
         }
     }
 
@@ -668,6 +691,16 @@ ProvisionStatus SecService::get_provision_status() const {
     return status;
 }
 
+DeviceProvisionState SecService::get_device_binding_state() const {
+    if (!prov_service_) {
+        return DeviceProvisionState::UNKNOWN;
+    }
+    DeviceProvisionState state = DeviceProvisionState::UNKNOWN;
+    // 失败不抛出，返回 UNKNOWN 即可（PROV 不可用时不阻断）。
+    prov_service_->get_provision_state(state);
+    return state;
+}
+
 ErrorCode SecService::reset_provision_status() {
     if (!initialized_) {
         return ErrorCode::NOT_INITIALIZED;
@@ -695,7 +728,9 @@ std::string SecService::get_device_info() const {
 
     if (initialized_) {
         ProvisionStatus status = get_provision_status();
-        ss << "Provision State: " << provision_state_to_string(status.state) << "\n";
+        ss << "Binding State (PROV): "
+           << device_provision_state_to_string(get_device_binding_state()) << "\n";
+        ss << "Cert Provision State: " << provision_state_to_string(status.state) << "\n";
         ss << "Retry Count: " << status.retry_count << "\n";
     }
 
@@ -721,6 +756,7 @@ ErrorCode SecService::initialize_hsm() {
         // 根据密钥生成模式选择 HSM 类型
         HsmFactory::HsmType hsm_type;
         std::string config_path;
+        std::string enc_key_path;  // soft_file 模式下的 KEK(主加密密钥)文件路径
 
         if (config_.get_key_provisioning_mode() == KEY_PROVISIONING_MODE_SOFT_FILE) {
             // 软件落盘模式
@@ -729,6 +765,14 @@ ErrorCode SecService::initialize_hsm() {
             std::string store_root = config_.get_store_root();
             if (!store_root.empty()) {
                 config_path = store_root;
+            }
+            // KEK 路径：优先取 soft_key.encryption_key_path(完整文件路径)，
+            // 为空则默认 {store_root|默认目录}/<默认KEK文件名>
+            enc_key_path = config_.get_soft_key_encryption_key_path();
+            if (enc_key_path.empty()) {
+                std::string base = store_root.empty()
+                    ? std::string(DEFAULT_SOFT_KEY_PATH) : store_root;
+                enc_key_path = base + "/" + DEFAULT_SOFT_KEK_FILENAME;
             }
         } else {
             // HSM 模式（默认）
@@ -745,7 +789,7 @@ ErrorCode SecService::initialize_hsm() {
             config_path = config_.get_hsm_library_path();
         }
 
-        auto hsm = HsmFactory::create(hsm_type, config_path, config_.get_store_root());
+        auto hsm = HsmFactory::create(hsm_type, config_path, config_.get_store_root(), enc_key_path);
         key_engine_ = std::make_unique<KeyEngine>(std::move(hsm));
 
         return key_engine_->initialize();
@@ -765,7 +809,8 @@ ErrorCode SecService::load_provision_state_from_store() {
     }
     try {
         auto status = load_provision_status_from_store();
-        std::cerr << "[SEC] Loaded provision state from store: "
+        // 信息性日志：走 stdout（否则会被 console sink 标记为 error，造成"PROV 状态出错"的误解）
+        std::cout << "[SEC] Loaded provision state from store: "
                   << provision_state_to_string(status.state) << std::endl;
         return ErrorCode::SUCCESS;
     } catch (const std::exception& e) {
@@ -1345,8 +1390,8 @@ void SecService::loadTlsProfileConfig() {
     pc.key_usage = snap->getString(base + ".key_usage", "clientAuth");
     pc.peer_service = snap->getString(base + ".peer_service", "tbox-mqtt.service");
     pc.notify_on_change = snap->getBool(base + ".notify_on_change", true);
-    pc.root_ca_path = snap->getString(base + ".root_ca_path", "");
-    pc.client_cert_chain_path = snap->getString(base + ".client_cert_chain_path", "");
+    // 材料来源已从配置文件路径迁移到 SEC 受控存储固定 key（root_ca / device_cert_chain），
+    // 不再从 profile 读取 root_ca_path / client_cert_chain_path。
     pc.ref_ttl_sec = snap->getInt(base + ".ref_ttl_sec", 3600);
     // allowed_signature_algorithms
     auto algs = snap->getStringList(base + ".allowed_signature_algorithms");
@@ -1388,6 +1433,21 @@ void SecService::initializeTlsCredentialProvider() {
         return vin_ + "+" + ecu_uid_;
     };
 
+    // TLS 材料读取器：从 SEC 受控存储（framework-store，服务名 "sec"）按 key 读取 PEM 文本。
+    // root_ca = 共享信任根；device_cert_chain = 设备客户端证书链。store 不可用或缺 key 时返回空串。
+    TlsMaterialResolver material_resolver = [this](const std::string& key) -> std::string {
+        if (!store_.has_value() || !store_->isReady()) {
+            return "";
+        }
+        try {
+            if (!store_->has(key)) return "";
+            return store_->load<std::string>(key);
+        } catch (const std::exception& e) {
+            std::cerr << "[SEC] TLS material '" << key << "' load failed: " << e.what() << std::endl;
+            return "";
+        }
+    };
+
     // 事件通知回调：经 framework-ipc Server 推送 sec.tls_credential.changed
     // Server 在 start_ipc_server 时才创建，此处先捕获 this，推送时判空
     TlsCredentialNotifyCallback notify = [this](const std::string& profile,
@@ -1414,7 +1474,8 @@ void SecService::initializeTlsCredentialProvider() {
     };
 
     tls_provider_ = std::make_unique<TlsCredentialProvider>(
-        key_engine_->hsm(), std::move(key_resolver), std::move(notify));
+        key_engine_->hsm(), std::move(key_resolver),
+        std::move(material_resolver), std::move(notify));
 
     // 配置并加载各 profile 材料
     for (auto& [name, pc] : config_.tls_profiles) {
@@ -1428,8 +1489,8 @@ void SecService::initializeTlsCredentialProvider() {
         }
         tpc.peer_service = pc.peer_service;
         tpc.notify_on_change = pc.notify_on_change;
-        tpc.root_ca_path = pc.root_ca_path;
-        tpc.client_cert_chain_path = pc.client_cert_chain_path;
+        // root_ca_key / client_cert_chain_key 使用 TlsProfileConfig 默认值
+        // （root_ca / device_cert_chain），材料由 material_resolver 从 SEC 存储读取。
         tpc.ref_ttl_sec = pc.ref_ttl_sec;
         tls_provider_->configureProfile(tpc);
 

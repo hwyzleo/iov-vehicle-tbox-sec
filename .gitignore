@@ -101,6 +101,8 @@ docs/superpowers
 
 data/certs
 data/soft_keys
+data/sec
+data/.soft_kek
 
 .encryption_key
 .superpowers/

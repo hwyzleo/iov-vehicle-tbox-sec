@@ -51,7 +51,7 @@ protected:
 
     void create_test_config() {
         std::ofstream common(config_dir_ + "/common.yaml");
-        common << "log:\n  level: \"info\"\n";
+        common << "common:\n  log:\n    level: \"info\"\n";
         common << "cloud:\n  endpoint: \"https://test.example.com\"\n  timeout_ms: 1000\n";
         common.close();
 

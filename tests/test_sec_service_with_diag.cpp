@@ -107,7 +107,7 @@ protected:
     void create_test_config() {
         std::ofstream common(config_dir_ + "/common.yaml");
         common << "cloud:\n  endpoint: \"https://test.example.com\"\n  timeout_ms: 1000\n";
-        common << "\nlog:\n  level: \"info\"\n";
+        common << "\ncommon:\n  log:\n    level: \"info\"\n";
         common.close();
 
         std::filesystem::create_directories(config_dir_ + "/conf.d");
@@ -236,7 +236,7 @@ protected:
     void create_test_config() {
         std::ofstream common(config_dir_ + "/common.yaml");
         common << "cloud:\n  endpoint: \"https://test.example.com\"\n  timeout_ms: 1000\n";
-        common << "\nlog:\n  level: \"info\"\n";
+        common << "\ncommon:\n  log:\n    level: \"info\"\n";
         common.close();
 
         std::filesystem::create_directories(config_dir_ + "/conf.d");
@@ -311,7 +311,7 @@ protected:
     void create_test_config() {
         std::ofstream common(config_dir_ + "/common.yaml");
         common << "cloud:\n  endpoint: \"https://test.example.com\"\n  timeout_ms: 1000\n";
-        common << "\nlog:\n  level: \"info\"\n";
+        common << "\ncommon:\n  log:\n    level: \"info\"\n";
         common.close();
 
         std::filesystem::create_directories(config_dir_ + "/conf.d");

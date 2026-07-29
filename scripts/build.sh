@@ -25,6 +25,17 @@ NC='\033[0m' # No Color
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${PROJECT_ROOT}/build"
 
+# 构建环境单一来源：由 framework 仓库提供 TBOX_PREFIX / TBoxFramework_DIR
+# 切换本地开发与生产环境只需覆盖环境变量，例如：
+#   TBOX_PREFIX=/opt/tbox ./scripts/build.sh
+TBOX_ENV_FILE="${PROJECT_ROOT}/../iov-vehicle-tbox-framework/scripts/tbox-env.sh"
+if [ ! -f "${TBOX_ENV_FILE}" ]; then
+    echo "[ERROR] 未找到 ${TBOX_ENV_FILE}" >&2
+    echo "        请确认 iov-vehicle-tbox-framework 与本项目位于同级目录" >&2
+    exit 1
+fi
+source "${TBOX_ENV_FILE}"
+
 # 默认选项
 CLEAN_BUILD=false
 RUN_TESTS=true
@@ -184,6 +195,32 @@ clean_build() {
     fi
 }
 
+# 安装 Conan 依赖
+# sec 的 conanfile.txt 固定了 openssl / gtest / nlohmann_json 版本。
+# 此前 build.sh 不执行 conan install，导致 find_package 命中构建机上的
+# brew / conda 副本（gtest 一度来自 miniconda，靠 rpath 副作用才能运行），
+# 本地与生产结果不可复现。
+install_conan_deps() {
+    print_info "安装 Conan 依赖..."
+
+    if ! command -v conan &> /dev/null; then
+        print_error "未找到 conan，请先安装：pip install conan"
+        return 1
+    fi
+
+    mkdir -p "$BUILD_DIR"
+    cd "$BUILD_DIR"
+
+    # -s build_type 必须与 CMAKE_BUILD_TYPE 一致：
+    # CMakeDeps 生成的目标属性是按 config 区分的，不一致会导致
+    # include 路径在当前 config 下为空（表现为找不到头文件）。
+    conan install .. --output-folder=. --build=missing -s build_type=${BUILD_TYPE} || return 1
+
+    cd "$PROJECT_ROOT"
+    print_success "依赖安装完成"
+    return 0
+}
+
 # 配置项目
 configure_project() {
     print_info "配置 CMake 项目..."
@@ -193,7 +230,9 @@ configure_project() {
     cd "$BUILD_DIR"
 
     cmake .. \
+        -DCMAKE_TOOLCHAIN_FILE="${BUILD_DIR}/conan_toolchain.cmake" \
         -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
+        -DTBoxFramework_DIR="${TBoxFramework_DIR}" \
         -DBUILD_TESTS=$([ "$RUN_TESTS" = true ] && echo "ON" || echo "OFF")
 
     if [ $? -ne 0 ]; then
@@ -288,7 +327,6 @@ show_summary() {
         echo "  - 单元测试:    ${BUILD_DIR}/TboxSecTests"
     fi
     echo "  - CLI 工具:    ${BUILD_DIR}/sec_cli"
-    echo "  - 示例程序:    ${BUILD_DIR}/GenerateKeysAndCsr"
     echo ""
     echo "使用方法:"
     echo "  ${BUILD_DIR}/tbox_sec --help"
@@ -357,6 +395,11 @@ main() {
     # 清理构建目录（如果需要）
     if [ "$CLEAN_BUILD" = true ]; then
         clean_build
+    fi
+
+    # 安装 Conan 依赖
+    if ! install_conan_deps; then
+        exit 1
     fi
 
     # 配置项目

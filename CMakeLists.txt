@@ -33,12 +33,14 @@ endif ()
 find_package(OpenSSL REQUIRED)
 include_directories(${OPENSSL_INCLUDE_DIR})
 
-# fmt (required by spdlog)
-find_package(fmt REQUIRED)
+# fmt / spdlog
+# 不再 find_package(fmt)：spdlog 由 TBoxFramework 自包含提供（header-only + bundled fmt），
+# 本项目代码也没有直接使用 fmt。引入外部 fmt 只会把构建机的 brew/conda 路径
+# 混进包含路径，导致 spdlog 与 fmt 版本错配。
 
 # YAML-CPP
-find_package(yaml-cpp REQUIRED)
-include_directories(${YAML_CPP_INCLUDE_DIRS})
+# 不再单独 find_package(yaml-cpp)：yaml-cpp 由 TBoxFramework 自包含提供
+# （头文件随 framework 安装，静态库已并入 libtbox-framework 并导出符号）。
 add_definitions(-DUSE_YAML_CPP)
 
 # Google Test
@@ -53,19 +55,15 @@ find_package(CURL REQUIRED)
 include_directories(${CURL_INCLUDE_DIRS})
 
 # Framework (hwyz) - config, store, log, ipc
-set(FRAMEWORK_DIR ${PROJECT_SOURCE_DIR}/../iov-vehicle-tbox-framework)
-if(EXISTS ${FRAMEWORK_DIR}/include)
-    set(FRAMEWORK_INCLUDE_DIR ${FRAMEWORK_DIR}/include)
-    message(STATUS "Found framework include at: ${FRAMEWORK_INCLUDE_DIR}")
-else()
-    message(FATAL_ERROR "Framework not found at: ${FRAMEWORK_DIR}")
+# 统一通过 find_package 消费：framework 自包含 yaml-cpp，查找前缀来自
+# iov-vehicle-tbox-framework/scripts/tbox-env.sh 的 TBOX_PREFIX（见 scripts/build.sh）。
+# 本项目也会被 diag 以 add_subdirectory 引入，故做幂等保护。
+if(NOT TARGET TBoxFramework::tbox-framework)
+    find_package(TBoxFramework REQUIRED)
 endif()
-
-# Find framework library
-find_library(FRAMEWORK_LIB tbox-framework PATHS ${FRAMEWORK_DIR}/build NO_DEFAULT_PATH)
-if(NOT FRAMEWORK_LIB)
-    message(FATAL_ERROR "Framework library not found in ${FRAMEWORK_DIR}/build")
-endif()
+set(FRAMEWORK_LIB TBoxFramework::tbox-framework)
+set(FRAMEWORK_INCLUDE_DIR ${TBoxFramework_INCLUDE_DIRS})
+message(STATUS "Using TBoxFramework headers: ${FRAMEWORK_INCLUDE_DIR}")
 
 # PROV project - for IPC client (ProvClient)
 set(PROV_DIR ${PROJECT_SOURCE_DIR}/../iov-vehicle-tbox-prov)
@@ -112,7 +110,7 @@ list(APPEND LIB_SOURCES
 
 add_library(TboxSecLib STATIC ${LIB_SOURCES})
 target_include_directories(TboxSecLib PUBLIC ${PROJECT_SOURCE_DIR}/include ${FRAMEWORK_INCLUDE_DIR})
-target_link_libraries(TboxSecLib PUBLIC OpenSSL::SSL OpenSSL::Crypto yaml-cpp::yaml-cpp nlohmann_json::nlohmann_json CURL::libcurl)
+target_link_libraries(TboxSecLib PUBLIC OpenSSL::SSL OpenSSL::Crypto ${FRAMEWORK_LIB} nlohmann_json::nlohmann_json CURL::libcurl)
 
 # ============================================================
 # Client SDK library (tbox_sec_client / tbox::sec_client)
@@ -177,7 +175,7 @@ install(FILES
 # ============================================================
 add_executable(tbox_sec src/main.cpp src/ipc_prov_service.cpp)
 target_include_directories(tbox_sec PRIVATE ${PROV_INCLUDE_DIR})
-target_link_libraries(tbox_sec PRIVATE TboxSecLib ${FRAMEWORK_LIB} ${PROV_CLIENT_LIB} ${PROV_DAEMON_LIB} fmt::fmt)
+target_link_libraries(tbox_sec PRIVATE TboxSecLib ${FRAMEWORK_LIB} ${PROV_CLIENT_LIB} ${PROV_DAEMON_LIB})
 
 # ============================================================
 # Tests
@@ -215,10 +213,6 @@ set(TEST_SOURCES
 add_executable(TboxSecTests ${TEST_SOURCES})
 target_link_libraries(TboxSecTests PRIVATE TboxSecLib tbox_sec_client ${FRAMEWORK_LIB} GTest::GTest GTest::gmock GTest::Main)
 add_test(NAME TboxSecTests COMMAND TboxSecTests)
-
-# Example program
-add_executable(GenerateKeysAndCsr examples/generate_keys_and_csr.cpp)
-target_link_libraries(GenerateKeysAndCsr PRIVATE TboxSecLib ${FRAMEWORK_LIB})
 
 # CLI tool for testing (IPC client)
 add_executable(sec_cli src/sec_cli.cpp)

@@ -44,14 +44,9 @@ constexpr const char* kOidClientAuth = "1.3.6.1.5.5.7.3.2";
 /// serverAuth OID 1.3.6.1.5.5.7.3.1
 constexpr const char* kOidServerAuth = "1.3.6.1.5.5.7.3.1";
 
-/// 从文件加载一个或多个 X509（支持 PEM 多证书 / DER 单证书）
-std::vector<X509UniquePtr> load_certs_from_file(const std::string& path) {
+/// 从内存中的 PEM/DER 内容加载一个或多个 X509（支持 PEM 多证书 / DER 单证书）
+std::vector<X509UniquePtr> load_certs_from_string(const std::string& content) {
     std::vector<X509UniquePtr> certs;
-    std::ifstream f(path, std::ios::binary);
-    if (!f.is_open()) return certs;
-
-    std::string content((std::istreambuf_iterator<char>(f)),
-                        std::istreambuf_iterator<char>());
     if (content.empty()) return certs;
 
     // 尝试 PEM（可能含多个 -----BEGIN CERTIFICATE-----）
@@ -169,10 +164,12 @@ bool now_in_range(int64_t not_before, int64_t not_after) {
 
 TlsCredentialProvider::TlsCredentialProvider(HsmInterface* hsm,
                                              DeviceKeyIdResolver key_id_resolver,
+                                             TlsMaterialResolver material_resolver,
                                              TlsCredentialNotifyCallback notify)
     : hsm_(hsm),
       key_id_resolver_(std::move(key_id_resolver)),
       notify_(std::move(notify)),
+      material_resolver_(std::move(material_resolver)),
       process_key_(generateProcessKey()),
       boot_epoch_(generateBootEpoch()) {
 }
@@ -282,14 +279,18 @@ void TlsCredentialProvider::publishChanged(const std::string& profile,
 // ============================================================
 
 ErrorCode TlsCredentialProvider::validateAndStoreMaterials(ProfileState& ps) {
-    if (ps.config.root_ca_path.empty() || ps.config.client_cert_chain_path.empty()) {
+    if (ps.config.root_ca_key.empty() || ps.config.client_cert_chain_key.empty()
+        || !material_resolver_) {
         ps.status = TlsCredentialStatus::NOT_READY;
         ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_CREDENTIAL_NOT_READY);
         return ErrorCode::TLS_CREDENTIAL_NOT_READY;
     }
 
-    auto root_certs = load_certs_from_file(ps.config.root_ca_path);
-    auto chain_certs = load_certs_from_file(ps.config.client_cert_chain_path);
+    // 从 SEC 受控存储按 key 读取 PEM 材料（root_ca 为共享信任根，device_cert_chain 为设备证书链）
+    std::string root_pem = material_resolver_(ps.config.root_ca_key);
+    std::string chain_pem = material_resolver_(ps.config.client_cert_chain_key);
+    auto root_certs = load_certs_from_string(root_pem);
+    auto chain_certs = load_certs_from_string(chain_pem);
     if (root_certs.empty() || chain_certs.empty()) {
         SecLogAdapter::certificate().warn(
             "sec.tls_credential.rejected",

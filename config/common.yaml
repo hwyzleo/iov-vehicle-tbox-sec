@@ -1,6 +1,20 @@
 # TBOX 公共配置
-store:
-  root: "/var/lib/tbox"
+common:
+  store:
+    root: "/var/tbox"
+  ipc:
+    max_frame_bytes: 10485760    # 10 MiB
+    receive_timeout_ms: 60000    # 60 秒空闲超时
+    connect_timeout_ms: 3000
+    listen_backlog: 5
+    reconnect:
+      initial_backoff_ms: 100
+      max_backoff_ms: 5000
+      multiplier: 2.0
+  log:
+    level: "info"
+    max_size_mb: 10
+    max_files: 5
 
 cloud:
   endpoint: "https://api.example.com"
@@ -10,19 +24,3 @@ cloud:
 
 environment:
   is_production: false
-
-ipc:
-  max_frame_bytes: 10485760    # 10 MiB
-  receive_timeout_ms: 60000    # 60 秒空闲超时
-  connect_timeout_ms: 3000
-  listen_backlog: 5
-  reconnect:
-    initial_backoff_ms: 100
-    max_backoff_ms: 5000
-    multiplier: 2.0
-
-log:
-  level: "INFO"
-  file: "/var/log/tbox/tbox.log"
-  max_size_mb: 10
-  max_files: 5
