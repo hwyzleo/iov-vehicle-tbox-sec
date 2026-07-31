@@ -31,6 +31,10 @@ tbox::fw::log::Logger SecLogAdapter::seed_key() {
     return tbox::fw::log::Logger::get("seed_key");
 }
 
+tbox::fw::log::Logger SecLogAdapter::tls_credential() {
+    return tbox::fw::log::Logger::get("tls_credential");
+}
+
 tbox::fw::log::Logger SecLogAdapter::ipc() {
     return tbox::fw::log::Logger::get("ipc");
 }

@@ -4,7 +4,9 @@ common:
     root: "./data"
   log:
     level: "debug"                       # 默认日志级别（trace/debug/info/warn/error）
-    file: "./log/sec.log"
+    file:
+      enabled: true                     # 开发环境落盘
+      root: "./log"
 
 hsm:
   type: "soft_file"

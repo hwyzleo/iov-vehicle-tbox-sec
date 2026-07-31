@@ -1,5 +1,6 @@
 #include "soft_file_hsm.h"
 #include "constants.h"
+#include "sec_log_adapter.h"
 
 #include <openssl/ec.h>
 #include <openssl/evp.h>
@@ -301,7 +302,10 @@ ErrorCode SoftFileHsm::delete_key(const std::string& key_id) {
         store_.remove("encrypted_private_key_" + key_id);
         store_.remove("key_metadata_" + key_id);
     } catch (const hwyz::store::StoreException& e) {
-        std::cerr << "Failed to delete key from store: " << e.what() << std::endl;
+        SecLogAdapter::service().error(
+            "sec.hsm.soft_key_delete_failed", "从 store 删除密钥失败",
+            {{"key_id", tbox::fw::log::FieldValue::makeString(key_id)},
+             {"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
         return ErrorCode::STORAGE_WRITE_FAILED;
     }
 
@@ -356,7 +360,10 @@ ErrorCode SoftFileHsm::save_key_to_store(const std::string& key_id, const KeyDat
 
         return ErrorCode::SUCCESS;
     } catch (const hwyz::store::StoreException& e) {
-        std::cerr << "Failed to save key to store: " << e.what() << std::endl;
+        SecLogAdapter::service().error(
+            "sec.hsm.soft_key_save_failed", "保存密钥到 store 失败",
+            {{"key_id", tbox::fw::log::FieldValue::makeString(key_id)},
+             {"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
         return ErrorCode::STORAGE_WRITE_FAILED;
     }
 }
@@ -389,10 +396,16 @@ ErrorCode SoftFileHsm::load_key_from_store(const std::string& key_id, KeyData& k
         if (e.getError().code == hwyz::store::StoreError::kKeyNotFound) {
             return ErrorCode::KEY_NOT_FOUND;
         }
-        std::cerr << "Failed to load key from store: " << e.what() << std::endl;
+        SecLogAdapter::service().error(
+            "sec.hsm.soft_key_load_failed", "从 store 加载密钥失败",
+            {{"key_id", tbox::fw::log::FieldValue::makeString(key_id)},
+             {"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
         return ErrorCode::STORAGE_READ_FAILED;
     } catch (const std::exception& e) {
-        std::cerr << "Failed to parse key from store: " << e.what() << std::endl;
+        SecLogAdapter::service().error(
+            "sec.hsm.soft_key_parse_failed", "解析 store 中密钥失败",
+            {{"key_id", tbox::fw::log::FieldValue::makeString(key_id)},
+             {"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
         return ErrorCode::STORAGE_CORRUPTION;
     }
 }

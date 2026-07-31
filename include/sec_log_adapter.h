@@ -14,11 +14,12 @@ public:
         const tbox::fw::log::LogConfig& config
     );
 
-    // 获取各模块的 Logger 实例
+    // 获取各模块的 Logger 实例（CR-011 §4.1：service/provisioning/certificate/seed_key/tls_credential/ipc）
     static tbox::fw::log::Logger service();
     static tbox::fw::log::Logger provisioning();
     static tbox::fw::log::Logger certificate();
     static tbox::fw::log::Logger seed_key();
+    static tbox::fw::log::Logger tls_credential();
     static tbox::fw::log::Logger ipc();
 
 private:

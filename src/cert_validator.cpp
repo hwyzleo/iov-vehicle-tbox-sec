@@ -255,7 +255,9 @@ ErrorCode CertValidator::validate_certificate_chain(const std::vector<std::vecto
 
 ErrorCode CertValidator::verify_certificate_signature(const std::vector<uint8_t>& cert_der,
                                                      bool& valid) {
-    std::cerr << "[CERT] verify_certificate_signature called, cert_der size=" << cert_der.size() << std::endl;
+    SecLogAdapter::certificate().debug(
+        "sec.cert.verify_signature.start", "校验证书签名",
+        {{"cert_size", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(cert_der.size()))}});
 
     if (cert_der.empty()) {
         valid = false;
@@ -266,7 +268,8 @@ ErrorCode CertValidator::verify_certificate_signature(const std::vector<uint8_t>
     const unsigned char* p = cert_der.data();
     X509* cert = d2i_X509(NULL, &p, cert_der.size());
     if (!cert) {
-        std::cerr << "[CERT] Failed to parse certificate DER" << std::endl;
+        SecLogAdapter::certificate().error(
+            "sec.cert.parse_der_failed", "证书 DER 解析失败");
         valid = false;
         return ErrorCode::CERT_VALIDATION_FAILED;
     }
@@ -276,13 +279,16 @@ ErrorCode CertValidator::verify_certificate_signature(const std::vector<uint8_t>
     X509_NAME* subject = X509_get_subject_name(cert);
 
     bool is_self_signed = (X509_NAME_cmp(issuer, subject) == 0);
-    std::cerr << "[CERT] is_self_signed=" << is_self_signed << std::endl;
+    SecLogAdapter::certificate().debug(
+        "sec.cert.self_signed_check", "自签名检查",
+        {{"is_self_signed", tbox::fw::log::FieldValue::makeBool(is_self_signed)}});
 
     if (is_self_signed) {
         // For self-signed certificates, use the certificate's own public key
         EVP_PKEY* pubkey = X509_get_pubkey(cert);
         if (!pubkey) {
-            std::cerr << "[CERT] Failed to get public key from self-signed cert" << std::endl;
+            SecLogAdapter::certificate().error(
+                "sec.cert.self_signed_pubkey_failed", "自签名证书获取公钥失败");
             X509_free(cert);
             valid = false;
             return ErrorCode::CERT_VALIDATION_FAILED;
@@ -293,16 +299,22 @@ ErrorCode CertValidator::verify_certificate_signature(const std::vector<uint8_t>
         EVP_PKEY_free(pubkey);
 
         valid = (verify_result == 1);
-        std::cerr << "[CERT] Self-signed verify_result=" << verify_result << " valid=" << valid << std::endl;
+        SecLogAdapter::certificate().debug(
+            "sec.cert.self_signed_verify_result", "自签名证书验签结果",
+            {{"verify_result", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(verify_result))},
+             {"valid", tbox::fw::log::FieldValue::makeBool(valid)}});
         X509_free(cert);
         return ErrorCode::SUCCESS;
     } else {
         // For CA-signed certificates, use the CA certificate's public key
-        std::cerr << "[CERT] CA-signed cert, ca_cert_der_.empty()=" << ca_cert_der_.empty() << std::endl;
+        SecLogAdapter::certificate().debug(
+            "sec.cert.ca_signed", "CA 签名证书",
+            {{"ca_cert_empty", tbox::fw::log::FieldValue::makeBool(ca_cert_der_.empty())}});
 
         if (ca_cert_der_.empty()) {
             // No CA certificate available for verification
-            std::cerr << "[CERT] No CA certificate available for verification" << std::endl;
+            SecLogAdapter::certificate().error(
+                "sec.cert.no_ca_available", "无可用 CA 证书用于验签");
             X509_free(cert);
             valid = false;
             return ErrorCode::CERT_VALIDATION_FAILED;
@@ -313,7 +325,8 @@ ErrorCode CertValidator::verify_certificate_signature(const std::vector<uint8_t>
         X509* ca_cert = d2i_X509(NULL, &ca_p, ca_cert_der_.size());
         if (!ca_cert) {
             // Try PEM format
-            std::cerr << "[CERT] DER parse failed, trying PEM format" << std::endl;
+            SecLogAdapter::certificate().debug(
+                "sec.cert.ca_der_parse_failed_try_pem", "CA 证书 DER 解析失败，尝试 PEM");
             BIO* bio = BIO_new_mem_buf(ca_cert_der_.data(), ca_cert_der_.size());
             if (bio) {
                 ca_cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
@@ -321,7 +334,8 @@ ErrorCode CertValidator::verify_certificate_signature(const std::vector<uint8_t>
             }
         }
         if (!ca_cert) {
-            std::cerr << "[CERT] Failed to parse CA certificate (DER or PEM)" << std::endl;
+            SecLogAdapter::certificate().error(
+                "sec.cert.ca_parse_failed", "CA 证书解析失败（DER/PEM）");
             X509_free(cert);
             valid = false;
             return ErrorCode::CERT_VALIDATION_FAILED;
@@ -332,7 +346,8 @@ ErrorCode CertValidator::verify_certificate_signature(const std::vector<uint8_t>
         X509_free(ca_cert);
 
         if (!ca_pubkey) {
-            std::cerr << "[CERT] Failed to get public key from CA cert" << std::endl;
+            SecLogAdapter::certificate().error(
+                "sec.cert.ca_pubkey_failed", "CA 证书获取公钥失败");
             X509_free(cert);
             valid = false;
             return ErrorCode::CERT_VALIDATION_FAILED;
@@ -343,7 +358,10 @@ ErrorCode CertValidator::verify_certificate_signature(const std::vector<uint8_t>
         EVP_PKEY_free(ca_pubkey);
 
         valid = (verify_result == 1);
-        std::cerr << "[CERT] CA-signed verify_result=" << verify_result << " valid=" << valid << std::endl;
+        SecLogAdapter::certificate().debug(
+            "sec.cert.ca_signed_verify_result", "CA 签名证书验签结果",
+            {{"verify_result", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(verify_result))},
+             {"valid", tbox::fw::log::FieldValue::makeBool(valid)}});
         X509_free(cert);
         return ErrorCode::SUCCESS;
     }

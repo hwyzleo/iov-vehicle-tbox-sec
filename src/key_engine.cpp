@@ -35,7 +35,9 @@ ErrorCode KeyEngine::generate_device_key(const std::string& vin,
     // Check if key already exists
     if (hsm_->key_exists(key_id)) {
         // Key already exists, return success and export existing key
-        std::cerr << "[SEC] Key already exists for " << key_id << ", returning existing key" << std::endl;
+        SecLogAdapter::service().debug(
+            "sec.keypair.already_exists", "密钥已存在，返回既有密钥",
+            {{"key_id", tbox::fw::log::FieldValue::makeString(key_id)}});
         key_pair.key_id = key_id;
         key_pair.algorithm = KEY_ALGORITHM_ECDSA_P256;
         key_pair.private_key_exists = true;

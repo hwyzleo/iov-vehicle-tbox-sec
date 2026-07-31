@@ -1,5 +1,5 @@
 #include "ipc_prov_service.h"
-#include <iostream>
+#include "sec_log_adapter.h"
 
 namespace tbox {
 namespace sec {
@@ -9,10 +9,12 @@ IpcProvService::IpcProvService(const std::string& socket_path)
 
 ErrorCode IpcProvService::initialize() {
     if (!client_.connect()) {
-        std::cerr << "[SEC] Failed to connect to PROV service" << std::endl;
+        SecLogAdapter::provisioning().error(
+            "sec.prov.connect_failed", "连接 PROV 服务失败");
         return ErrorCode::CONNECTION_FAILED;
     }
-    std::cout << "[SEC] Connected to PROV service" << std::endl;
+    SecLogAdapter::provisioning().info(
+        "sec.prov.connected", "已连接 PROV 服务");
     return ErrorCode::SUCCESS;
 }
 
@@ -22,13 +24,15 @@ ErrorCode IpcProvService::get_vehicle_info(VehicleInfo& info) {
     info.ecu_uid = binding.ecu_uid;
 
     if (info.vin.empty() || info.ecu_uid.empty()) {
-        std::cerr << "[SEC] PROV service connected but VIN/ECU UID not configured yet"
-                  << std::endl;
+        SecLogAdapter::provisioning().warn(
+            "sec.prov.vehicle_info_not_configured", "PROV 已连接但 VIN/ECU_UID 尚未配置");
         return ErrorCode::SUCCESS;
     }
 
-    std::cout << "[SEC] Vehicle info from PROV: vin=" << info.vin
-              << " ecu_uid=" << info.ecu_uid << std::endl;
+    SecLogAdapter::provisioning().info(
+        "sec.prov.vehicle_info", "从 PROV 获取车辆信息",
+        {{"vin", tbox::fw::log::FieldValue::makeString(info.vin)},
+         {"ecu_uid", tbox::fw::log::FieldValue::makeString(info.ecu_uid)}});
     return ErrorCode::SUCCESS;
 }
 

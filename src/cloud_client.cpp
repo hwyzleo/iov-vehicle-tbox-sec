@@ -1,4 +1,5 @@
 #include "cloud_client.h"
+#include "sec_log_adapter.h"
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include <thread>
@@ -240,7 +241,9 @@ void CloudClient::store_certificate(const std::vector<uint8_t>& cert_der) {
         std::string encoded = base64_encode(cert_der);
         store_.save("device_cert", encoded);
     } catch (const hwyz::store::StoreException& e) {
-        std::cerr << "Failed to store certificate: " << e.what() << std::endl;
+        SecLogAdapter::certificate().error(
+            "sec.cloud.store_cert_failed", "存储证书到 store 失败",
+            {{"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
         throw;
     }
 }

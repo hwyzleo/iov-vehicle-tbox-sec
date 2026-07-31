@@ -18,11 +18,9 @@
 #include <yaml-cpp/yaml.h>
 #endif
 
-#include "sec_ipc_dispatcher.h"
 #include "tls_credential_provider.h"
 #include "peer_credential.h"
 #include "ipc_protocol.h"
-#include "ipc.h"
 
 namespace tbox {
 namespace sec {
@@ -30,7 +28,9 @@ namespace sec {
 SecService::SecService() : initialized_(false), store_(std::nullopt) {}
 
 SecService::~SecService() {
-    stop_ipc_server();
+    // CR-011: IPC Server 不再由 SecService 持有（由 SecApplication 组合根管理）。
+    // 析构时清零待消费 seed 等瞬态秘密。
+    invalidate_seed();
 }
 
 SecService::SecService(const SecServiceConfig& config)
@@ -58,21 +58,28 @@ ErrorCode SecService::initialize() {
     // Validate required config
     if (config_.get_hsm_type().empty() &&
         config_.get_key_provisioning_mode() != KEY_PROVISIONING_MODE_SOFT_FILE) {
-        std::cerr << "[SEC] hsm.type is required" << std::endl;
+        SecLogAdapter::service().error(
+            "sec.config.hsm_type_required", "hsm.type 未配置");
         return ErrorCode::CONFIG_ERROR;
     }
 
     auto cloud_config = config_.get_cloud_config();
     if (cloud_config.timeout_ms <= 0) {
-        std::cerr << "[SEC] cloud.timeout_ms must be positive" << std::endl;
+        SecLogAdapter::service().error(
+            "sec.config.cloud_timeout_invalid", "cloud.timeout_ms 必须为正",
+            {{"timeout_ms", tbox::fw::log::FieldValue::makeInt(cloud_config.timeout_ms)}});
         return ErrorCode::CONFIG_ERROR;
     }
     if (cloud_config.retry_count < 0) {
-        std::cerr << "[SEC] cloud.retry_count must be non-negative" << std::endl;
+        SecLogAdapter::service().error(
+            "sec.config.cloud_retry_count_invalid", "cloud.retry_count 不能为负",
+            {{"retry_count", tbox::fw::log::FieldValue::makeInt(cloud_config.retry_count)}});
         return ErrorCode::CONFIG_ERROR;
     }
     if (cloud_config.retry_delay_ms < 0) {
-        std::cerr << "[SEC] cloud.retry_delay_ms must be non-negative" << std::endl;
+        SecLogAdapter::service().error(
+            "sec.config.cloud_retry_delay_invalid", "cloud.retry_delay_ms 不能为负",
+            {{"retry_delay_ms", tbox::fw::log::FieldValue::makeInt(cloud_config.retry_delay_ms)}});
         return ErrorCode::CONFIG_ERROR;
     }
 
@@ -90,7 +97,8 @@ ErrorCode SecService::initialize() {
     if (store_.has_value() && store_->isReady()) {
         result = load_provision_state_from_store();
         if (result != ErrorCode::SUCCESS) {
-            std::cerr << "[SEC] Failed to load from store" << std::endl;
+            SecLogAdapter::service().error(
+                "sec.store.load_failed", "从 store 加载 provision 状态失败");
         }
     }
 
@@ -105,13 +113,16 @@ ErrorCode SecService::initialize() {
                 if (!root_ca_pem.empty()) {
                     std::vector<uint8_t> ca_cert_bytes(root_ca_pem.begin(), root_ca_pem.end());
                     if (set_ca_certificate(ca_cert_bytes) == ErrorCode::SUCCESS) {
-                        std::cout << "[SEC] CA certificate loaded from store key 'root_ca'" << std::endl;
+                        SecLogAdapter::certificate().info(
+                            "sec.ca.loaded_from_store", "CA 证书从 store 加载成功 (key=root_ca)");
                         ca_loaded = true;
                     }
                 }
             }
         } catch (const std::exception& e) {
-            std::cerr << "[SEC] Failed to load root_ca from store: " << e.what() << std::endl;
+            SecLogAdapter::certificate().error(
+                "sec.ca.load_from_store_failed", "从 store 加载 root_ca 失败",
+                {{"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
         }
     }
 
@@ -119,12 +130,16 @@ ErrorCode SecService::initialize() {
         // 回退：旧的配置文件路径（storage.ca_cert / config.yaml）
         std::string ca_cert_path = config_.get_ca_cert_path();
 
-        std::cout << "[SEC] Initializing CA cert (fallback), ca_cert_path='" << ca_cert_path << "'" << std::endl;
+        SecLogAdapter::certificate().debug(
+            "sec.ca.fallback_init", "回退到配置文件路径加载 CA 证书",
+            {{"ca_cert_path", tbox::fw::log::FieldValue::makeString(ca_cert_path)}});
 
         // If ca_cert_path is empty, try to load from default config
         if (ca_cert_path.empty()) {
             ca_cert_path = find_ca_cert_from_config();
-            std::cout << "[SEC] find_ca_cert_from_config returned: '" << ca_cert_path << "'" << std::endl;
+            SecLogAdapter::certificate().debug(
+                "sec.ca.config_path_resolved", "find_ca_cert_from_config 解析路径",
+                {{"ca_cert_path", tbox::fw::log::FieldValue::makeString(ca_cert_path)}});
         }
 
         if (!ca_cert_path.empty()) {
@@ -138,17 +153,21 @@ ErrorCode SecService::initialize() {
                 if (!ca_cert_der.empty()) {
                     result = set_ca_certificate(ca_cert_der);
                     if (result != ErrorCode::SUCCESS) {
-                        std::cerr << "[SEC] Failed to load CA certificate from: "
-                                  << ca_cert_path << std::endl;
+                        SecLogAdapter::certificate().error(
+                            "sec.ca.load_file_failed", "CA 证书文件加载失败",
+                            {{"ca_cert_path", tbox::fw::log::FieldValue::makeString(ca_cert_path)},
+                             {"error_code", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(result))}});
                         // Continue initialization - CA cert is optional for self-signed certs
                     } else {
-                        std::cout << "[SEC] CA certificate loaded from: "
-                                  << ca_cert_path << std::endl;
+                        SecLogAdapter::certificate().info(
+                            "sec.ca.loaded_from_file", "CA 证书从文件加载成功",
+                            {{"ca_cert_path", tbox::fw::log::FieldValue::makeString(ca_cert_path)}});
                     }
                 }
             } else {
-                std::cerr << "[SEC] Cannot open CA certificate file: "
-                          << ca_cert_path << std::endl;
+                SecLogAdapter::certificate().error(
+                    "sec.ca.file_open_failed", "无法打开 CA 证书文件",
+                    {{"ca_cert_path", tbox::fw::log::FieldValue::makeString(ca_cert_path)}});
                 // Continue initialization - CA cert is optional
             }
         }
@@ -168,105 +187,32 @@ ErrorCode SecService::initialize() {
     return ErrorCode::SUCCESS;
 }
 
-bool SecService::start_ipc_server() {
-    if (!initialized_) {
-        return false;
-    }
+// TBOX-SEC-DSN-CR-011: IPC Server 与 SecIpcDispatcher 已上移到 SecApplication 组合根，
+// SecService 不再持有传输层。以下为停机 quiesce 与事件发布解耦接口。
 
-    if (fw_ipc_server_) {
-        return true;  // already started
-    }
-
-    // Update socket path from config
-    ipc_socket_path_ = config_.ipc_socket_path;
-
-    // Create dispatcher
-    ipc_dispatcher_ = std::make_unique<SecIpcDispatcher>(this);
-
-    // 注入 TLS provider 与 peer credential 解析器（TBOX-SEC-DSN-CR-010）
-    if (tls_provider_) {
-        ipc_dispatcher_->setTlsCredentialProvider(tls_provider_.get());
-    }
-    if (!peer_resolver_) {
-        // 开发/测试：配置了 sec.tls.dev_peer_service 且非生产环境时，
-        // 使用 DevPeerCredentialResolver 绕过 SO_PEERCRED（如 macOS 本地联调）。
-        std::string dev_peer = config_.get_tls_dev_peer_service();
-        if (!dev_peer.empty() && !config_.get_is_production()) {
-            SecLogAdapter::ipc().warn(
-                "sec.ipc.dev_peer_resolver_enabled",
-                "已启用开发用 peer 身份解析器，TLS ACL 将固定放行（仅限非生产环境）",
-                {tbox::fw::log::Field("service_name",
-                    tbox::fw::log::FieldValue::makeString(dev_peer))}
-            );
-            peer_resolver_ = std::make_shared<DevPeerCredentialResolver>(dev_peer);
-        } else {
-            peer_resolver_ = std::make_shared<SystemdPeerCredentialResolver>();
-        }
-    }
-    ipc_dispatcher_->setPeerCredentialResolver(peer_resolver_);
-    if (fw_ipc_server_) {
-        // 预留：add_subscription 在 server 创建后设置
-    }
-
-    // Create framework-ipc Server
-    fw_ipc_server_ = std::make_unique<::tbox::fw::ipc::Server>(
-        ipc_socket_path_, config_.ipc_config);
-
-    // 接线 add_subscription 回调到 Server
-    {
-        auto* server_ptr = fw_ipc_server_.get();
-        ipc_dispatcher_->setAddSubscriptionCallback(
-            [server_ptr](int client_fd, uint32_t event_type) -> bool {
-                return server_ptr->add_subscription(client_fd, event_type);
-            });
-    }
-
-    // Register RequestHandler (adapt to dispatcher)
-    auto* dispatcher_ptr = ipc_dispatcher_.get();
-    auto request_handler = [dispatcher_ptr](uint32_t method_id,
-                                            std::string_view params_json,
-                                            int client_fd) -> std::string {
-        return dispatcher_ptr->dispatch(method_id, params_json, client_fd);
-    };
-
-    // disconnect handler: only clean SEC business references
-    // framework handles fd and subscription cleanup
-    auto disconnect_handler = [](int client_fd) {
-        SecLogAdapter::ipc().debug(
-            "sec.ipc.client_disconnected",
-            "Client disconnected (framework)",
-            {tbox::fw::log::Field("client_fd", tbox::fw::log::FieldValue::makeInt(client_fd))}
-        );
-    };
-
-    if (!fw_ipc_server_->start(std::move(request_handler), std::move(disconnect_handler))) {
-        fw_ipc_server_.reset();
-        ipc_dispatcher_.reset();
-        return false;
-    }
-
-    SecLogAdapter::ipc().info(
-        "sec.ipc.server_started",
-        "IPC server started (framework-ipc)",
-        {tbox::fw::log::Field("socket_path", tbox::fw::log::FieldValue::makeString(ipc_socket_path_))}
-    );
-    return true;
+void SecService::beginShutdown() {
+    shutting_down_.store(true, std::memory_order_relaxed);
+    SecLogAdapter::service().info(
+        "sec.service.shutdown_begin",
+        "SEC service entering shutdown, rejecting new security operations");
 }
 
-void SecService::stop_ipc_server() {
-    if (fw_ipc_server_) {
-        fw_ipc_server_->stop();
-        fw_ipc_server_.reset();
-        ipc_dispatcher_.reset();
-        SecLogAdapter::ipc().info(
-            "sec.ipc.server_stopped",
-            "IPC server stopped (framework-ipc)"
-        );
-    }
+bool SecService::is_shutting_down() const noexcept {
+    return shutting_down_.load(std::memory_order_relaxed);
+}
+
+void SecService::setEventPublisher(
+    std::function<void(uint32_t event_type,
+                       const std::string& payload_json)> cb) {
+    event_publisher_ = std::move(cb);
 }
 
 ErrorCode SecService::generate_key_pair() {
     if (!initialized_) {
+        return ErrorCode::NOT_INITIALIZED;
+    }
+    // CR-011: 停机后拒绝新安全操作（fail-closed quiesce）
+    if (is_shutting_down()) {
         return ErrorCode::NOT_INITIALIZED;
     }
 
@@ -286,7 +232,8 @@ ErrorCode SecService::generate_key_pair() {
             return ErrorCode::SUCCESS;
         }
         // 状态说有密钥但 HSM 中没有，继续生成
-        std::cout << "[SEC] State says key exists but not in HSM, regenerating..." << std::endl;
+        SecLogAdapter::provisioning().warn(
+            "sec.keypair.regenerate", "状态显示密钥已存在但 HSM 中缺失，重新生成");
     }
 
     if (diag_service_) {
@@ -341,7 +288,9 @@ ErrorCode SecService::get_csr(std::vector<uint8_t>& csr_der) {
     }
 
     ProvisionStatus status = get_provision_status();
-    std::cout << "[SEC] get_csr: state=" << static_cast<int>(status.state) << std::endl;
+    SecLogAdapter::provisioning().debug(
+        "sec.csr.get", "读取 CSR",
+        {{"state", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(status.state))}});
 
     if (status.state == ProvisionState::NONE) {
         return ErrorCode::KEY_NOT_FOUND;
@@ -349,8 +298,10 @@ ErrorCode SecService::get_csr(std::vector<uint8_t>& csr_der) {
 
     // 如果 CSR 尚未构建或 csr_der_ 为空，重新构建
     if (status.state == ProvisionState::KEY_GENERATED || csr_der_.empty()) {
-        std::cout << "[SEC] Building CSR (state=" << static_cast<int>(status.state)
-                  << " csr_der_.empty()=" << csr_der_.empty() << ")..." << std::endl;
+        SecLogAdapter::provisioning().debug(
+            "sec.csr.build", "构建 CSR",
+            {{"state", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(status.state))},
+             {"csr_empty", tbox::fw::log::FieldValue::makeBool(csr_der_.empty())}});
         ErrorCode result = build_and_store_csr();
         if (result != ErrorCode::SUCCESS) {
             handle_error(result, "CSR building failed");
@@ -361,12 +312,18 @@ ErrorCode SecService::get_csr(std::vector<uint8_t>& csr_der) {
     }
 
     csr_der = csr_der_;
-    std::cout << "[SEC] get_csr: returning csr_der_.size()=" << csr_der_.size() << std::endl;
+    SecLogAdapter::provisioning().debug(
+        "sec.csr.returned", "返回 CSR",
+        {{"csr_size", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(csr_der_.size()))}});
     return ErrorCode::SUCCESS;
 }
 
 ErrorCode SecService::submit_csr() {
     if (!initialized_) {
+        return ErrorCode::NOT_INITIALIZED;
+    }
+    // CR-011: 停机后拒绝新安全操作（fail-closed quiesce）
+    if (is_shutting_down()) {
         return ErrorCode::NOT_INITIALIZED;
     }
 
@@ -407,6 +364,10 @@ ErrorCode SecService::submit_csr() {
 
 ErrorCode SecService::inject_certificate(const std::vector<uint8_t>& cert_der) {
     if (!initialized_) {
+        return ErrorCode::NOT_INITIALIZED;
+    }
+    // CR-011: 停机后拒绝新安全操作（fail-closed quiesce）
+    if (is_shutting_down()) {
         return ErrorCode::NOT_INITIALIZED;
     }
 
@@ -452,12 +413,19 @@ ErrorCode SecService::inject_certificate(const std::vector<uint8_t>& cert_der) {
 
 ErrorCode SecService::apply_certificate() {
     if (!initialized_) {
-        std::cerr << "[SEC] apply_certificate: not initialized" << std::endl;
+        SecLogAdapter::certificate().error(
+            "sec.cert.apply.not_initialized", "apply_certificate 未初始化");
+        return ErrorCode::NOT_INITIALIZED;
+    }
+    // CR-011: 停机后拒绝新安全操作（fail-closed quiesce）
+    if (is_shutting_down()) {
         return ErrorCode::NOT_INITIALIZED;
     }
 
     ProvisionStatus status = get_provision_status();
-    std::cerr << "[SEC] apply_certificate: state=" << static_cast<int>(status.state) << std::endl;
+    SecLogAdapter::certificate().debug(
+        "sec.cert.apply.start", "开始申请证书",
+        {{"state", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(status.state))}});
 
     // 如果已经完成，直接返回
     if (status.state == ProvisionState::CERT_INSTALLED) {
@@ -477,7 +445,8 @@ ErrorCode SecService::apply_certificate() {
 
     // 如果有DIAG服务，通过DIAG服务执行整个流程
     if (diag_service_) {
-        std::cerr << "[SEC] apply_certificate: using diag_service" << std::endl;
+        SecLogAdapter::certificate().debug(
+            "sec.cert.apply.via_diag", "经 DIAG 服务执行证书申请");
         DiagResponse response;
         ErrorCode result = handle_diag_request(DiagRequestType::APPLY_CERTIFICATE, {}, response);
         if (result != ErrorCode::SUCCESS) {
@@ -489,10 +458,13 @@ ErrorCode SecService::apply_certificate() {
 
     // 步骤1：生成密钥对
     if (status.state == ProvisionState::NONE) {
-        std::cerr << "[SEC] apply_certificate: generating key pair" << std::endl;
+        SecLogAdapter::certificate().info(
+            "sec.cert.apply.generate_key", "申请证书：生成密钥对");
         ErrorCode result = generate_key_pair();
         if (result != ErrorCode::SUCCESS) {
-            std::cerr << "[SEC] apply_certificate: generate_key_pair failed: " << static_cast<int>(result) << std::endl;
+            SecLogAdapter::certificate().error(
+                "sec.cert.apply.generate_key_failed", "申请证书：生成密钥对失败",
+                {{"error_code", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(result))}});
             return result;
         }
         status.state = ProvisionState::KEY_GENERATED;
@@ -510,10 +482,13 @@ ErrorCode SecService::apply_certificate() {
 
     // 步骤3：提交CSR到云端
     if (status.state == ProvisionState::CSR_BUILT) {
-        std::cerr << "[SEC] apply_certificate: submitting CSR" << std::endl;
+        SecLogAdapter::certificate().info(
+            "sec.cert.apply.submit_csr", "申请证书：提交 CSR");
         ErrorCode result = submit_csr();
         if (result != ErrorCode::SUCCESS) {
-            std::cerr << "[SEC] apply_certificate: submit_csr failed: " << static_cast<int>(result) << std::endl;
+            SecLogAdapter::certificate().error(
+                "sec.cert.apply.submit_csr_failed", "申请证书：提交 CSR 失败",
+                {{"error_code", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(result))}});
             return result;
         }
         status.state = ProvisionState::CSR_SUBMITTED;
@@ -523,12 +498,17 @@ ErrorCode SecService::apply_certificate() {
     // 注意：在实际流程中，证书可能需要从云端异步获取
     // 这里暂时返回SUCCESS，表示CSR已提交成功
     // 证书注入需要通过inject_certificate()单独调用
-    std::cerr << "[SEC] apply_certificate: success" << std::endl;
+    SecLogAdapter::certificate().info(
+        "sec.cert.apply.success", "证书申请流程完成（CSR 已提交）");
     return ErrorCode::SUCCESS;
 }
 
 ErrorCode SecService::get_seed(uint8_t level, std::vector<uint8_t>& seed) {
     if (!initialized_) {
+        return ErrorCode::NOT_INITIALIZED;
+    }
+    // CR-011: 停机后拒绝新安全操作（fail-closed quiesce）
+    if (is_shutting_down()) {
         return ErrorCode::NOT_INITIALIZED;
     }
 
@@ -584,6 +564,10 @@ ErrorCode SecService::verify_key(uint8_t level, const std::vector<uint8_t>& key)
     if (!initialized_) {
         return ErrorCode::NOT_INITIALIZED;
     }
+    // CR-011: 停机后拒绝新安全操作（fail-closed quiesce）
+    if (is_shutting_down()) {
+        return ErrorCode::NOT_INITIALIZED;
+    }
 
     // UDS security level validation:
     // - sendKey uses even security levels (0x02, 0x04, 0x06, ..., 0x28, etc.)
@@ -601,7 +585,8 @@ ErrorCode SecService::verify_key(uint8_t level, const std::vector<uint8_t>& key)
 
     // Check if seed is valid
     if (!is_seed_valid()) {
-        std::cerr << "[SEC] verify_key: seed not valid" << std::endl;
+        SecLogAdapter::seed_key().warn(
+            "sec.seed_key.verify.seed_invalid", "verify_key 失败：seed 无效或已消费");
         return ErrorCode::KEY_VERIFICATION_FAILED;
     }
 
@@ -618,17 +603,13 @@ ErrorCode SecService::verify_key(uint8_t level, const std::vector<uint8_t>& key)
         return ErrorCode::KEY_VERIFICATION_FAILED;
     }
 
-    // Debug logging
-    std::cerr << "[SEC] verify_key debug:" << std::endl;
-    std::cerr << "  seed(" << current_seed_.seed.size() << "): ";
-    for (auto b : current_seed_.seed) std::cerr << std::hex << (int)b << " ";
-    std::cerr << std::endl;
-    std::cerr << "  expected(" << expected_key.size() << "): ";
-    for (auto b : expected_key) std::cerr << std::hex << (int)b << " ";
-    std::cerr << std::endl;
-    std::cerr << "  received(" << key.size() << "): ";
-    for (auto b : key) std::cerr << std::hex << (int)b << " ";
-    std::cerr << std::endl;
+    // CR §8: seed/key 为敏感材料，禁止输出明文。仅记录长度用于诊断。
+    SecLogAdapter::seed_key().debug(
+        "sec.seed_key.verify.debug",
+        "verify_key 校验",
+        {{"seed_len", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(current_seed_.seed.size()))},
+         {"expected_len", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(expected_key.size()))},
+         {"received_len", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(key.size()))}});
 
     // Compare keys (constant-time comparison to prevent timing attacks)
     bool key_valid = (key.size() == expected_key.size());
@@ -710,7 +691,9 @@ ErrorCode SecService::reset_provision_status() {
         try {
             store_->remove("provision_state");
         } catch (const hwyz::store::StoreException& e) {
-            std::cerr << "[SEC] Failed to reset provision state from store: " << e.what() << std::endl;
+            SecLogAdapter::provisioning().error(
+                "sec.provision.reset_store_failed", "重置 store 中 provision 状态失败",
+                {{"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
         }
     }
 
@@ -747,10 +730,12 @@ ErrorCode SecService::initialize_hsm() {
         if (config_.get_key_provisioning_mode() == KEY_PROVISIONING_MODE_SOFT_FILE) {
             if (config_.get_is_production()) {
                 // 量产环境禁止使用 soft_file 模式
-                std::cerr << "[SEC] Software key file mode is not allowed in production environment" << std::endl;
+                SecLogAdapter::service().error(
+                    "sec.hsm.soft_file_production_denied", "量产环境禁止使用 soft_file 密钥模式");
                 return ErrorCode::SOFT_KEY_MODE_NOT_ALLOWED;
             }
-            std::cout << "[SEC] Initializing in software file mode (test only)" << std::endl;
+            SecLogAdapter::service().warn(
+                "sec.hsm.soft_file_mode", "以 software file 模式初始化（仅测试）");
         }
 
         // 根据密钥生成模式选择 HSM 类型
@@ -809,12 +794,14 @@ ErrorCode SecService::load_provision_state_from_store() {
     }
     try {
         auto status = load_provision_status_from_store();
-        // 信息性日志：走 stdout（否则会被 console sink 标记为 error，造成"PROV 状态出错"的误解）
-        std::cout << "[SEC] Loaded provision state from store: "
-                  << provision_state_to_string(status.state) << std::endl;
+        SecLogAdapter::provisioning().info(
+            "sec.provision.state_loaded", "从 store 加载 provision 状态",
+            {{"state", tbox::fw::log::FieldValue::makeString(provision_state_to_string(status.state))}});
         return ErrorCode::SUCCESS;
     } catch (const std::exception& e) {
-        std::cerr << "[SEC] Failed to load provision state from store: " << e.what() << std::endl;
+        SecLogAdapter::provisioning().error(
+            "sec.provision.state_load_failed", "从 store 加载 provision 状态失败",
+            {{"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
         return ErrorCode::STORAGE_READ_FAILED;
     }
 }
@@ -825,8 +812,8 @@ ErrorCode SecService::ensure_vehicle_info() {
     }
 
     if (!prov_service_) {
-        std::cerr << "[SEC] Cannot fetch vehicle info: ProvService not available"
-                  << std::endl;
+        SecLogAdapter::provisioning().error(
+            "sec.prov.not_configured", "无法获取车辆信息：PROV 服务未配置");
         return ErrorCode::PROV_NOT_CONFIGURED;
     }
 
@@ -838,18 +825,21 @@ ErrorCode SecService::ensure_vehicle_info() {
         }
 
         if (info.vin.empty() || info.ecu_uid.empty()) {
-            std::cerr << "[SEC] VIN/ECU UID still not configured in PROV - "
-                      << "cannot proceed with provisioning operation"
-                      << std::endl;
+            SecLogAdapter::provisioning().warn(
+                "sec.prov.vehicle_info_not_ready", "PROV 中 VIN/ECU_UID 尚未配置，无法继续 provision 操作");
             return ErrorCode::PROV_NOT_CONFIGURED;
         }
 
         vin_ = info.vin;
         ecu_uid_ = info.ecu_uid;
-        std::cout << "[SEC] Lazily fetched vehicle info: vin=" << vin_
-                  << " ecu_uid=" << ecu_uid_ << std::endl;
+        SecLogAdapter::provisioning().info(
+            "sec.prov.vehicle_info_fetched", "已获取车辆信息",
+            {{"vin", tbox::fw::log::FieldValue::makeString(vin_)},
+             {"ecu_uid", tbox::fw::log::FieldValue::makeString(ecu_uid_)}});
     } catch (const std::exception& e) {
-        std::cerr << "[SEC] ensure_vehicle_info exception: " << e.what() << std::endl;
+        SecLogAdapter::provisioning().error(
+            "sec.prov.vehicle_info_exception", "获取车辆信息异常",
+            {{"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
         return ErrorCode::PROV_NOT_CONFIGURED;
     }
 
@@ -858,18 +848,24 @@ ErrorCode SecService::ensure_vehicle_info() {
 
 ErrorCode SecService::generate_and_store_key_pair() {
     KeyPair key_pair;
-    std::cout << "[SEC] Generating key pair with vin=" << vin_ << " ecu_uid=" << ecu_uid_ << std::endl;
+    SecLogAdapter::provisioning().info(
+        "sec.keypair.generate_start", "开始生成密钥对",
+        {{"ecu_uid", tbox::fw::log::FieldValue::makeString(ecu_uid_)}});
 
     auto err = key_engine_->generate_device_key(vin_, ecu_uid_, key_pair);
     if (err != ErrorCode::SUCCESS) {
         return err;
     }
 
-    // 记录存储模式
+    // 记录存储模式（key_id 输出不可逆摘要见 CR §6，此处为内部标识，与现有事件一致）
     if (key_pair.storage_mode == KeyStorageMode::SOFT_FILE) {
-        std::cout << "[SEC] Key generated in software file mode (test only): " << key_pair.key_id << std::endl;
+        SecLogAdapter::provisioning().info(
+            "sec.keypair.generated_soft", "密钥已生成（software file 模式，仅测试）",
+            {{"key_id", tbox::fw::log::FieldValue::makeString(key_pair.key_id)}});
     } else {
-        std::cout << "[SEC] Key generated in HSM mode: " << key_pair.key_id << std::endl;
+        SecLogAdapter::provisioning().info(
+            "sec.keypair.generated_hsm", "密钥已生成（HSM 模式）",
+            {{"key_id", tbox::fw::log::FieldValue::makeString(key_pair.key_id)}});
     }
 
     return ErrorCode::SUCCESS;
@@ -902,10 +898,14 @@ ErrorCode SecService::build_and_store_csr() {
     csr_config.key_id = ecu_uid_;     // key_id 使用 ecu_uid
     csr_config.algorithm = "ecdsa-p256";
 
-    std::cout << "[SEC] Building CSR with vin=" << vin_ << " hsm_uid=" << ecu_uid_ << std::endl;
+    SecLogAdapter::provisioning().info(
+        "sec.csr.build_start", "构建 CSR",
+        {{"ecu_uid", tbox::fw::log::FieldValue::makeString(ecu_uid_)}});
     ErrorCode result = csr_builder_->build_csr(vin_, csr_config, csr_der_);
-    std::cout << "[SEC] build_csr result=" << static_cast<int>(result)
-              << " csr_der_.size()=" << csr_der_.size() << std::endl;
+    SecLogAdapter::provisioning().debug(
+        "sec.csr.build_result", "CSR 构建结果",
+        {{"error_code", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(result))},
+         {"csr_size", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(csr_der_.size()))}});
     
     if (result == ErrorCode::SUCCESS) {
         SecLogAdapter::service().info(
@@ -958,7 +958,6 @@ ErrorCode SecService::validate_and_store_certificate(const std::vector<uint8_t>&
     // Store certificate to file system
     result = store_certificate_to_file(cert_der);
     if (result != ErrorCode::SUCCESS) {
-        std::cerr << "[SEC] Failed to store certificate" << std::endl;
         SecLogAdapter::certificate().error(
             "sec.certificate.install.failed",
             "证书安装失败",
@@ -970,7 +969,6 @@ ErrorCode SecService::validate_and_store_certificate(const std::vector<uint8_t>&
         return result;
     }
 
-    std::cout << "[SEC] Certificate validated and stored successfully" << std::endl;
     SecLogAdapter::certificate().info(
         "sec.certificate.install.succeeded",
         "证书校验并安装成功",
@@ -989,10 +987,14 @@ ErrorCode SecService::store_certificate_to_file(const std::vector<uint8_t>& cert
             std::string cert_key = "device_cert:" + vin_ + ":" + ecu_uid_;
             std::string encoded = base64_encode(cert_der);
             store_->save(cert_key, encoded);
-            std::cout << "[SEC] Certificate stored in store with key: " << cert_key << std::endl;
+            SecLogAdapter::certificate().info(
+                "sec.certificate.stored_in_store", "证书已存入 store",
+                {{"cert_key", tbox::fw::log::FieldValue::makeString(cert_key)}});
             return ErrorCode::SUCCESS;
         } catch (const std::exception& e) {
-            std::cerr << "[SEC] Failed to store certificate in store: " << e.what() << std::endl;
+            SecLogAdapter::certificate().error(
+                "sec.certificate.store_save_failed", "存入 store 失败，回退到文件存储",
+                {{"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
             // Fall through to file-based storage
         }
     }
@@ -1011,7 +1013,9 @@ ErrorCode SecService::store_certificate_to_file(const std::vector<uint8_t>& cert
     // Create directory if it doesn't exist
     std::string mkdir_cmd = "mkdir -p " + cert_dir;
     if (std::system(mkdir_cmd.c_str()) != 0) {
-        std::cerr << "[SEC] Failed to create cert directory: " << cert_dir << std::endl;
+        SecLogAdapter::certificate().error(
+            "sec.certificate.mkdir_failed", "创建证书目录失败",
+            {{"cert_dir", tbox::fw::log::FieldValue::makeString(cert_dir)}});
         return ErrorCode::STORAGE_WRITE_FAILED;
     }
 
@@ -1021,7 +1025,9 @@ ErrorCode SecService::store_certificate_to_file(const std::vector<uint8_t>& cert
     // Write certificate to file
     std::ofstream cert_file(cert_path, std::ios::binary);
     if (!cert_file.is_open()) {
-        std::cerr << "[SEC] Failed to open cert file for writing: " << cert_path << std::endl;
+        SecLogAdapter::certificate().error(
+            "sec.certificate.file_open_failed", "无法打开证书文件写入",
+            {{"cert_path", tbox::fw::log::FieldValue::makeString(cert_path)}});
         return ErrorCode::STORAGE_WRITE_FAILED;
     }
 
@@ -1029,11 +1035,15 @@ ErrorCode SecService::store_certificate_to_file(const std::vector<uint8_t>& cert
     cert_file.close();
 
     if (!cert_file.good()) {
-        std::cerr << "[SEC] Failed to write certificate to file: " << cert_path << std::endl;
+        SecLogAdapter::certificate().error(
+            "sec.certificate.file_write_failed", "证书文件写入失败",
+            {{"cert_path", tbox::fw::log::FieldValue::makeString(cert_path)}});
         return ErrorCode::STORAGE_WRITE_FAILED;
     }
 
-    std::cout << "[SEC] Certificate stored at: " << cert_path << std::endl;
+    SecLogAdapter::certificate().info(
+        "sec.certificate.stored_in_file", "证书已存入文件",
+        {{"cert_path", tbox::fw::log::FieldValue::makeString(cert_path)}});
     return ErrorCode::SUCCESS;
 }
 
@@ -1081,7 +1091,8 @@ void SecService::update_provision_state(ProvisionState state, const std::string&
         return;
     }
 
-    std::cerr << "[SEC] Failed to update state: no storage available" << std::endl;
+    SecLogAdapter::provisioning().error(
+        "sec.provision.update_state_no_storage", "更新 provision 状态失败：无可用存储");
 }
 
 void SecService::handle_error(ErrorCode error, const std::string& context) {
@@ -1118,7 +1129,9 @@ bool SecService::save_state() {
             save_provision_status_to_store(status);
             success = true;
         } catch (const std::exception& e) {
-            std::cerr << "[SEC] Failed to save state to store: " << e.what() << std::endl;
+            SecLogAdapter::provisioning().error(
+                "sec.provision.save_state_failed", "保存状态到 store 失败",
+                {{"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
         }
     }
 
@@ -1241,8 +1254,10 @@ std::string SecService::find_ca_cert_from_config() {
             if (tbox && tbox["storage"] && tbox["storage"]["ca_cert"]) {
                 std::string ca_cert_path = tbox["storage"]["ca_cert"].as<std::string>();
                 if (!ca_cert_path.empty()) {
-                    std::cout << "[SEC] Found CA cert path in config: " << config_path
-                              << " -> " << ca_cert_path << std::endl;
+                    SecLogAdapter::certificate().debug(
+                        "sec.ca.config_path_found", "从配置发现 CA 证书路径",
+                        {{"config_path", tbox::fw::log::FieldValue::makeString(config_path)},
+                         {"ca_cert_path", tbox::fw::log::FieldValue::makeString(ca_cert_path)}});
                     return ca_cert_path;
                 }
             }
@@ -1264,7 +1279,9 @@ void SecService::save_provision_status_to_store(const ProvisionStatus& status) {
         std::string json_str = status.to_json().dump();
         store_->save("provision_state", json_str);
     } catch (const std::exception& e) {
-        std::cerr << "[SEC] Failed to save provision status to store: " << e.what() << std::endl;
+        SecLogAdapter::provisioning().error(
+            "sec.provision.status_save_failed", "保存 provision 状态到 store 失败",
+            {{"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
     }
 }
 
@@ -1280,13 +1297,17 @@ ProvisionStatus SecService::load_provision_status_from_store() const {
         return ProvisionStatus::from_json(j);
     } catch (const hwyz::store::StoreException& e) {
         if (e.getError().code != hwyz::store::StoreError::kKeyNotFound) {
-            std::cerr << "[SEC] Failed to load provision status from store: " << e.what() << std::endl;
+            SecLogAdapter::provisioning().error(
+                "sec.provision.status_load_failed", "从 store 加载 provision 状态失败",
+                {{"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
         }
         ProvisionStatus status;
         status.state = ProvisionState::NONE;
         return status;
     } catch (const std::exception& e) {
-        std::cerr << "[SEC] Failed to parse provision status from store: " << e.what() << std::endl;
+        SecLogAdapter::provisioning().error(
+            "sec.provision.status_parse_failed", "解析 store 中 provision 状态失败",
+            {{"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
         ProvisionStatus status;
         status.state = ProvisionState::NONE;
         return status;
@@ -1413,7 +1434,8 @@ void SecService::initializeTlsCredentialProvider() {
         return;
     }
     if (!key_engine_ || !key_engine_->hsm()) {
-        std::cerr << "[SEC] TLS provider: HSM not available, skip" << std::endl;
+        SecLogAdapter::tls_credential().warn(
+            "sec.tls.provider.hsm_unavailable", "TLS provider：HSM 不可用，跳过");
         return;
     }
 
@@ -1422,9 +1444,10 @@ void SecService::initializeTlsCredentialProvider() {
     if (vin_.empty() || ecu_uid_.empty()) {
         ErrorCode vinfo = ensure_vehicle_info();
         if (vinfo != ErrorCode::SUCCESS) {
-            std::cerr << "[SEC] TLS provider: vehicle info unavailable ("
-                      << error_code_to_string(vinfo)
-                      << "), TLS material 将保持 NOT_READY 直至可解析 VIN/ECU_UID" << std::endl;
+            SecLogAdapter::tls_credential().warn(
+                "sec.tls.provider.vehicle_info_unavailable",
+                "TLS provider：车辆信息不可用，TLS 材料保持 NOT_READY 直至可解析 VIN/ECU_UID",
+                {{"error_code", tbox::fw::log::FieldValue::makeString(error_code_to_string(vinfo))}});
         }
     }
 
@@ -1443,16 +1466,20 @@ void SecService::initializeTlsCredentialProvider() {
             if (!store_->has(key)) return "";
             return store_->load<std::string>(key);
         } catch (const std::exception& e) {
-            std::cerr << "[SEC] TLS material '" << key << "' load failed: " << e.what() << std::endl;
+            SecLogAdapter::tls_credential().error(
+                "sec.tls.material_load_failed", "TLS 材料加载失败",
+                {{"key", tbox::fw::log::FieldValue::makeString(key)},
+                 {"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
             return "";
         }
     };
 
-    // 事件通知回调：经 framework-ipc Server 推送 sec.tls_credential.changed
-    // Server 在 start_ipc_server 时才创建，此处先捕获 this，推送时判空
+    // 事件通知回调：经 SecApplication 注入的 event_publisher_ 推送 sec.tls_credential.changed
+    // （CR-011：IPC Server 所有权上移到 SecApplication，此处不再直接持有 fw_ipc_server_）。
+    // event_publisher_ 在 SecService::initialize 之后由 SecApplication 设置；未设置时事件静默丢弃。
     TlsCredentialNotifyCallback notify = [this](const std::string& profile,
                                                 const TlsCredentialChangedEvent& ev) {
-        if (!fw_ipc_server_) {
+        if (!event_publisher_) {
             return;
         }
         nlohmann::json payload;
@@ -1461,10 +1488,10 @@ void SecService::initializeTlsCredentialProvider() {
         payload["version"] = ev.version;
         payload["status"] = tls_credential_status_to_string(ev.status);
         payload["reason_code"] = ev.reason_code;
-        fw_ipc_server_->push_event(
+        event_publisher_(
             static_cast<uint32_t>(ipc::EventId::TLS_CREDENTIAL_CHANGED),
             payload.dump());
-        SecLogAdapter::certificate().info(
+        SecLogAdapter::tls_credential().info(
             "sec.tls_credential.changed",
             "推送凭据变更事件",
             {tbox::fw::log::Field("profile", tbox::fw::log::FieldValue::makeString(profile)),
@@ -1497,8 +1524,10 @@ void SecService::initializeTlsCredentialProvider() {
         // 尝试加载材料；失败不阻断 SEC 启动（状态保持 NOT_READY，MQTT 查询时返回 SEC-1010）
         ErrorCode rc = tls_provider_->loadMaterials(name);
         if (rc != ErrorCode::SUCCESS) {
-            std::cerr << "[SEC] TLS profile '" << name
-                      << "' materials not ready: " << error_code_to_string(rc) << std::endl;
+            SecLogAdapter::tls_credential().warn(
+                "sec.tls.profile_not_ready", "TLS profile 材料未就绪",
+                {{"profile", tbox::fw::log::FieldValue::makeString(name)},
+                 {"error_code", tbox::fw::log::FieldValue::makeString(error_code_to_string(rc))}});
         }
     }
 }
@@ -1526,10 +1555,6 @@ ErrorCode SecService::ensure_tls_material_ready(const std::string& profile) {
         return ErrorCode::TLS_CREDENTIAL_NOT_READY;
     }
     return tls_provider_->loadMaterials(profile);
-}
-
-void SecService::set_peer_credential_resolver(std::shared_ptr<PeerCredentialResolver> resolver) {
-    peer_resolver_ = std::move(resolver);
 }
 
 } // namespace sec

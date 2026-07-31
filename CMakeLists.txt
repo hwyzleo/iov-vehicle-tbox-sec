@@ -106,11 +106,24 @@ list(APPEND LIB_SOURCES
     src/sec_retry_policy.cpp
     src/tls_credential_provider.cpp
     src/peer_credential.cpp
+    src/ipc_prov_service.cpp
+    src/sec_application.cpp
 )
 
 add_library(TboxSecLib STATIC ${LIB_SOURCES})
-target_include_directories(TboxSecLib PUBLIC ${PROJECT_SOURCE_DIR}/include ${FRAMEWORK_INCLUDE_DIR})
-target_link_libraries(TboxSecLib PUBLIC OpenSSL::SSL OpenSSL::Crypto ${FRAMEWORK_LIB} nlohmann_json::nlohmann_json CURL::libcurl)
+target_include_directories(TboxSecLib PUBLIC
+    ${PROJECT_SOURCE_DIR}/include
+    ${FRAMEWORK_INCLUDE_DIR}
+    ${PROV_INCLUDE_DIR}
+)
+target_link_libraries(TboxSecLib PUBLIC
+    OpenSSL::SSL OpenSSL::Crypto
+    ${FRAMEWORK_LIB}
+    nlohmann_json::nlohmann_json
+    CURL::libcurl
+    ${PROV_CLIENT_LIB}
+    ${PROV_DAEMON_LIB}
+)
 
 # ============================================================
 # Client SDK library (tbox_sec_client / tbox::sec_client)
@@ -173,9 +186,15 @@ install(FILES
 # ============================================================
 # Main executable
 # ============================================================
-add_executable(tbox_sec src/main.cpp src/ipc_prov_service.cpp)
-target_include_directories(tbox_sec PRIVATE ${PROV_INCLUDE_DIR})
-target_link_libraries(tbox_sec PRIVATE TboxSecLib ${FRAMEWORK_LIB} ${PROV_CLIENT_LIB} ${PROV_DAEMON_LIB})
+# CR-011 §9.1: 迁移期构建期二选一；同一二进制只能含一套入口/信号/Logger/IPC/HSM 生命周期。
+# 验收后删除 OFF 路径与开关（CR-011 阶段 3）。
+option(SEC_USE_FRAMEWORK_APPLICATION "Use hwyz::Application lifecycle" ON)
+if(SEC_USE_FRAMEWORK_APPLICATION)
+    add_executable(tbox_sec src/main.cpp)
+else()
+    add_executable(tbox_sec src/main_legacy.cpp)
+endif()
+target_link_libraries(tbox_sec PRIVATE TboxSecLib)
 
 # ============================================================
 # Tests
@@ -209,6 +228,7 @@ set(TEST_SOURCES
     tests/test_tls_credential_provider.cpp
     tests/test_tls_ipc_handlers.cpp
     tests/test_tls_integration.cpp
+    tests/test_sec_application.cpp
 )
 add_executable(TboxSecTests ${TEST_SOURCES})
 target_link_libraries(TboxSecTests PRIVATE TboxSecLib tbox_sec_client ${FRAMEWORK_LIB} GTest::GTest GTest::gmock GTest::Main)

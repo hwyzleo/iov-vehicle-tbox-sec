@@ -6,6 +6,8 @@
 #include <chrono>
 #include <map>
 #include <vector>
+#include <atomic>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include "key_engine.h"
 #include "csr_builder.h"
@@ -21,13 +23,9 @@
 namespace tbox {
 namespace sec {
 
-class SecIpcDispatcher;
 class TlsCredentialProvider;
-class PeerCredentialResolver;
 
 } // namespace sec
-
-namespace fw { namespace ipc { class Server; } }
 } // namespace tbox
 
 namespace tbox {
@@ -217,8 +215,10 @@ public:
 
     virtual ErrorCode initialize();
 
-    virtual bool start_ipc_server();
-    virtual void stop_ipc_server();
+    // TBOX-SEC-DSN-CR-011: 停机 quiesce。beginShutdown 后拒绝新安全操作（fail-closed），
+    // 供 SecApplication::cleanup 首步调用。
+    virtual void beginShutdown();
+    bool is_shutting_down() const noexcept;
 
     virtual ErrorCode generate_key_pair();
 
@@ -251,9 +251,14 @@ public:
     void set_diag_service(std::shared_ptr<DiagServiceInterface> diag_service);
     void set_prov_service(std::shared_ptr<ProvServiceInterface> prov_service);
 
-    // TLS Credential Provider 访问（供测试/注入）
+    // TLS Credential Provider 访问（供 SecApplication 装配 dispatcher 注入）
     TlsCredentialProvider* tls_credential_provider();
-    void set_peer_credential_resolver(std::shared_ptr<PeerCredentialResolver> resolver);
+
+    // TBOX-SEC-DSN-CR-011: 注入事件发布回调（由 SecApplication 接线到 framework-ipc
+    // Server::push_event），解耦 TLS 凭据变更通知与 IPC Server 所有权。
+    // 在 SecService::initialize 之后、IPC Server 启动之前设置；未设置时变更事件静默丢弃。
+    void setEventPublisher(std::function<void(uint32_t event_type,
+                                              const std::string& payload_json)> cb);
 
     /// 按需确保指定 profile 的 TLS 材料就绪：解析 VIN/ECU_UID（best-effort）后重载材料。
     /// 供 IPC 分发器在收到 getTlsCredential 且状态非 READY 时自愈调用，
@@ -272,14 +277,13 @@ public:
 private:
     SecServiceConfig config_;
     bool initialized_;
+    std::atomic<bool> shutting_down_{false};  // CR-011: beginShutdown 后拒绝新安全操作
     std::shared_ptr<DiagServiceInterface> diag_service_;
     std::shared_ptr<ProvServiceInterface> prov_service_;
     std::optional<hwyz::store::Store> store_;
-    std::unique_ptr<::tbox::fw::ipc::Server> fw_ipc_server_;
-    std::unique_ptr<SecIpcDispatcher> ipc_dispatcher_;
     std::unique_ptr<TlsCredentialProvider> tls_provider_;
-    std::shared_ptr<PeerCredentialResolver> peer_resolver_;
-    std::string ipc_socket_path_ = "/tmp/tbox-sec.sock";
+    // CR-011: TLS 凭据变更事件发布回调（由 SecApplication 注入 ipc::Server::push_event）
+    std::function<void(uint32_t, const std::string&)> event_publisher_;
 
     std::string vin_;
     std::string ecu_uid_;
