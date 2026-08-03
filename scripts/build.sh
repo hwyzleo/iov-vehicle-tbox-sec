@@ -233,6 +233,7 @@ configure_project() {
         -DCMAKE_TOOLCHAIN_FILE="${BUILD_DIR}/conan_toolchain.cmake" \
         -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
         -DTBoxFramework_DIR="${TBoxFramework_DIR}" \
+        -DTboxProvClient_DIR="${TBOX_PREFIX}/lib/cmake/TboxProvClient" \
         -DBUILD_TESTS=$([ "$RUN_TESTS" = true ] && echo "ON" || echo "OFF")
 
     if [ $? -ne 0 ]; then

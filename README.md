@@ -25,60 +25,62 @@ This service handles the complete security identity initialization flow for TBOX
 ### Prerequisites
 
 - C++17 compiler
-- CMake 3.10+
+- CMake 3.16+
 - OpenSSL 1.1+
-- yaml-cpp
+- yaml-cpp 0.8.0（Conan 锁定，HOST 开发）
 - libcurl
 - nlohmann-json
 - Google Test (for tests)
+- Conan 2.x（HOST 开发依赖管理）
+- framework / PROV 已安装 SDK（`find_package(TboxFramework)` / `find_package(TboxProvClient)`）
 
-### Quick Start (macOS)
+### HOST 开发构建（本仓库入口）
 
 ```bash
-# Setup development environment
-./scripts/setup-dev.sh
-
-# Build and test
-./scripts/build-local.sh default --test
+# 前置：framework 与 PROV 已按 FW CR-010 / PROV CR-009 安装 SDK package
+#   （默认前缀 ~/.local，由 iov-vehicle-tbox-framework/scripts/tbox-env.sh 提供 TBOX_PREFIX）
+./scripts/setup-dev.sh      # 安装 HOST 依赖（Homebrew + Conan）
+./scripts/build.sh          # conan install + configure + build + ctest
 ```
 
-### Build Commands
+### Orin 交叉构建（正式入口归属 TBOX-BUILD）
 
 ```bash
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
-ctest  # Run tests
+# 正式 Orin aarch64 构建由 TBOX-BUILD 仓库统一编排（容器/toolchain/sysroot/staging）：
+cd ../iov-vehicle-tbox-build
+./ci/build-in-docker.sh     # 或 python3 -m tbox_build build --platform orin --profile release --set tbox-sec-orin
 ```
 
-### Cross Compilation (for TBOX ARM Linux)
+TBOX-SEC-DSN-CR-012：本仓库不维护独立交叉编译脚本/toolchain/sysroot/容器入口。
+构建产物按 install component 路由：`sec-sdk`（staging: sdk）与 `sec-runtime`（staging: rootfs）。
+
+### 静态制品验证（HOST 回归）
 
 ```bash
-# Option 1: Using Docker (recommended)
-docker build -f Dockerfile.cross -t tbox-sec-builder .
-docker run --rm -v $(pwd)/output:/output tbox-sec-builder
+cmake --install build --prefix /usr --component sec-sdk --destdir "$PWD/build/stage/sdk"
+cmake --install build --prefix /usr --component sec-runtime --destdir "$PWD/build/stage/rootfs"
+./scripts/verify-artifacts.sh
+```
 
-# Option 2: Using toolchain
-mkdir build-aarch64 && cd build-aarch64
-cmake .. -DCMAKE_TOOLCHAIN_FILE=../toolchain-aarch64-linux-gnu.cmake
-make -j$(nproc)
+### Installed-package Consumer（验证已安装 SDK 可被外部消费）
+
+```bash
+cmake -S tests/consumer -B build-consumer --toolchain "$PWD/build/conan_toolchain.cmake" \
+  -DTboxSecClient_DIR="$PWD/build/stage/sdk/usr/lib/cmake/TboxSecClient" \
+  -DTBoxFramework_DIR="$HOME/.local/lib/cmake/TboxFramework"
+cmake --build build-consumer && ./build-consumer/sec_consumer
 ```
 
 ## Deployment
 
-See `docs/deployment.md` for detailed deployment instructions.
-
-### Quick Deploy
+Orin 部署/回退由 TBOX-BUILD 统一编排（`tbox-sec-orin` release-set：framework + PROV + SEC）。
+服务侧交付物：`tbox-sec.service`、`/etc/tbox/conf.d/sec.yaml`（非秘密默认模板）、`tests/smoke/sec-health.sh`、`tests/smoke/sec-security.sh`。
 
 ```bash
-# Deploy to TBOX
-./scripts/deploy.sh 192.168.1.100 root
-
-# Start service
-ssh root@192.168.1.100 "systemctl start tbox-sec"
-
-# Check status
-ssh root@192.168.1.100 "systemctl status tbox-sec"
+# 受控 Orin 冒烟（由 BUILD/受控环境执行）
+systemctl start tbox-sec.service
+/usr/lib/tbox/tests/smoke/sec-health.sh
+/usr/lib/tbox/tests/smoke/sec-security.sh
 ```
 
 ## Configuration
@@ -163,6 +165,35 @@ See `docs/api.md` for complete API documentation.
 ```
 
 ## 变更记录
+
+### TBOX-SEC-DSN-CR-012 (2026-08-03)
+- 接入 TBOX-BUILD 统一 Orin 构建：framework/PROV 改经已安装 package 消费
+  （`find_package(TboxFramework/TboxProvClient)` + 组件/`tbox::prov_client` targets），
+  移除 PROV build-tree 绝对路径依赖
+- 双 install components：`sec-sdk`（sdk staging）与 `sec-runtime`（rootfs staging），
+  补齐 daemon/systemd unit/非秘密默认配置（`config/sec.default.yaml`）安装与
+  `TboxSecClientConfigVersion.cmake`
+- 新增 `tests/smoke/sec-health.sh`、`tests/smoke/sec-security.sh`、`tests/consumer/`、
+  `scripts/verify-artifacts.sh` 验证入口
+- 删除旧交叉编译资产（toolchain-aarch64-linux-gnu.cmake / Dockerfile.cross /
+  scripts/deploy.sh / profiles/aarch64-linux-gnu）；正式 Orin 入口归属 tbox-build
+- BUILD 仓库登记 `sec` service metadata 与 `tbox-sec-orin` release-set（framework+PROV+SEC）
+
+### TBOX-SEC-DSN-CR-011 (2026-07-31)
+- 将手写 main 重构为 hwyz::Application 派生类（SecApplication：initialize/execute/cleanup）
+- SIGPIPE 忽略、framework-log 单一初始化、IPC/HSM 安全停机、敏感内存清零
+
+### TBOX-SEC-DSN-CR-010 (2026-07-28)
+- MQTT TLS Credential Provider（root CA/证书链/opaque private_key_ref/远程签名）
+
+### TBOX-SEC-DSN-CR-009 (2026-07-27)
+- 自有 Unix socket 传输替换为 framework-ipc，按 method 重试策略、独立订阅连接
+
+### TBOX-SEC-DSN-CR-008 (2026-07-26)
+- framework-log 初始化、模块划分、事件清单、上下文传播、错误码边界、敏感字段策略
+
+### TBOX-SEC-DSN-CR-007 (2026-07-24)
+- 分层统一设备身份：device_id/device_sn 通用、hsm_uid/ecu_uid 为 HSM 身份
 
 ### TBOX-SEC-DSN-CR-006 (2026-07-03)
 - 配置读取迁移到framework-config（`Config::load("sec")`）

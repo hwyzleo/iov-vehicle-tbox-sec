@@ -1,0 +1,52 @@
+# TBOX SEC Service Configuration (production default)
+#
+# Installed to /etc/tbox/conf.d/sec.yaml by the sec-runtime install component
+# (framework-config 分层：/etc/tbox/common.yaml 公共层 + 本文件服务层 +
+#  工作目录 ./config/sec.yaml 或 CONFIG_FILE 设备本地覆盖，优先级最高)。
+#
+# Test-only values (soft_file 密钥模式 / dev_peer_service / 测试证书端点)
+# NOT included in this template. 测试构建使用仓库 config/sec.yaml（含测试默认值）。
+# 本模板只包含非秘密 schema/default；量产 HSM/SE 的 PIN/Token/密钥/设备本地
+# 安全材料不得由 install 创建或覆盖（TBOX-SEC-DSN-CR-012 §9/§12）。
+
+# 公共配置覆盖（/etc/tbox/common.yaml 的默认值可在此覆盖）
+common:
+  store:
+    root: "/var/tbox"
+  log:
+    level: "info"
+    file:
+      enabled: true
+      root: "/var/log/tbox"
+
+# SEC 服务专属配置
+sec:
+  ipc:
+    socket_path: "/tmp/tbox-sec.sock"
+  # 生产模板不含 sec.tls.dev_peer_service（仅非生产环境允许固定放行 TLS ACL）
+
+# HSM/SE 生产边界：key_provisioning.mode 必须为 hsm。
+# soft_file 密钥模式在量产环境被代码 fail-closed 拒绝（SEC_SOFT_KEY_MODE_NOT_ALLOWED）。
+# hsm.type/library_path 由部署注入（PKCS#11/厂商 SDK 的非秘密来源/版本/许可
+# 信息登记于 BUILD dependency lock，不在普通日志暴露内部地址或凭据）。
+hsm:
+  type: "pkcs11"
+  library_path: ""
+
+key_provisioning:
+  mode: "hsm"
+
+# 云证书注入端点：由部署注入（非秘密 URL）；留空时 submit_csr 不可用但启动不失败
+cloud:
+  endpoint: ""
+  timeout_ms: 5000
+  retry_count: 3
+  retry_delay_ms: 1000
+
+storage:
+  state_file: ""
+  ca_cert: ""
+  cert_store: ""
+
+environment:
+  is_production: true

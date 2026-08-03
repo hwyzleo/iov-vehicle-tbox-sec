@@ -1,126 +1,85 @@
-# TBOX Security Service 快速部署参考卡
+# TBOX Security Service 快速参考卡（TBOX-SEC-DSN-CR-012）
 
-## 一键部署命令
+## 构建
 
 ```bash
-# 1. 编译（选择一种方式）
+# HOST 开发构建（本仓库）
+./scripts/build.sh
 
-# 方式A: 本地编译（开发测试）
-./scripts/build-local.sh
-
-# 方式B: Docker交叉编译（部署到TBOX）
-docker build -f Dockerfile.cross -t tbox-sec .
-docker run --rm -v $(pwd)/output:/dest tbox-sec
-
-# 方式C: 直接交叉编译
-mkdir build-aarch64 && cd build-aarch64
-cmake .. -DCMAKE_TOOLCHAIN_FILE=../toolchain-aarch64-linux-gnu.cmake
-make -j$(nproc)
-
-# 2. 部署到TBOX
-./scripts/deploy.sh <TBOX_IP> root
-
-# 3. 配置TBOX
-ssh root@<TBOX_IP> "vi /etc/tbox/common.yaml"
-ssh root@<TBOX_IP> "vi /etc/tbox/conf.d/sec.yaml"
-
-# 4. 启动服务
-ssh root@<TBOX_IP> "systemctl start tbox-sec"
-
-# 5. 验证
-ssh root@<TBOX_IP> "systemctl status tbox-sec"
-ssh root@<TBOX_IP> "journalctl -u tbox-sec -f"
+# Orin 正式构建（TBOX-BUILD 统一编排，tbox-sec-orin release-set）
+cd ../iov-vehicle-tbox-build
+./ci/build-in-docker.sh
 ```
 
-## 目录结构（TBOX上）
+## 本地双 staging 与静态验证
+
+```bash
+cmake --install build --prefix /usr --component sec-sdk --destdir "$PWD/build/stage/sdk"
+cmake --install build --prefix /usr --component sec-runtime --destdir "$PWD/build/stage/rootfs"
+./scripts/verify-artifacts.sh
+```
+
+## Installed-package Consumer
+
+```bash
+cmake -S tests/consumer -B build-consumer --toolchain "$PWD/build/conan_toolchain.cmake" \
+  -DTboxSecClient_DIR="$PWD/build/stage/sdk/usr/lib/cmake/TboxSecClient" \
+  -DTBoxFramework_DIR="$HOME/.local/lib/cmake/TboxFramework"
+cmake --build build-consumer && ./build-consumer/sec_consumer
+```
+
+## 受控 Orin 冒烟
+
+```bash
+systemctl start tbox-sec.service
+/usr/lib/tbox/tests/smoke/sec-health.sh      # binary / service / socket
+/usr/lib/tbox/tests/smoke/sec-security.sh    # fail-closed 配置 / socket 生命周期 / 敏感扫描
+```
+
+## 目录结构（目标设备）
 
 ```
 /etc/tbox/
-├── common.yaml             # 公共配置（cloud, environment）
+├── common.yaml             # 公共配置（framework-config 公共层）
 └── conf.d/
-    └── sec.yaml            # SEC服务配置
+    └── sec.yaml            # SEC 服务层（非秘密默认模板，源自 config/sec.default.yaml）
 
-/var/lib/tbox/sec/
-├── provision_state.json    # ProvisionState
-├── device_cert.der         # 设备证书
-├── ca_cert.der             # CA证书
-└── keys/                   # 密钥存储（SOFT_FILE模式）
-    ├── metadata_<key_id>.json
-    └── encrypted_<key_id>.bin
-
-/var/log/tbox/
-└── sec_service.log         # 日志文件
+/var/tbox/sec/              # framework-store 非秘密状态（persistent_paths 登记）
+/var/log/tbox/              # framework-log 日志
 ```
 
-## 配置文件模板
+## 配置要点（生产 fail-closed）
 
-### 公共配置（common.yaml）
 ```yaml
-cloud:
-  endpoint: "https://实际地址:10805"
-  timeout_ms: 30000
-  retry_count: 3
-  retry_delay_ms: 1000
-environment:
-  is_production: false
-```
-
-### SEC服务配置（conf.d/sec.yaml）
-```yaml
-hsm:
-  type: "soft_file"           # 生产环境用hardware
-  library_path: "/usr/lib/softhsm2/libsofthsm2.so"
+# /etc/tbox/conf.d/sec.yaml（生产模板默认）
 key_provisioning:
-  mode: "soft_file"           # 生产环境用hsm
-soft_key:
-  path: "/var/lib/tbox/sec/keys"
-  encryption_algo: "aes-256-gcm"
-  encryption_key_path: "/var/lib/tbox/sec/soft_key_enc.key"
-storage:
-  state_file: "/var/lib/tbox/sec/provision_state.json"
-  ca_cert: "/var/lib/tbox/sec/ca_cert.der"
-  cert_store: "/var/lib/tbox/sec/"
+  mode: "hsm"               # 量产禁止 soft_file
+environment:
+  is_production: true
+# hsm.type / library_path / cloud.endpoint 由部署注入（非秘密）
 ```
 
-## 诊断仪测试命令
+## 常见问题
+
+| 问题 | 原因 | 解决 |
+|---|---|---|
+| 启动即退出 | PROV 未就绪 | 先启动 tbox-prov.service（after 已登记） |
+| `sec.config.hsm_type_required` | hsm.type 未配置 | 注入 pkcs11/trustzone 与 library_path |
+| `sec.hsm.soft_file_production_denied` | 量产 soft_file | 改 key_provisioning.mode: hsm |
+| 日志 | - | `journalctl -u tbox-sec -f` |
+
+## 服务侧文件清单
 
 ```
-# 读取Provision状态
-22 F1 00
-
-# 安全访问
-29 29           # 请求种子
-29 2A <密钥>    # 发送密钥
-
-# 生成密钥对
-31 01 FF 00
-
-# 读取CSR
-22 F1 01
-
-# 写入证书
-2E F1 02 <证书数据>
+CMakeLists.txt                      # find_package(TboxFramework/TboxProvClient) + 双 components
+cmake/TboxSecClientConfig.cmake.in  # 可重定位 package config（+ Version）
+packaging/systemd/tbox-sec.service  # systemd unit（sec-runtime 安装）
+config/sec.default.yaml             # 非秘密生产默认模板（安装为 sec.yaml）
+config/sec.yaml                     # 开发/测试配置（不安装）
+tests/smoke/sec-health.sh           # health 入口（BUILD metadata 引用）
+tests/smoke/sec-security.sh         # security smoke 入口
+tests/consumer/                     # installed-package consumer
+scripts/verify-artifacts.sh         # HOST 静态制品验证
 ```
 
-## 常见问题速查
-
-| 问题 | 命令 |
-|------|------|
-| 查看日志 | `journalctl -u tbox-sec -f` |
-| 重启服务 | `systemctl restart tbox-sec` |
-| 检查依赖 | `ldd /opt/tbox-sec/TboxSecService` |
-| 手动运行 | `/opt/tbox-sec/TboxSecService /etc/tbox/common.yaml` |
-| 检查端口 | `netstat -tlnp \| grep TboxSecService` |
-
-## 文件清单
-
-```
-scripts/
-├── deploy.sh           # 自动部署脚本
-├── build-local.sh      # 本地编译脚本
-└── setup-dev.sh        # 开发环境配置
-
-toolchain-aarch64-linux-gnu.cmake  # 交叉编译工具链
-Dockerfile.cross                    # Docker交叉编译
-docs/deployment.md                  # 完整部署文档
-```
+详细文档见 `docs/deployment.md`；Orin 部署/回退编排见 TBOX-BUILD 仓库。

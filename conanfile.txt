@@ -2,6 +2,7 @@
 openssl/1.1.1w
 gtest/1.14.0
 nlohmann_json/3.11.3
+yaml-cpp/0.8.0
 
 [generators]
 CMakeToolchain
@@ -10,3 +11,4 @@ CMakeDeps
 [options]
 openssl/*:shared=True
 gtest/*:shared=False
+yaml-cpp/*:shared=False
