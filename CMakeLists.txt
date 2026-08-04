@@ -97,10 +97,12 @@ target_link_libraries(TboxSecLib
         TBoxFramework::application
         tbox::prov_client
         nlohmann_json::nlohmann_json
-        OpenSSL::SSL
-        OpenSSL::Crypto
+        # 链接顺序：静态 libcurl.a 引用的 OpenSSL/ZLIB 符号须在 curl 之后出现
+        # （否则 ld 单遍扫描无法回溯解析，undefined reference SSL_CTX_*）。
         CURL::libcurl
         ZLIB::ZLIB
+        OpenSSL::SSL
+        OpenSSL::Crypto
 )
 
 # ===========================================================================
