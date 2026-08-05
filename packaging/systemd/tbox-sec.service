@@ -1,6 +1,5 @@
 [Unit]
 Description=TBOX Security Service
-Documentation=https://app.notion.com/TBOX-SEC-SPEC
 After=network.target
 Wants=network.target
 
@@ -15,7 +14,9 @@ UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-PrivateTmp=true
+# 不启用 PrivateTmp：SEC 作为 client 连接 PROV 的 /tmp/tbox-prov.sock，并创建
+# 自身 /tmp/tbox-sec.sock 供 MQTT 等连接。PrivateTmp 会隔离 /tmp，使 SEC 看不到
+# PROV socket，prov_client 初始化失败 → initialize() 返回 false → 退出码 255。
 ReadWritePaths=/var/tbox /var/log/tbox /tmp
 
 # Resource limits

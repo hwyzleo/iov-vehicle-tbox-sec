@@ -29,8 +29,13 @@ sec:
 # soft_file 密钥模式在量产环境被代码 fail-closed 拒绝（SEC_SOFT_KEY_MODE_NOT_ALLOWED）。
 # hsm.type/library_path 由部署注入（PKCS#11/厂商 SDK 的非秘密来源/版本/许可
 # 信息登记于 BUILD dependency lock，不在普通日志暴露内部地址或凭据）。
+#
+# Orin 部署注入（TBOX-SEC / 无 HSM 车机）：Orin 小车无真实 HSM/SE，SEC 安全
+# 部分使用 software（SoftwareHsm）mock 后端。key_provisioning.mode 仍为 hsm，
+# 仅将 hsm.type 由 pkcs11 改为 software（mock）。当接入真实 HSM 的设备时，
+# 恢复 type: "pkcs11" 并注入 library_path，同时置 environment.is_production: true。
 hsm:
-  type: "pkcs11"
+  type: "software"
   library_path: ""
 
 key_provisioning:
@@ -48,5 +53,7 @@ storage:
   ca_cert: ""
   cert_store: ""
 
+# Orin 车机使用 software（mock）HSM，非真实安全设备，故 is_production=false；
+# 接入真实 HSM 时改回 true（并将 hsm.type 恢复为 pkcs11）。
 environment:
-  is_production: true
+  is_production: false
