@@ -50,7 +50,9 @@ find_package(nlohmann_json REQUIRED)
 
 # --- yaml-cpp（sec_config_checker 直接使用；framework-config 亦依赖） ---
 # TBOX-SEC-DSN-CR-013: 无副作用配置校验器仅依赖 yaml-cpp 解析，不链 TboxSecLib
-find_package(yaml-cpp REQUIRED)
+# CONFIG 模式：yaml-cpp package 导出命名空间 target yaml-cpp::yaml-cpp
+# （BUILD TBOX_DEP_STAGING 注入 CMAKE_PREFIX_PATH；framework 亦用 CONFIG 消费）
+find_package(yaml-cpp CONFIG REQUIRED)
 
 # --- CURL（SEC 直接 TARGET 依赖：cloud_client 证书注入/CSR 提交） ---
 # 静态链接(lock.yaml linkage: static)：curl 的 CURLConfig.cmake 会经 CURL::libcurl
@@ -159,7 +161,7 @@ target_link_libraries(tbox_sec PRIVATE TboxSecLib)
 # 独立可执行，仅链 yaml-cpp，不引入 OpenSSL/CURL/HSM 代码路径，
 # 从架构上保证纯校验语义（不联网/不写密码学/不开 HSM/IPC/store）。
 add_executable(sec_config_checker src/sec_config_checker.cpp)
-target_link_libraries(sec_config_checker PRIVATE yaml-cpp)
+target_link_libraries(sec_config_checker PRIVATE yaml-cpp::yaml-cpp)
 
 # ===========================================================================
 # Install rules - 两个显式 component (CR-012 §9 / BD7)
