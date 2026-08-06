@@ -92,7 +92,7 @@ protected:
         std::filesystem::create_directories(test_dir_);
         store_dir_ = test_dir_ + "/store";
         socket_path_ = test_dir_ + "/test.sock";
-        // 切换到测试目录加载配置，避免项目根 ./config/sec.yaml 的项目层覆盖
+        // 切换到测试目录加载配置，避免项目根 config/dev/sec.yaml 的项目层覆盖
         // （PathResolver 会无条件加载 ./config/<svc>.yaml，见框架 path_resolver）
         orig_cwd_ = std::filesystem::current_path();
         std::filesystem::current_path(test_dir_);

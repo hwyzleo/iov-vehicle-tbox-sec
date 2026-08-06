@@ -1,0 +1,191 @@
+# =============================================================================
+# TBOX-SEC-DSN-CR-013 §9 / SEC-CONFIG-REQ-008
+# SEC 配置 schema（声明式文档 + sec_config_checker 校验依据）
+# =============================================================================
+# 本文件为 SEC 服务配置 (/etc/tbox/conf.d/sec.yaml) 的声明式 schema：
+#   - 字段名称、类型、必填性、允许值、默认值
+#   - production / test profile 规则
+#   - 未知字段策略、路径净化规则、禁止字段清单
+#
+# sec_config_checker 实现等价的机器校验（硬编码规则，无副作用）。
+# BUILD metadata 引用本文件作为 schema 来源（SEC-CONFIG-REQ-007）。
+#
+# framework-config 三层加载（优先级从低到高）：
+#   /etc/tbox/common.yaml  ->  /etc/tbox/conf.d/sec.yaml  ->  ./sec.yaml
+# 本 schema 校验的是单一目标文件（target_path），不校验 common.yaml。
+# =============================================================================
+
+# 根节点：仅允许以下顶层键
+#   sec, hsm, key_provisioning, cloud, storage, soft_key, environment
+# production profile 额外禁止顶层 common:（正式 common 由 BUILD 唯一提供）
+
+# -----------------------------------------------------------------------------
+# sec: SEC 服务专属配置
+# -----------------------------------------------------------------------------
+sec:
+  ipc:
+    socket_path:
+      type: string
+      required: false
+      default: "/tmp/tbox-sec.sock"
+      description: "IPC Unix socket 路径"
+  tls:
+    dev_peer_service:
+      type: string
+      required: false
+      default: ""
+      profile_restriction:
+        production: forbidden   # 仅 test profile 允许
+        test: allowed
+      description: "开发/测试专用 TLS ACL 固定放行服务名"
+    profiles:
+      type: map
+      required: false
+      description: "TLS 凭据 profile 集合（CR-010）；只保存非秘密引用"
+      item_schema:
+        credential_id: { type: string, required: true }
+        key_usage: { type: string, required: false, default: "clientAuth" }
+        allowed_signature_algorithms:
+          type: string_list
+          required: false
+        peer_service: { type: string, required: false }
+        notify_on_change: { type: bool, required: false, default: true }
+        ref_ttl_sec: { type: int, required: false, default: 3600 }
+
+# -----------------------------------------------------------------------------
+# hsm: HSM/SE 后端（非秘密引用）
+# -----------------------------------------------------------------------------
+hsm:
+  type:
+    type: string
+    required: false
+    default: ""
+    allowed: ["", "software", "pkcs11", "trustzone"]
+    description: >
+      HSM 后端类型。software=SoftwareHsm（Orin 无硬件 HSM 时使用）；
+      pkcs11/trustzone=真实硬件 HSM。非秘密引用，不含 PIN/Token。
+  library_path:
+    type: string
+    required: false
+    default: ""
+    description: "PKCS#11/厂商 SDK 库路径（非秘密）；software 模式留空"
+
+# -----------------------------------------------------------------------------
+# key_provisioning: 密钥生成/存储模式
+# -----------------------------------------------------------------------------
+key_provisioning:
+  mode:
+    type: string
+    required: true
+    allowed: ["hsm", "soft_file"]
+    default: "hsm"
+    profile_restriction:
+      production: only_hsm      # production 只允许 hsm
+      test: allowed             # test 允许 soft_file
+    description: >
+      hsm=HSM 内生成（量产）；soft_file=外部生成+加密落盘（仅测试）。
+      production profile 强制 hsm，soft_file 由代码 fail-closed 拒绝。
+
+# -----------------------------------------------------------------------------
+# cloud: 云证书注入端点（非秘密 URL）
+# -----------------------------------------------------------------------------
+cloud:
+  endpoint:
+    type: string
+    required: false
+    default: ""
+    description: "云 PKI 注入端点；留空时 submit_csr 不可用但启动不失败"
+  timeout_ms: { type: int, required: false, default: 5000 }
+  retry_count: { type: int, required: false, default: 3 }
+  retry_delay_ms: { type: int, required: false, default: 1000 }
+
+# -----------------------------------------------------------------------------
+# storage: 非秘密状态/证书存储路径
+# -----------------------------------------------------------------------------
+storage:
+  state_file:
+    type: string
+    required: false
+    default: ""
+    path_validation: sanitized   # 不得含 ..、个人目录、build tree、世界可写目录
+  ca_cert:
+    type: string
+    required: false
+    default: ""
+    path_validation: sanitized
+  cert_store:
+    type: string
+    required: false
+    default: ""
+    path_validation: sanitized
+
+# -----------------------------------------------------------------------------
+# soft_key: 软件密钥落盘参数（仅 test profile）
+# -----------------------------------------------------------------------------
+soft_key:
+  path:
+    type: string
+    required: false
+    default: "/var/lib/tbox/sec/soft_keys"
+    profile_restriction:
+      production: forbidden       # production 禁止整个 soft_key 节
+      test: allowed
+    path_validation: sanitized
+  encryption_algo:
+    type: string
+    required: false
+    default: "aes-256-gcm"
+    profile_restriction:
+      production: forbidden
+      test: allowed
+  encryption_key_path:
+    type: string
+    required: false
+    default: ""
+    profile_restriction:
+      production: forbidden
+      test: allowed
+    path_validation: sanitized
+
+# -----------------------------------------------------------------------------
+# environment: 运行环境标志
+# -----------------------------------------------------------------------------
+environment:
+  is_production:
+    type: bool
+    required: false
+    default: false
+    description: >
+      true=真实安全设备（强制硬件 HSM，software HSM 被 fail-closed 拒绝）；
+      false=Orin/测试（允许 software HSM mock）。设备实例值，由 overlay/provisioning 注入。
+
+# =============================================================================
+# Profile 规则
+# =============================================================================
+# production profile（正式 /etc/tbox/conf.d/sec.yaml）:
+#   - 禁止顶层 common:（正式 common 由 BUILD 唯一提供）
+#   - key_provisioning.mode 必须为 hsm
+#   - 禁止 soft_key.* 节
+#   - 禁止 sec.tls.dev_peer_service
+#   - 禁止 PIN/Token/HSM handle/private_key_ref/TLS secret 值字段
+#     （hsm.pin, hsm.token, hsm.slot, hsm.handle, *.private_key_ref, *.tls_secret 等）
+#   - 禁止测试证书路径、模拟器状态配置
+#   - 路径字段净化（无 ..、个人目录、build tree、世界可写目录）
+#   - 缺少 HSM/ACL/TLS credential/安全关键参数时 fail-closed（运行时）
+#   - 允许 hsm.type: software（Orin 后端，§1 默认模板可直接作为 Orin 配置）
+#
+# test profile（测试 ./sec.yaml）:
+#   - 允许 soft_file 模式、soft_key.*、dev_peer_service、测试端点
+#   - test 允许字段必须显式 allowlist，不能由 production 继承
+#   - 仍校验字段类型/结构
+#   - 路径净化（允许相对测试路径，但仍禁止 .. 越界）
+#
+# 未知字段策略:
+#   - 未知字段生成 warn（不 fail），保证前向兼容（§9 配置演进）
+#   - BUILD 新增兼容可选字段可不修改平台文件
+#
+# 配置演进:
+#   - 新增兼容可选字段或调整安全默认值：BUILD Orin 文件可不修改
+#   - 新增必填字段、删除/重命名字段、改变类型/结构：平台文件须同步，CI 阻止不兼容包
+#   - 改变 HSM/SOFT_FILE、ACL、TLS credential 或 fail-closed 语义：另立 SEC 配对 CR
+# =============================================================================

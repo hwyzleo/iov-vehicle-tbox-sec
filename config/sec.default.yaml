@@ -1,23 +1,26 @@
-# TBOX SEC Service Configuration (production default)
+# =============================================================================
+# TBOX SEC Service Configuration - production default template
+# TBOX-SEC-DSN-CR-013 §4/§5 / SEC-CONFIG-REQ-002
+# =============================================================================
+# 由 sec-runtime component 安装到 BUILD rootfs staging 的：
+#   逻辑路径：/etc/tbox/conf.d/sec.yaml
+#   物理路径：out/<platform>/<profile>/install-root/etc/tbox/conf.d/sec.yaml
 #
-# Installed to /etc/tbox/conf.d/sec.yaml by the sec-runtime install component
-# (framework-config 分层：/etc/tbox/common.yaml 公共层 + 本文件服务层 +
-#  工作目录 ./config/sec.yaml 或 CONFIG_FILE 设备本地覆盖，优先级最高)。
+# framework-config 三层加载（优先级从低到高）：
+#   /etc/tbox/common.yaml  ->  /etc/tbox/conf.d/sec.yaml  ->  ./sec.yaml
+#   正式 /etc/tbox/common.yaml 由 BUILD 唯一提供（SEC 只消费，不安装/不内联副本）。
+#   ./sec.yaml 仅用于测试 profile 覆盖，不进入生产包。
 #
-# Test-only values (soft_file 密钥模式 / dev_peer_service / 测试证书端点)
-# NOT included in this template. 测试构建使用仓库 config/sec.yaml（含测试默认值）。
-# 本模板只包含非秘密 schema/default；量产 HSM/SE 的 PIN/Token/密钥/设备本地
-# 安全材料不得由 install 创建或覆盖（TBOX-SEC-DSN-CR-012 §9/§12）。
-
-# 公共配置覆盖（/etc/tbox/common.yaml 的默认值可在此覆盖）
-common:
-  store:
-    root: "/var/tbox"
-  log:
-    level: "info"
-    file:
-      enabled: true
-      root: "/var/log/tbox"
+# 本模板表示 SEC 服务版本的通用量产发布基线：
+#   - 默认并强制 key_provisioning.mode=HSM；
+#   - 不含顶层 common: 副本、soft_key 实例值、软件私钥、测试证书、HSM 模拟器状态、
+#     PIN、Token、HSM handle、private_key_ref 或 TLS secret；
+#   - 不绑定 Orin 车型、车辆或设备实例值；
+#   - 可在 BUILD 无平台覆盖时直接作为 Orin 发布配置（§1）。
+#
+# HSM/SE 量产 PIN/Token/密钥/设备本地安全材料不得由 install 创建或覆盖
+# （TBOX-SEC-DSN-CR-012 §9/§12），由 provisioning 提供。
+# =============================================================================
 
 # SEC 服务专属配置
 sec:
@@ -27,13 +30,13 @@ sec:
 
 # HSM/SE 生产边界：key_provisioning.mode 必须为 hsm。
 # soft_file 密钥模式在量产环境被代码 fail-closed 拒绝（SEC_SOFT_KEY_MODE_NOT_ALLOWED）。
-# hsm.type/library_path 由部署注入（PKCS#11/厂商 SDK 的非秘密来源/版本/许可
-# 信息登记于 BUILD dependency lock，不在普通日志暴露内部地址或凭据）。
+# hsm.type/library_path 为非秘密引用；PIN/Token/slot 由 provisioning 提供，不入此文件。
 #
 # Orin 部署注入（TBOX-SEC / 无 HSM 车机）：Orin 小车无真实 HSM/SE，SEC 安全
-# 部分使用 software（SoftwareHsm）mock 后端。key_provisioning.mode 仍为 hsm，
-# 仅将 hsm.type 由 pkcs11 改为 software（mock）。当接入真实 HSM 的设备时，
-# 恢复 type: "pkcs11" 并注入 library_path，同时置 environment.is_production: true。
+# 部分使用 software（SoftwareHsm）后端。key_provisioning.mode 仍为 hsm，
+# 仅将 hsm.type 设为 software（mock）。当接入真实 HSM 的设备时，
+# BUILD Orin overlay 覆盖为 type: "pkcs11" 并注入 library_path，
+# 同时置 environment.is_production: true。
 hsm:
   type: "software"
   library_path: ""
@@ -48,12 +51,13 @@ cloud:
   retry_count: 3
   retry_delay_ms: 1000
 
+# 非秘密状态/证书存储路径：留空使用代码默认（/var/lib/tbox/sec/...）
 storage:
   state_file: ""
   ca_cert: ""
   cert_store: ""
 
 # Orin 车机使用 software（mock）HSM，非真实安全设备，故 is_production=false；
-# 接入真实 HSM 时改回 true（并将 hsm.type 恢复为 pkcs11）。
+# 接入真实 HSM 时由 BUILD Orin overlay 覆盖为 true（并将 hsm.type 恢复为 pkcs11）。
 environment:
   is_production: false

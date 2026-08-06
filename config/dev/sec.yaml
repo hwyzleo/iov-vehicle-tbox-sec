@@ -1,3 +1,19 @@
+# =============================================================================
+# DEVELOPMENT-ONLY — TBOX-SEC-DSN-CR-013 §3 / SEC-CONFIG-REQ-001
+# =============================================================================
+# 本文件仅供本地启动、单元测试、HSM 模拟器或隔离开发环境显式使用。
+# - 不得由 sec-runtime 安装（CMake 无 install 规则）。
+# - 不得进入 BUILD staging 或正式发布包。
+# - 不得包含生产私钥、对称密钥、Seed-Key secret、PIN、Token、HSM handle、
+#   private_key_ref、真实证书身份或生产设备材料。
+# - 测试值必须为明确占位值并受 allowlist 管理。
+#
+# 独立调试时将本文件作为 framework-config 的服务层加载：
+#   ConfigManager::load("sec", {<repo>/config/dev})
+# 或在开发运行目录软链/复制为 conf.d/sec.yaml。
+# 工作目录 ./sec.yaml 仍为测试 profile 最高优先级覆盖（SEC-CONFIG-REQ-006）。
+# =============================================================================
+
 # 公共配置覆盖示例（按需启用）
 common:
   store:
@@ -9,7 +25,7 @@ common:
       root: "./log"
 
 hsm:
-  type: "soft_file"
+  type: "software"
   library_path: ""
 
 key_provisioning:

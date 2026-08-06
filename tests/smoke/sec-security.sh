@@ -25,6 +25,16 @@ if grep -qE '^\s*mode:\s*"?soft_file"?' "${CONFIG_FILE}"; then
     exit 1
 fi
 
+# --- production profile schema/安全校验（checker 可用时；TBOX-SEC-DSN-CR-013 §8/§9） ---
+# checker 不存在时回退到上面的 grep 检查（向后兼容）
+if [ -x /usr/bin/sec_config_checker ]; then
+    if ! /usr/bin/sec_config_checker --check-config "${CONFIG_FILE}" --profile production >/dev/null 2>&1; then
+        echo "FAIL: sec.yaml production profile validation failed"
+        /usr/bin/sec_config_checker --check-config "${CONFIG_FILE}" --profile production 2>&1 | grep '^ERROR' | head -5
+        exit 1
+    fi
+fi
+
 # --- IPC socket 存在（framework-ipc） ---
 if [ ! -S "${SOCKET_PATH}" ]; then
     echo "FAIL: IPC socket ${SOCKET_PATH} not found"

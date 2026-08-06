@@ -48,6 +48,10 @@ find_package(OpenSSL REQUIRED)
 # --- nlohmann_json（SEC 直接使用；BUILD: TBOX_DEP_STAGING；本地: conan） ---
 find_package(nlohmann_json REQUIRED)
 
+# --- yaml-cpp（sec_config_checker 直接使用；framework-config 亦依赖） ---
+# TBOX-SEC-DSN-CR-013: 无副作用配置校验器仅依赖 yaml-cpp 解析，不链 TboxSecLib
+find_package(yaml-cpp REQUIRED)
+
 # --- CURL（SEC 直接 TARGET 依赖：cloud_client 证书注入/CSR 提交） ---
 # 静态链接(lock.yaml linkage: static)：curl 的 CURLConfig.cmake 会经 CURL::libcurl
 # 传递 OpenSSL/ZLIB;若 find_package 回退到 module-mode FindCURL 则不会传播 zlib,
@@ -150,7 +154,15 @@ endif()
 target_link_libraries(tbox_sec PRIVATE TboxSecLib)
 
 # ===========================================================================
-# Install rules — 两个显式 component (CR-012 §9 / BD7)
+# Config checker (无副作用校验器；TBOX-SEC-DSN-CR-013 §8/§9)
+# ===========================================================================
+# 独立可执行，仅链 yaml-cpp，不引入 OpenSSL/CURL/HSM 代码路径，
+# 从架构上保证纯校验语义（不联网/不写密码学/不开 HSM/IPC/store）。
+add_executable(sec_config_checker src/sec_config_checker.cpp)
+target_link_libraries(sec_config_checker PRIVATE yaml-cpp)
+
+# ===========================================================================
+# Install rules - 两个显式 component (CR-012 §9 / BD7)
 #
 #   sec-sdk     -> staging: sdk      (公开头文件 / client 静态库 / CMake package)
 #   sec-runtime -> staging: rootfs   (daemon / systemd unit / 非秘密默认配置)
@@ -172,6 +184,13 @@ install(FILES packaging/systemd/tbox-sec.service
 install(FILES config/sec.default.yaml
     DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/tbox/conf.d
     RENAME sec.yaml
+    COMPONENT sec-runtime
+)
+
+# --- sec-runtime: 配置校验器（无副作用，供 BUILD staging/deploy 校验） ---
+# TBOX-SEC-DSN-CR-013 §8/§9 / SEC-CONFIG-REQ-007/008
+install(TARGETS sec_config_checker
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     COMPONENT sec-runtime
 )
 
@@ -251,9 +270,13 @@ if(GTest_FOUND)
         tests/test_tls_ipc_handlers.cpp
         tests/test_tls_integration.cpp
         tests/test_sec_application.cpp
+        tests/test_sec_config_checker.cpp
     )
     add_executable(TboxSecTests ${TEST_SOURCES})
     target_link_libraries(TboxSecTests PRIVATE TboxSecLib tbox_sec_client GTest::GTest GTest::gmock GTest::Main)
+    # TBOX-SEC-DSN-CR-013: 传入 checker 二进制绝对路径供子进程测试
+    target_compile_definitions(TboxSecTests PRIVATE
+        SEC_CONFIG_CHECKER_BIN="${CMAKE_CURRENT_BINARY_DIR}/sec_config_checker")
     add_test(NAME TboxSecTests COMMAND TboxSecTests)
 endif()
 
