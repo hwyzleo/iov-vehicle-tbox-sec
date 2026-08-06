@@ -726,45 +726,44 @@ bool SecService::is_initialized() const {
 
 ErrorCode SecService::initialize_hsm() {
     try {
-        // 检查是否允许 soft_file 模式
-        if (config_.get_key_provisioning_mode() == KEY_PROVISIONING_MODE_SOFT_FILE) {
-            if (config_.get_is_production()) {
-                // 量产环境禁止使用 soft_file 模式
-                SecLogAdapter::service().error(
-                    "sec.hsm.soft_file_production_denied", "量产环境禁止使用 soft_file 密钥模式");
-                return ErrorCode::SOFT_KEY_MODE_NOT_ALLOWED;
-            }
-            SecLogAdapter::service().warn(
-                "sec.hsm.soft_file_mode", "以 software file 模式初始化（仅测试）");
-        }
+        // HSM 后端只分两类（无内存 mock）：
+        //   软件 HSM（SoftFileHsm，落盘持久化）—— 无硬件 HSM 的车机（如 Orin）使用；
+        //   硬件 HSM（pkcs11 / trustzone）—— 真实安全设备。
+        // 软件 HSM 由 key_provisioning.mode=soft_file 或 hsm.type=software 任一选择。
+        const std::string prov_mode = config_.get_key_provisioning_mode();
+        const std::string hsm_type_str = config_.get_hsm_type();
+        const bool use_software_hsm =
+            (prov_mode == KEY_PROVISIONING_MODE_SOFT_FILE) || (hsm_type_str == "software");
 
-        // 根据密钥生成模式选择 HSM 类型
         HsmFactory::HsmType hsm_type;
         std::string config_path;
-        std::string enc_key_path;  // soft_file 模式下的 KEK(主加密密钥)文件路径
+        std::string enc_key_path;  // 软件 HSM 的 KEK(主加密密钥)文件路径
 
-        if (config_.get_key_provisioning_mode() == KEY_PROVISIONING_MODE_SOFT_FILE) {
-            // 软件落盘模式
-            hsm_type = HsmFactory::HsmType::SOFT_FILE;
-            config_path = config_.get_soft_key_path();
-            std::string store_root = config_.get_store_root();
-            if (!store_root.empty()) {
-                config_path = store_root;
+        if (use_software_hsm) {
+            // 量产（真实车机）必须使用硬件 HSM，软件 HSM 在量产 fail-closed 拒绝。
+            if (config_.get_is_production()) {
+                SecLogAdapter::service().error(
+                    "sec.hsm.software_production_denied",
+                    "量产环境禁止使用软件 HSM，请配置硬件 HSM（hsm.type=pkcs11/trustzone）");
+                return ErrorCode::SOFT_KEY_MODE_NOT_ALLOWED;
             }
+            SecLogAdapter::service().info(
+                "sec.hsm.software_mode", "以软件 HSM（SoftFileHsm，落盘持久化）模式初始化");
+
+            hsm_type = HsmFactory::HsmType::SOFT_FILE;
+            const std::string store_root = config_.get_store_root();
+            config_path = store_root.empty() ? config_.get_soft_key_path() : store_root;
             // KEK 路径：优先取 soft_key.encryption_key_path(完整文件路径)，
             // 为空则默认 {store_root|默认目录}/<默认KEK文件名>
             enc_key_path = config_.get_soft_key_encryption_key_path();
             if (enc_key_path.empty()) {
-                std::string base = store_root.empty()
+                const std::string base = store_root.empty()
                     ? std::string(DEFAULT_SOFT_KEY_PATH) : store_root;
                 enc_key_path = base + "/" + DEFAULT_SOFT_KEK_FILENAME;
             }
         } else {
-            // HSM 模式（默认）
-            std::string hsm_type_str = config_.get_hsm_type();
-            if (hsm_type_str == "software") {
-                hsm_type = HsmFactory::HsmType::SOFTWARE;
-            } else if (hsm_type_str == "pkcs11") {
+            // 硬件 HSM
+            if (hsm_type_str == "pkcs11") {
                 hsm_type = HsmFactory::HsmType::PKCS11;
             } else if (hsm_type_str == "trustzone") {
                 hsm_type = HsmFactory::HsmType::TRUSTZONE;

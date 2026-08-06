@@ -3,6 +3,7 @@
 #include "hsm_interface.h"
 #include "sec_log_adapter.h"
 #include "log_types.h"
+#include <filesystem>
 
 using namespace tbox::sec;
 using namespace tbox::fw::log;
@@ -16,9 +17,16 @@ protected:
         logConfig.console_config.enabled = true;
         SecLogAdapter::init("sec_test", logConfig);
         
+        // 每个测试前清理持久化目录，保证测试隔离（SoftFileHsm 落盘持久化）
+        std::filesystem::remove_all("/tmp/test_keys");
         auto hsm = HsmFactory::create(HsmFactory::HsmType::SOFTWARE, "/tmp/test_keys");
         engine = std::make_unique<KeyEngine>(std::move(hsm));
         engine->initialize();
+    }
+
+    void TearDown() override {
+        engine.reset();
+        std::filesystem::remove_all("/tmp/test_keys");
     }
     
     std::unique_ptr<KeyEngine> engine;

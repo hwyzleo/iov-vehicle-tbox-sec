@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <fstream>
+#include <filesystem>
 #include "service_dispatcher.h"
 #include "sec_service.h"
 #include "diag_service_interface.h"
@@ -70,6 +71,10 @@ public:
 class ServiceDispatcherTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        // 每个测试前清理持久化目录，保证测试隔离
+        std::filesystem::remove_all("/tmp/test_dispatcher");
+        std::filesystem::remove_all("/tmp/test_dispatcher_state.json");
+
         // Create empty state file so load_state() succeeds
         std::ofstream state_file("/tmp/test_dispatcher_state.json");
         state_file << "{}";
@@ -78,7 +83,10 @@ protected:
         // Create config
         SecServiceConfig config;
         config.hsm_type = "software";
-        config.hsm_config_path = "/tmp/test_dispatcher";
+        // SoftFileHsm 的存储根与 KEK 路径须显式指向可写临时目录，
+        // 否则会回退到 /var/lib/tbox（无写权限导致 STORAGE_WRITE_FAILED）
+        config.store_root = "/tmp/test_dispatcher";
+        config.soft_key_config.key_path = "/tmp/test_dispatcher";
         config.state_file_path = "/tmp/test_dispatcher_state.json";
         config.cloud_config.oapi_endpoint = "https://test.example.com:10805";
         config.cloud_config.timeout_ms = 5000;
@@ -100,6 +108,8 @@ protected:
     void TearDown() override {
         dispatcher_.reset();
         sec_service_.reset();
+        std::filesystem::remove_all("/tmp/test_dispatcher");
+        std::filesystem::remove_all("/tmp/test_dispatcher_state.json");
     }
 
     std::shared_ptr<SecService> sec_service_;

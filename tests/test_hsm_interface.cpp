@@ -1,12 +1,22 @@
 #include <gtest/gtest.h>
 #include "hsm_interface.h"
+#include <filesystem>
 
 using namespace tbox::sec;
 
 class HsmInterfaceTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        // 每个测试前清理持久化目录，保证测试隔离（SoftFileHsm 落盘持久化）
+        std::filesystem::remove_all("/tmp/test_hsm");
         hsm = HsmFactory::create(HsmFactory::HsmType::SOFTWARE, "/tmp/test_hsm");
+        // SoftFileHsm 需先初始化以加载/生成主加密密钥(KEK)，否则密钥落盘加密失败
+        ASSERT_EQ(hsm->initialize(), ErrorCode::SUCCESS);
+    }
+
+    void TearDown() override {
+        hsm.reset();
+        std::filesystem::remove_all("/tmp/test_hsm");
     }
 
     std::unique_ptr<HsmInterface> hsm;
