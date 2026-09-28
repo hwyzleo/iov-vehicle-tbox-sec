@@ -1,6 +1,6 @@
 # =============================================================================
 # TBOX SEC Service Configuration - production default template
-# TBOX-SEC-DSN-CR-013 §4/§5 / SEC-CONFIG-REQ-002
+# TBOX-SEC-DSN-CR-013 §4/§5 / SEC-CONFIG-REQ-002 / TBOX-SEC-DSN-CR-015 §7.1
 # =============================================================================
 # 由 sec-runtime component 安装到 BUILD rootfs staging 的：
 #   逻辑路径：/etc/tbox/conf.d/sec.yaml
@@ -8,16 +8,24 @@
 #
 # framework-config 三层加载（优先级从低到高）：
 #   /etc/tbox/common.yaml  ->  /etc/tbox/conf.d/sec.yaml  ->  ./sec.yaml
-#   正式 /etc/tbox/common.yaml 由 BUILD 唯一提供（SEC 只消费，不安装/不内联副本）。
-#   ./sec.yaml 仅用于测试 profile 覆盖，不进入生产包。
+# 正式 /etc/tbox/common.yaml 由 BUILD 唯一提供（SEC 只消费，不安装/不内联副本）。
+# ./sec.yaml 仅用于测试 profile 覆盖，不进入生产包。
 #
-# 本模板表示 SEC 服务版本的通用量产发布基线：
-#   - 默认并强制 key_provisioning.mode=HSM；
+# 本模板表示 SEC 服务版本的通用量产发布基线（TBOX-SEC-DSN-CR-015 §7.1）：
+#   - environment.profile 固定为 production（缺失即 production，未知值拒绝）；
+#   - environment.is_production=true（兼容期由 profile 推导，不再由缺省 false 决定；
+#     与 profile 冲突时直接拒绝，迁移完成后删除该双重事实源）；
+#   - hsm.type 必须是 allowlist 内硬件后端（pkcs11/trustzone），不得为 software；
+#     无硬件 HSM/信任根时 SEC 启动失败或 NOT_READY（fail-closed），不得回退 SoftFileHsm；
 #   - 不含顶层 common: 副本、soft_key 实例值、软件私钥、测试证书、HSM 模拟器状态、
-#     PIN、Token、HSM handle、private_key_ref 或 TLS secret；
-#   - 不绑定 Orin 车型、车辆或设备实例值；
-#   - 可在 BUILD 无平台覆盖时直接作为 Orin 发布配置（§1）。
+#     PIN、Token、HSM handle、private_key_ref、TLS secret 或 Seed-Key 共享密钥
+#     （Seed-Key secret 由 provisioning 注入 sec.seed_key.shared_secret）；
+#   - 不绑定 Orin 车型、车辆或设备实例值。
 #
+# Orin 部署注入：Orin 小车无真实 HSM/SE，如需在非生产环境使用 software 后端，
+# 必须由 BUILD overlay 在构建元数据与运行配置双重显式声明 dev/test profile；
+# 接入真实 HSM 的设备由 BUILD Orin overlay 覆盖/确认 hsm.type=pkcs11 并注入
+# library_path 与 provisioning（PIN/Token/密钥实例）。
 # HSM/SE 量产 PIN/Token/密钥/设备本地安全材料不得由 install 创建或覆盖
 # （TBOX-SEC-DSN-CR-012 §9/§12），由 provisioning 提供。
 # =============================================================================
@@ -26,7 +34,8 @@
 sec:
   ipc:
     socket_path: "/tmp/tbox-sec.sock"
-  # 生产模板不含 sec.tls.dev_peer_service（仅非生产环境允许固定放行 TLS ACL）
+  # Seed-Key 共享密钥由 provisioning 注入（sec.seed_key.shared_secret，32 hex 字符）。
+  # 本模板不含该键；缺失时 verify_key fail-closed（TBOX-SEC-DSN-CR-003 / US-002）。
   # MQTT TLS Credential Provider（TBOX-SEC-DSN-CR-010 / CR-014）
   tls:
     profiles:
@@ -42,28 +51,15 @@ sec:
         root_ca_source: "/usr/share/tbox/sec/trust/mqtt-root-ca.pem"
         ref_ttl_sec: 3600
 
-# HSM/SE 生产边界：key_provisioning.mode 必须为 hsm。
-# soft_file 密钥模式在量产环境被代码 fail-closed 拒绝（SEC_SOFT_KEY_MODE_NOT_ALLOWED）。
+# HSM/SE 生产边界：key_provisioning.mode 必须为 hsm，hsm.type 必须为硬件后端。
+# soft_file 密钥模式在量产环境被代码 fail-closed 拒绝（SEC_SOFT_KEY_MODE_NOT_ALLOWED）；
 # hsm.type/library_path 为非秘密引用；PIN/Token/slot 由 provisioning 提供，不入此文件。
-#
-# Orin 部署注入（TBOX-SEC / 无 HSM 车机）：Orin 小车无真实 HSM/SE，SEC 安全
-# 部分使用 software（SoftwareHsm）后端。key_provisioning.mode 仍为 hsm，
-# 仅将 hsm.type 设为 software（mock）。当接入真实 HSM 的设备时，
-# BUILD Orin overlay 覆盖为 type: "pkcs11" 并注入 library_path，
-# 同时置 environment.is_production: true。
 hsm:
-  type: "software"
+  type: "pkcs11"
   library_path: ""
 
 key_provisioning:
   mode: "hsm"
-
-# 云证书注入端点：由部署注入（非秘密 URL）；留空时 submit_csr 不可用但启动不失败
-cloud:
-  endpoint: ""
-  timeout_ms: 5000
-  retry_count: 3
-  retry_delay_ms: 1000
 
 # 非秘密状态/证书存储路径：留空使用代码默认（/var/lib/tbox/sec/...）
 storage:
@@ -71,7 +67,8 @@ storage:
   ca_cert: ""
   cert_store: ""
 
-# Orin 车机使用 software（mock）HSM，非真实安全设备，故 is_production=false；
-# 接入真实 HSM 时由 BUILD Orin overlay 覆盖为 true（并将 hsm.type 恢复为 pkcs11）。
+# 运行环境 profile（TBOX-SEC-DSN-CR-015 §7）：production 为唯一量产允许值；
+# 缺失按 production 处理。dev/test 只能在 BUILD 元数据与运行配置双重显式声明下使用。
 environment:
-  is_production: false
+  profile: production
+  is_production: true

@@ -24,7 +24,7 @@ protected:
         auto hsm = HsmFactory::create(HsmFactory::HsmType::SOFTWARE, test_dir);
         key_engine = std::make_unique<KeyEngine>(std::move(hsm));
         key_engine->initialize();
-        key_engine->generate_device_key(test_vin, test_ecu_uid, key_pair_);
+        key_engine->generate_device_key(test_ecu_uid, test_ecu_uid, key_pair_);
 
         builder = std::make_unique<CsrBuilder>(key_engine.get());
     }

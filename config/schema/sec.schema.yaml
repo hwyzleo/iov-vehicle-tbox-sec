@@ -29,6 +29,14 @@ sec:
       required: false
       default: "/tmp/tbox-sec.sock"
       description: "IPC Unix socket 路径"
+  seed_key:
+    shared_secret:
+      type: string
+      required: false
+      default: ""
+      description: >
+        Seed-Key 共享密钥（AES-128，16 字节 = 32 hex 字符）。由 provisioning 注入，
+        出厂默认模板不含该键；缺失时 verify_key fail-closed（不允许退回 XOR/占位算法）。
   tls:
     dev_peer_service:
       type: string

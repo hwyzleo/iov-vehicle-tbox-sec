@@ -24,15 +24,16 @@ Get Certificate Signing Request for the device.
 **Parameters:**
 - `csr_der`: Output vector containing DER-encoded CSR
 
-**CSR Subject 格式 (TBOX-SEC-DSN-CR-005):**
+**CSR Subject 格式 (TBOX-SEC-DSN-CR-005/007):**
 ```
-CN=device_sn, OU=TBOX-TSP, O=OpenIOV, C=CN
+CN=hsm_uid(ecu_uid), OU=TBOX-TSP, O=OpenIOV, C=CN   // 证书不含 VIN
 ```
 
 **Returns:** `ErrorCode::SUCCESS` on success
 
 #### submit_csr()
-Submit CSR to PKI via cloud API.
+经 DIAG 诊断服务将 CSR 提交至产线 MES 中继通道（设计选型：MES → OAPI → PKI，TBOX 不直连云端）。
+无 DIAG 服务时返回 `NOT_IMPLEMENTED`（旧 CloudClient 直连 HTTPS 签发路径已删除）。
 
 **Returns:** `ErrorCode::SUCCESS` on success
 

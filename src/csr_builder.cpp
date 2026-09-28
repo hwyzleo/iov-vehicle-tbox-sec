@@ -368,8 +368,9 @@ ErrorCode CsrBuilder::build_csr(const std::string& vin,
     }
 
     KeyPair key_pair;
+    // 身份维度使用 hsm_uid(ecu_uid)，不绑定 VIN（DSN §1.1 Identity Contract / §3 幂等键）
     ErrorCode result = key_engine_->get_device_key(
-        vin, config.hsm_uid, key_pair);
+        config.hsm_uid, config.key_id, key_pair);
     if (result != ErrorCode::SUCCESS) {
         return result;
     }
@@ -383,7 +384,7 @@ ErrorCode CsrBuilder::build_csr(const std::string& vin,
 
     // Sign TBS via HSM
     std::vector<uint8_t> signature;
-    result = key_engine_->sign(vin, config.hsm_uid,
+    result = key_engine_->sign(config.hsm_uid, config.key_id,
                                csr_info, signature);
     if (result != ErrorCode::SUCCESS) {
         return ErrorCode::CSR_SIGN_FAILED;

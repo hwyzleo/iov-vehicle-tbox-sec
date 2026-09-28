@@ -30,6 +30,31 @@
 namespace tbox {
 namespace sec {
 
+namespace {
+
+// 将 32 个 hex 字符解码为 16 字节（Seed-Key AES-128 共享密钥）。
+// 返回 false 表示长度非法或包含非 hex 字符。
+bool decodeHexSecret(const std::string& hex, std::vector<uint8_t>& out) {
+    if (hex.size() != 32) return false;
+    out.clear();
+    out.reserve(16);
+    for (size_t i = 0; i < hex.size(); i += 2) {
+        auto nib = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+        const int hi = nib(hex[i]);
+        const int lo = nib(hex[i + 1]);
+        if (hi < 0 || lo < 0) return false;
+        out.push_back(static_cast<uint8_t>((hi << 4) | lo));
+    }
+    return true;
+}
+
+} // namespace
+
 SecService::SecService() : initialized_(false), store_(std::nullopt) {}
 
 SecService::~SecService() {
@@ -68,32 +93,7 @@ ErrorCode SecService::initialize() {
         return ErrorCode::CONFIG_ERROR;
     }
 
-    auto cloud_config = config_.get_cloud_config();
-    if (cloud_config.timeout_ms <= 0) {
-        SecLogAdapter::service().error(
-            "sec.config.cloud_timeout_invalid", "cloud.timeout_ms 必须为正",
-            {{"timeout_ms", tbox::fw::log::FieldValue::makeInt(cloud_config.timeout_ms)}});
-        return ErrorCode::CONFIG_ERROR;
-    }
-    if (cloud_config.retry_count < 0) {
-        SecLogAdapter::service().error(
-            "sec.config.cloud_retry_count_invalid", "cloud.retry_count 不能为负",
-            {{"retry_count", tbox::fw::log::FieldValue::makeInt(cloud_config.retry_count)}});
-        return ErrorCode::CONFIG_ERROR;
-    }
-    if (cloud_config.retry_delay_ms < 0) {
-        SecLogAdapter::service().error(
-            "sec.config.cloud_retry_delay_invalid", "cloud.retry_delay_ms 不能为负",
-            {{"retry_delay_ms", tbox::fw::log::FieldValue::makeInt(cloud_config.retry_delay_ms)}});
-        return ErrorCode::CONFIG_ERROR;
-    }
-
     ErrorCode result = initialize_hsm();
-    if (result != ErrorCode::SUCCESS) {
-        return result;
-    }
-
-    result = initialize_cloud_client();
     if (result != ErrorCode::SUCCESS) {
         return result;
     }
@@ -201,7 +201,7 @@ ErrorCode SecService::generate_key_pair() {
     if (status.state != ProvisionState::NONE &&
         status.state != ProvisionState::FAILED) {
         // 检查 HSM 中是否真的有密钥
-        if (key_engine_ && key_engine_->device_key_exists(vin_, ecu_uid_)) {
+        if (key_engine_ && key_engine_->device_key_exists(ecu_uid_, ecu_uid_)) {
             // 密钥确实存在，静默返回成功
             return ErrorCode::SUCCESS;
         }
@@ -326,15 +326,14 @@ ErrorCode SecService::submit_csr() {
         return response.error_code;
     }
 
-    ErrorCode result = submit_csr_to_cloud();
-    if (result != ErrorCode::SUCCESS) {
-        handle_error(result, "CSR submission failed");
-        return result;
-    }
-
-    update_provision_state(ProvisionState::CSR_SUBMITTED);
-    return ErrorCode::SUCCESS;
+    // 设计决策（DSN §2/§4）：产线证书申请走 MES → OAPI → PKI 中继，TBOX 不直连云端。
+    // SEC 仅经 DIAG 提交 CSR（DiagRequestType::SUBMIT_CSR）；无 DIAG 时直接失败，
+    // 不允许降级到 TBOX 直连 HTTPS 签发（旧 CloudClient 直连路径已删除）。
+    SecLogAdapter::certificate().error(
+        "sec.cert.submit_no_diag", "提交 CSR 需要 DIAG 诊断服务（产线 MES 中继通道）");
+    return ErrorCode::NOT_IMPLEMENTED;
 }
+
 
 ErrorCode SecService::inject_certificate(const std::vector<uint8_t>& cert_der) {
     if (!initialized_) {
@@ -756,11 +755,6 @@ ErrorCode SecService::initialize_hsm() {
     }
 }
 
-ErrorCode SecService::initialize_cloud_client() {
-    cloud_client_ = std::make_unique<CloudClient>(config_.get_cloud_config());
-    return cloud_client_->initialize();
-}
-
 ErrorCode SecService::load_provision_state_from_store() {
     if (!store_.has_value() || !store_->isReady()) {
         return ErrorCode::SUCCESS;
@@ -825,7 +819,8 @@ ErrorCode SecService::generate_and_store_key_pair() {
         "sec.keypair.generate_start", "开始生成密钥对",
         {{"ecu_uid", tbox::fw::log::FieldValue::makeString(ecu_uid_)}});
 
-    auto err = key_engine_->generate_device_key(vin_, ecu_uid_, key_pair);
+    // key 身份维度使用 hsm_uid(ecu_uid)，不绑定 VIN（DSN §1.1 / §3）
+    auto err = key_engine_->generate_device_key(ecu_uid_, ecu_uid_, key_pair);
     if (err != ErrorCode::SUCCESS) {
         return err;
     }
@@ -854,11 +849,11 @@ ErrorCode SecService::export_private_key(std::vector<uint8_t>& private_key) {
         return prov_result;
     }
 
-    if (!key_engine_ || !key_engine_->device_key_exists(vin_, ecu_uid_)) {
+    if (!key_engine_ || !key_engine_->device_key_exists(ecu_uid_, ecu_uid_)) {
         return ErrorCode::KEY_NOT_FOUND;
     }
 
-    return key_engine_->export_device_private_key(vin_, ecu_uid_, private_key);
+    return key_engine_->export_device_private_key(ecu_uid_, ecu_uid_, private_key);
 }
 
 ErrorCode SecService::build_and_store_csr() {
@@ -901,15 +896,6 @@ ErrorCode SecService::build_and_store_csr() {
     }
     
     return result;
-}
-
-ErrorCode SecService::submit_csr_to_cloud() {
-    CertificateRequest request;
-    request.ecu_uid = ecu_uid_;       // HSM 身份用于云端签发
-    request.csr_der = csr_der_;       // 使用存储的 CSR
-
-    CertificateResponse response;
-    return cloud_client_->submit_csr(request, response);
 }
 
 ErrorCode SecService::validate_and_store_certificate(const std::vector<uint8_t>& cert_der) {
@@ -1243,20 +1229,37 @@ ErrorCode SecService::compute_expected_key(const std::vector<uint8_t>& seed, std
         return ErrorCode::INVALID_PARAMETER;
     }
 
-    // UDS standard XOR-based key computation
-    // key = seed XOR shared_secret
-    // In production, shared_secret should come from HSM/secure element
-    
-    // Shared secret (placeholder - in production from HSM)
-    std::vector<uint8_t> shared_secret(SEED_KEY_SIZE, 0x01);
-    
-    expected_key.resize(SEED_KEY_SIZE);
-    
-    // XOR-based computation (common UDS algorithm)
-    for (size_t i = 0; i < SEED_KEY_SIZE; i++) {
-        expected_key[i] = seed[i] ^ shared_secret[i];
+    // TBOX-SEC-REQ-CR-003 / DSN-CR-003 §5 / US-002：AES-128 对称 Seed-Key。
+    //   key = AES-128-ECB(key = shared_secret, plaintext = seed)
+    // Seed/Key 均为 16 字节（128-bit）；共享密钥由 provisioning 注入
+    // （配置 sec.seed_key.shared_secret，32 个 hex 字符），出厂默认模板不含该键。
+    // 缺失或格式非法时 fail-closed（不允许退回 XOR/占位算法）。
+    std::vector<uint8_t> shared_secret;
+    if (!decodeHexSecret(config_.get_seed_key_shared_secret(), shared_secret)) {
+        SecLogAdapter::seed_key().error(
+            "sec.seed_key.shared_secret_missing",
+            "Seed-Key 共享密钥未配置或格式非法（需 32 hex 字符），拒绝校验（fail-closed）");
+        return ErrorCode::KEY_VERIFICATION_FAILED;
     }
-    
+
+    expected_key.resize(SEED_KEY_SIZE);
+    int out_len = 0, final_len = 0;
+    int ok = 1;
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return ErrorCode::KEY_VERIFICATION_FAILED;
+    if (EVP_EncryptInit_ex(ctx, EVP_aes_128_ecb(), nullptr,
+                           shared_secret.data(), nullptr) != 1) ok = 0;
+    if (ok && EVP_CIPHER_CTX_set_padding(ctx, 0) != 1) ok = 0;  // 16 字节 = 单块，无填充
+    if (ok && EVP_EncryptUpdate(ctx, expected_key.data(), &out_len,
+                                seed.data(), static_cast<int>(seed.size())) != 1) ok = 0;
+    if (ok && EVP_EncryptFinal_ex(ctx, expected_key.data() + out_len,
+                                  &final_len) != 1) ok = 0;
+    EVP_CIPHER_CTX_free(ctx);
+    if (!ok) {
+        expected_key.clear();
+        return ErrorCode::KEY_VERIFICATION_FAILED;
+    }
+    expected_key.resize(out_len + final_len);
     return ErrorCode::SUCCESS;
 }
 
@@ -1490,9 +1493,9 @@ void SecService::initializeTlsCredentialProvider() {
         }
     }
 
-    // 设备 key_id 解析器：vin + "+" + ecu_uid（与 KeyEngine::make_key_id 一致）
+    // 设备 key_id 解析器：hsm_uid(ecu_uid) + key_id（与 KeyEngine::make_key_id 一致，不绑定 VIN）
     DeviceKeyIdResolver key_resolver = [this]() -> std::string {
-        return vin_ + "+" + ecu_uid_;
+        return ecu_uid_ + "+" + ecu_uid_;
     };
 
     // TLS 材料读取器：root_ca 从 SEC 受控存储（framework-store，服务名 "sec"）按键读取 PEM；

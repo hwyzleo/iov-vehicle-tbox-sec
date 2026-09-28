@@ -84,7 +84,7 @@ const std::set<std::string> kStorageKeys = {"state_file", "ca_cert", "cert_store
 const std::set<std::string> kSoftKeyKeys = {
     "path", "encryption_algo", "encryption_key_path"
 };
-const std::set<std::string> kEnvironmentKeys = {"is_production"};
+const std::set<std::string> kEnvironmentKeys = {"is_production", "profile"};
 
 // production 禁止的秘密字段名（小写精确匹配末段）
 const std::set<std::string> kForbiddenSecretFields = {
@@ -269,6 +269,12 @@ private:
                 error("schema.allowed_values", "hsm.type",
                       "must be one of: software, pkcs11, trustzone (or empty)");
             }
+            // TBOX-SEC-DSN-CR-015 §7.3：production 禁止 software 软 HSM
+            if (isProduction() && t == "software") {
+                error("profile.production_hw_hsm_only", "hsm.type",
+                      "production profile forbids hsm.type=software "
+                      "(must be pkcs11/trustzone hardware backend)");
+            }
         }
 
         YAML::Node lib = hsm["library_path"];
@@ -376,11 +382,46 @@ private:
         if (!env.IsMap()) return;
         checkUnknownFields(env, kEnvironmentKeys, "environment");
 
+        // TBOX-SEC-DSN-CR-015 §7：environment.profile 为单一事实源。
+        // 缺失按 production；未知值拒绝；与校验 profile 冲突拒绝。
+        YAML::Node prof = env["profile"];
+        if (prof) {
+            if (!prof.IsScalar()) {
+                error("schema.type", "environment.profile", "must be a string");
+            } else {
+                const std::string p = toLower(trim(prof.as<std::string>()));
+                static const std::set<std::string> allowed = {"production", "test", "dev"};
+                if (allowed.find(p) == allowed.end()) {
+                    error("schema.allowed_values", "environment.profile",
+                          "must be one of: production, test, dev");
+                } else if (isProduction() && p != "production") {
+                    error("profile.profile_mismatch", "environment.profile",
+                          "production checker rejects profile=" + p);
+                } else if (!isProduction() && p == "production") {
+                    error("profile.profile_mismatch", "environment.profile",
+                          "test checker rejects profile=production");
+                }
+            }
+        }
+
         YAML::Node prod = env["is_production"];
         if (prod) {
             if (!prod.IsScalar()) {
                 error("schema.type", "environment.is_production",
                       "must be a boolean");
+            } else {
+                // TBOX-SEC-DSN-CR-015 §7.1：is_production 为兼容派生字段；
+                // production 下显式 false 与“缺失即严格”冲突，直接拒绝。
+                bool val = false;
+                try { val = prod.as<bool>(); } catch (const YAML::BadConversion&) {
+                    error("schema.type", "environment.is_production",
+                          "must be a boolean");
+                    return;
+                }
+                if (isProduction() && !val) {
+                    error("profile.production_strict", "environment.is_production",
+                          "production profile requires is_production=true");
+                }
             }
         }
     }

@@ -46,31 +46,6 @@ TEST(ConfigSnapshotTest, FallbackToLegacyWhenNoSnapshot) {
     EXPECT_EQ(config.get_key_provisioning_mode(), "legacy_mode");
 }
 
-TEST(ConfigSnapshotTest, CloudConfigPrecedence) {
-    SecServiceConfig config;
-    config.cloud_config.oapi_endpoint = "https://legacy.example.com";
-    config.cloud_config.timeout_ms = 3000;
-    config.cloud_config.retry_count = 5;
-    config.cloud_config.retry_delay_ms = 2000;
-
-    auto snapshot = std::make_shared<MockImmutableConfigView>();
-    EXPECT_CALL(*snapshot, getString("cloud.endpoint", ""))
-        .WillOnce(Return("https://snapshot.example.com"));
-    EXPECT_CALL(*snapshot, getInt("cloud.timeout_ms", 5000))
-        .WillOnce(Return(8000));
-    EXPECT_CALL(*snapshot, getInt("cloud.retry_count", 3))
-        .WillOnce(Return(2));
-    EXPECT_CALL(*snapshot, getInt("cloud.retry_delay_ms", 1000))
-        .WillOnce(Return(500));
-
-    config.config_snapshot = snapshot;
-
-    EXPECT_EQ(config.get_cloud_endpoint(), "https://snapshot.example.com");
-    EXPECT_EQ(config.get_cloud_timeout_ms(), 8000);
-    EXPECT_EQ(config.get_cloud_retry_count(), 2);
-    EXPECT_EQ(config.get_cloud_retry_delay_ms(), 500);
-}
-
 TEST(ConfigSnapshotTest, StoragePathPrecedence) {
     SecServiceConfig config;
     config.state_file_path = "/legacy/state.json";

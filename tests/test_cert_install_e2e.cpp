@@ -86,7 +86,8 @@ X509UP make_leaf(EVP_PKEY* ca_key, X509* ca_cert, EVP_PKEY* dev_pubkey) {
     X509_set_version(cert.get(), 2);
     ASN1_INTEGER_set(X509_get_serialNumber(cert.get()), 2);
     X509_NAME* n = X509_get_subject_name(cert.get());
-    X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC, (const unsigned char*)"VIN123", -1, -1, 0);
+    // 证书 profile（DSN §5）：Subject CN == hsm_uid(ecu_uid)，与 SimpleProvService.ecu_uid 一致
+    X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC, (const unsigned char*)"ecu1", -1, -1, 0);
     X509_set_issuer_name(cert.get(), X509_get_subject_name(ca_cert));
     X509_set_pubkey(cert.get(), dev_pubkey);
     X509_gmtime_adj(X509_get_notBefore(cert.get()), 0);
@@ -94,6 +95,11 @@ X509UP make_leaf(EVP_PKEY* ca_key, X509* ca_cert, EVP_PKEY* dev_pubkey) {
     BASIC_CONSTRAINTS* bc = BASIC_CONSTRAINTS_new(); bc->ca = 0;
     X509_EXTENSION* ext = X509V3_EXT_i2d(NID_basic_constraints, 1, bc);
     X509_add_ext(cert.get(), ext, -1); X509_EXTENSION_free(ext); BASIC_CONSTRAINTS_free(bc);
+    // KeyUsage=digitalSignature（DSN §5 证书 profile）
+    ASN1_BIT_STRING* ku = ASN1_BIT_STRING_new();
+    ASN1_BIT_STRING_set_bit(ku, 0, 1);  // digitalSignature
+    X509_EXTENSION* ku_ext = X509V3_EXT_i2d(NID_key_usage, 0, ku);
+    X509_add_ext(cert.get(), ku_ext, -1); X509_EXTENSION_free(ku_ext); ASN1_BIT_STRING_free(ku);
     EXTENDED_KEY_USAGE* eku = EXTENDED_KEY_USAGE_new();
     sk_ASN1_OBJECT_push(eku, OBJ_txt2obj("1.3.6.1.5.5.7.3.2", 1));
     X509_EXTENSION* ext2 = X509V3_EXT_i2d(NID_ext_key_usage, 0, eku);
@@ -215,10 +221,10 @@ protected:
     // 生成设备密钥并构造匹配的叶子证书 DER
     std::vector<uint8_t> makeDeviceLeaf() {
         EXPECT_EQ(service_->generate_key_pair(), ErrorCode::SUCCESS);
-        // 从 SoftFileHsm 元数据读取设备公钥（store key: key_metadata_<vin+ecu_uid>）
+        // 从 SoftFileHsm 元数据读取设备公钥（store key: key_metadata_<hsm_uid+key_id>，不绑定 VIN）
         std::string meta;
         try {
-            meta = store_->load<std::string>("key_metadata_VIN123+ecu1");
+            meta = store_->load<std::string>("key_metadata_ecu1+ecu1");
         } catch (...) {
             ADD_FAILURE() << "无法读取 SoftFileHsm 元数据";
             return {};

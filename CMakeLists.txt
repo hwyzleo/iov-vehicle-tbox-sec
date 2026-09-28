@@ -54,12 +54,8 @@ find_package(nlohmann_json REQUIRED)
 # （BUILD TBOX_DEP_STAGING 注入 CMAKE_PREFIX_PATH；framework 亦用 CONFIG 消费）
 find_package(yaml-cpp CONFIG REQUIRED)
 
-# --- CURL（SEC 直接 TARGET 依赖：cloud_client 证书注入/CSR 提交） ---
-# 静态链接(lock.yaml linkage: static)：curl 的 CURLConfig.cmake 会经 CURL::libcurl
-# 传递 OpenSSL/ZLIB;若 find_package 回退到 module-mode FindCURL 则不会传播 zlib,
-# 故显式 find ZLIB 并链接,保证静态 curl 的 -lz 符号可解析。
-find_package(CURL REQUIRED)
-find_package(ZLIB REQUIRED)
+# --- CURL 依赖已随 CloudClient 直连签发路径删除（DSN §2 选型：MES→OAPI 中继，TBOX 不直连公网） ---
+# SEC 不再使用 CURL；如需保留则按需恢复 find_package(CURL/ZLIB)。
 
 # --- GTest（仅 HOST 单元测试；BUILD 目标构建不提供） ---
 find_package(GTest QUIET)
@@ -76,7 +72,6 @@ set(LIB_SOURCES
     src/certificate_store.cpp
     src/csr_builder.cpp
     src/cert_validator.cpp
-    src/cloud_client.cpp
     src/error_codes.cpp
     src/diag_service_adapter.cpp
     src/service_dispatcher.cpp
@@ -104,10 +99,6 @@ target_link_libraries(TboxSecLib
         TBoxFramework::application
         tbox::prov_client
         nlohmann_json::nlohmann_json
-        # 链接顺序：静态 libcurl.a 引用的 OpenSSL/ZLIB 符号须在 curl 之后出现
-        # （否则 ld 单遍扫描无法回溯解析，undefined reference SSL_CTX_*）。
-        CURL::libcurl
-        ZLIB::ZLIB
         OpenSSL::SSL
         OpenSSL::Crypto
 )

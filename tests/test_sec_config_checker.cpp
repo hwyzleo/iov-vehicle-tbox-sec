@@ -69,27 +69,23 @@ CheckResult runChecker(const std::string& config_path, const std::string& profil
     return result;
 }
 
-// 合法 production 配置（默认模板等价）
+// 合法 production 配置（默认模板等价；TBOX-SEC-DSN-CR-015 §7.1 严格基线）
 const std::string kValidProduction = R"yaml(
 sec:
   ipc:
     socket_path: "/tmp/tbox-sec.sock"
 hsm:
-  type: "software"
+  type: "pkcs11"
   library_path: ""
 key_provisioning:
   mode: "hsm"
-cloud:
-  endpoint: ""
-  timeout_ms: 5000
-  retry_count: 3
-  retry_delay_ms: 1000
 storage:
   state_file: ""
   ca_cert: ""
   cert_store: ""
 environment:
-  is_production: false
+  profile: production
+  is_production: true
 )yaml";
 
 // 合法 test 配置（含 soft_file / soft_key / dev_peer）
@@ -127,6 +123,63 @@ TEST(SecConfigCheckerTest, ProductionAcceptsValidHsmConfig) {
     auto r = runChecker(path, "production");
     EXPECT_EQ(r.exit_code, 0) << r.output;
     EXPECT_NE(r.output.find("PASS"), std::string::npos) << r.output;
+}
+
+// =========================================================================
+// production profile - 拒绝软件 HSM（TBOX-SEC-DSN-CR-015 §7.3）
+// =========================================================================
+TEST(SecConfigCheckerTest, ProductionRejectsSoftwareHsm) {
+    const std::string cfg = R"yaml(
+hsm:
+  type: "software"
+key_provisioning:
+  mode: "hsm"
+environment:
+  profile: production
+  is_production: true
+)yaml";
+    auto path = writeTempConfig("prod_software_hsm.yaml", cfg);
+    auto r = runChecker(path, "production");
+    EXPECT_EQ(r.exit_code, 1) << r.output;
+    EXPECT_NE(r.output.find("production_hw_hsm_only"), std::string::npos) << r.output;
+}
+
+// =========================================================================
+// production profile - 拒绝 is_production=false（缺失即严格，CR-015 §7.1）
+// =========================================================================
+TEST(SecConfigCheckerTest, ProductionRejectsIsProductionFalse) {
+    const std::string cfg = R"yaml(
+hsm:
+  type: "pkcs11"
+key_provisioning:
+  mode: "hsm"
+environment:
+  profile: production
+  is_production: false
+)yaml";
+    auto path = writeTempConfig("prod_false_flag.yaml", cfg);
+    auto r = runChecker(path, "production");
+    EXPECT_EQ(r.exit_code, 1) << r.output;
+    EXPECT_NE(r.output.find("production_strict"), std::string::npos) << r.output;
+}
+
+// =========================================================================
+// production profile - 拒绝 profile=test/dev 显式声明
+// =========================================================================
+TEST(SecConfigCheckerTest, ProductionRejectsDevTestProfile) {
+    const std::string cfg = R"yaml(
+hsm:
+  type: "pkcs11"
+key_provisioning:
+  mode: "hsm"
+environment:
+  profile: dev
+  is_production: true
+)yaml";
+    auto path = writeTempConfig("prod_dev_profile.yaml", cfg);
+    auto r = runChecker(path, "production");
+    EXPECT_EQ(r.exit_code, 1) << r.output;
+    EXPECT_NE(r.output.find("profile_mismatch"), std::string::npos) << r.output;
 }
 
 // =========================================================================

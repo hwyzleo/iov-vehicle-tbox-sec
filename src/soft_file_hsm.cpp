@@ -105,7 +105,8 @@ ErrorCode SoftFileHsm::generate_key_pair(const std::string& key_id,
     key_pair.public_key = kd.pub;
     key_pair.private_key_exists = true;
     key_pair.storage_mode = KeyStorageMode::SOFT_FILE;
-    key_pair.exportable = true;
+    // TBOX-SEC-DSN-CR-015 §8：软 HSM 密钥私钥不可导出（即使测试/开发模式）
+    key_pair.exportable = false;
     key_pair.created_at = kd.created_at;
 
     keys_[key_id] = std::move(kd);
@@ -318,23 +319,13 @@ std::string SoftFileHsm::get_status() const {
 
 ErrorCode SoftFileHsm::export_private_key(const std::string& key_id,
                                           std::vector<uint8_t>& private_key) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    if (!is_valid_key_id(key_id)) {
-        return ErrorCode::INVALID_PARAMETER;
-    }
-
-    auto it = keys_.find(key_id);
-    if (it == keys_.end()) {
-        KeyData kd;
-        auto rc = load_key_from_store(key_id, kd);
-        if (rc != ErrorCode::SUCCESS) return rc;
-        keys_[key_id] = std::move(kd);
-        it = keys_.find(key_id);
-    }
-
-    private_key = it->second.priv;
-    return ErrorCode::SUCCESS;
+    // TBOX-SEC-DSN-CR-015 §8：API 不提供导出私钥明文能力（软 HSM 亦不例外）。
+    // 私钥只存在于加密 at-rest 存储中，仅 HSM 内部可用于签名。
+    (void)key_id;
+    (void)private_key;
+    SecLogAdapter::service().warn(
+        "sec.hsm.soft_export_denied", "软件 HSM 不允许导出私钥明文（fail-closed）");
+    return ErrorCode::NOT_IMPLEMENTED;
 }
 
 ErrorCode SoftFileHsm::save_key_to_store(const std::string& key_id, const KeyData& key_data) {

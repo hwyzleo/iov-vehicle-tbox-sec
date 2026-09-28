@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 #include "csr_builder.h"
-#include "cloud_client.h"
 #include "sec_service.h"
 
 using namespace tbox::sec;
@@ -15,16 +14,6 @@ TEST(DeviceIdentityTest, CsrUsesHsmUid) {
     EXPECT_EQ(config.hsm_uid, "test-hsm-uid-001");
     EXPECT_EQ(config.key_id, "test-hsm-uid-001");
     EXPECT_EQ(config.algorithm, "ecdsa-p256");
-}
-
-// 验证 CertificateRequest 使用 ecu_uid
-TEST(DeviceIdentityTest, CertRequestUsesEcuUid) {
-    CertificateRequest request;
-    request.ecu_uid = "test-ecu-uid-001";
-    request.csr_der = {0x30, 0x82, 0x01, 0x00};
-
-    EXPECT_EQ(request.ecu_uid, "test-ecu-uid-001");
-    EXPECT_FALSE(request.csr_der.empty());
 }
 
 // 验证 ProvisionStatus 包含 ecu_uid

@@ -54,6 +54,10 @@ environment:
 sec:
   ipc:
     socket_path: "/tmp/tbox-sec.sock"
+  # Seed-Key 共享密钥（AES-128，32 hex 字符）。开发/测试显式提供；
+  # 出厂默认模板不含此键，缺失时 verify_key fail-closed。
+  seed_key:
+    shared_secret: "0102030405060708090a0b0c0d0e0f10"
   # MQTT TLS Credential Provider (TBOX-SEC-DSN-CR-010)
   # 提供该 profile 后 SEC 才会创建 TlsCredentialProvider；
   # 缺失时 getTlsCredential 直接返回 NOT_IMPLEMENTED (SEC-8004)

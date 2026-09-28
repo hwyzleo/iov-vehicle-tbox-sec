@@ -151,8 +151,11 @@ ErrorCode KeyEngine::export_device_private_key(const std::string& vin,
     return hsm_->export_private_key(key_id, private_key);
 }
 
-std::string KeyEngine::make_key_id(const std::string& device_sn, const std::string& key_id) const {
-    return device_sn + "+" + key_id;
+std::string KeyEngine::make_key_id(const std::string& hsm_uid, const std::string& key_id) const {
+    // 幂等键：hsm_uid + key_id（TBOX-SEC-DSN-CR-005 §3）。
+    // 身份维度统一为 hsm_uid(ecu_uid)，不绑定 VIN（VIN 可变且属业务标识，见 §1.1 Identity Contract）。
+    // key_id 为密钥代数/轮换标识，当前实现中与 hsm_uid 相同（单代密钥）。
+    return hsm_uid + "+" + key_id;
 }
 
 } // namespace sec

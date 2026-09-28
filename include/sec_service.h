@@ -12,7 +12,6 @@
 #include "key_engine.h"
 #include "csr_builder.h"
 #include "cert_validator.h"
-#include "cloud_client.h"
 #include "error_codes.h"
 #include "diag_service_interface.h"
 #include "prov_service_interface.h"
@@ -72,7 +71,9 @@ struct SecServiceConfig {
     std::string key_provisioning_mode = "hsm";
     bool is_production = false;
     SoftKeyConfig soft_key_config;
-    CloudConfig cloud_config;
+    /// TBOX-SEC-DSN-CR-003 / US-002：Seed-Key 共享密钥（16 字节 AES-128，hex 32 字符）。
+    /// 由 provisioning 注入，出厂默认模板不含该键；缺失时 verify_key fail-closed。
+    std::string seed_key_shared_secret;
     std::string store_root;  // Store root path (empty = default)
 
     // IPC configuration (framework-ipc)
@@ -116,24 +117,10 @@ struct SecServiceConfig {
         return key_provisioning_mode;
     }
 
-    std::string get_cloud_endpoint() const {
-        if (config_snapshot) return config_snapshot->getString("cloud.endpoint", "");
-        return cloud_config.oapi_endpoint;
-    }
-
-    int get_cloud_timeout_ms() const {
-        if (config_snapshot) return config_snapshot->getInt("cloud.timeout_ms", 5000);
-        return cloud_config.timeout_ms;
-    }
-
-    int get_cloud_retry_count() const {
-        if (config_snapshot) return config_snapshot->getInt("cloud.retry_count", 3);
-        return cloud_config.retry_count;
-    }
-
-    int get_cloud_retry_delay_ms() const {
-        if (config_snapshot) return config_snapshot->getInt("cloud.retry_delay_ms", 1000);
-        return cloud_config.retry_delay_ms;
+    /// Seed-Key 共享密钥（16 字节 AES-128，hex 32 字符；来自 provisioning，缺失 fail-closed）
+    std::string get_seed_key_shared_secret() const {
+        if (config_snapshot) return config_snapshot->getString("sec.seed_key.shared_secret", "");
+        return seed_key_shared_secret;
     }
 
     bool get_is_production() const {
@@ -177,15 +164,6 @@ struct SecServiceConfig {
     std::string get_soft_key_encryption_key_path() const {
         if (config_snapshot) return config_snapshot->getString("soft_key.encryption_key_path", "");
         return soft_key_config.encryption_key_path;
-    }
-
-    CloudConfig get_cloud_config() const {
-        CloudConfig config;
-        config.oapi_endpoint = get_cloud_endpoint();
-        config.timeout_ms = get_cloud_timeout_ms();
-        config.retry_count = get_cloud_retry_count();
-        config.retry_delay_ms = get_cloud_retry_delay_ms();
-        return config;
     }
 
     std::string get_store_root() const {
@@ -298,12 +276,9 @@ private:
     std::unique_ptr<KeyEngine> key_engine_;
     std::unique_ptr<CsrBuilder> csr_builder_;
     std::unique_ptr<CertValidator> cert_validator_;
-    std::unique_ptr<CloudClient> cloud_client_;
-
     std::vector<uint8_t> csr_der_;  // 存储构建的 CSR
 
     ErrorCode initialize_hsm();
-    ErrorCode initialize_cloud_client();
     ErrorCode load_provision_state_from_store();
     ErrorCode ensure_vehicle_info();
 
@@ -326,7 +301,6 @@ public:
     ErrorCode generate_and_store_key_pair();
 private:
     ErrorCode build_and_store_csr();
-    ErrorCode submit_csr_to_cloud();
     ErrorCode validate_and_store_certificate(const std::vector<uint8_t>& cert_der);
 
     void update_provision_state(ProvisionState state, const std::string& error = "");

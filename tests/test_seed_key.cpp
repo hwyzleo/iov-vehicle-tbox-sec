@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <fstream>
 #include <filesystem>
+#include <thread>
 #include "sec_service.h"
 #include "diag_service_interface.h"
 #include <openssl/aes.h>
@@ -66,6 +67,17 @@ private:
     bool initialized_ = false;
 };
 
+// AES-128-ECB(seed)：与 SecService::compute_expected_key 一致的 Seed-Key 算法（DSN §5）
+std::vector<uint8_t> computeExpectedKey(const std::vector<uint8_t>& seed) {
+    const uint8_t key[16] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,
+                             0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10};
+    AES_KEY aes;
+    AES_set_encrypt_key(key, 128, &aes);
+    std::vector<uint8_t> out(16);
+    AES_encrypt(seed.data(), out.data(), &aes);
+    return out;
+}
+
 class SeedKeyTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -86,10 +98,8 @@ protected:
         config.store_root = "/tmp/test_seed_key";
         config.soft_key_config.key_path = "/tmp/test_seed_key";
         config.state_file_path = "/tmp/test_seed_key_state.json";
-        config.cloud_config.oapi_endpoint = "https://test.example.com:10805";
-        config.cloud_config.timeout_ms = 5000;
-        config.cloud_config.retry_count = 1;
-        config.cloud_config.retry_delay_ms = 1000;
+        // Seed-Key 共享密钥（AES-128，16 字节 = 32 hex 字符），测试固定值
+        config.seed_key_shared_secret = "0102030405060708090a0b0c0d0e0f10";
 
         // Create mock services
         mock_diag_ = std::make_shared<MockDiagService>();
@@ -154,14 +164,8 @@ TEST_F(SeedKeyTest, VerifyKeySuccess) {
     std::vector<uint8_t> seed;
     ASSERT_EQ(service_->get_seed(0x27, seed), ErrorCode::SUCCESS);
     
-    // Compute expected key using XOR algorithm (same as in SecService)
-    std::vector<uint8_t> shared_secret(16, 0x01); // Same as in SecService
-    std::vector<uint8_t> expected_key(16);
-    
-    // XOR-based computation: key = seed XOR shared_secret
-    for (size_t i = 0; i < 16; i++) {
-        expected_key[i] = seed[i] ^ shared_secret[i];
-    }
+    // Compute expected key using AES-128-ECB algorithm (same as in SecService)
+    std::vector<uint8_t> expected_key = computeExpectedKey(seed);
     
     // Verify key with UDS security level 0x28 (sendKey = requestSeed + 1)
     ErrorCode result = service_->verify_key(0x28, expected_key);
@@ -208,6 +212,29 @@ TEST_F(SeedKeyTest, VerifyKeyWithoutGetSeed) {
     EXPECT_EQ(result, ErrorCode::KEY_VERIFICATION_FAILED);
 }
 
+// Seed-Key 共享密钥缺失时 fail-closed（不允许退回 XOR/占位算法）
+TEST(SeedKeyUnconfiguredSecretTest, VerifyKeyFailsClosed) {
+    std::filesystem::remove_all("/tmp/test_seed_key_nosecret");
+    SecServiceConfig config;
+    config.hsm_type = "software";
+    config.store_root = "/tmp/test_seed_key_nosecret";
+    config.soft_key_config.key_path = "/tmp/test_seed_key_nosecret";
+    config.state_file_path = "/tmp/test_seed_key_nosecret/state.json";
+    // 不设置 seed_key_shared_secret：模拟 provisioning 未注入
+
+    auto prov = std::make_shared<MockProvService>();
+    auto diag = std::make_shared<MockDiagService>();
+    auto service = std::make_unique<SecService>(config, diag, prov);
+    ASSERT_EQ(service->initialize(), ErrorCode::SUCCESS);
+
+    std::vector<uint8_t> seed;
+    ASSERT_EQ(service->get_seed(0x27, seed), ErrorCode::SUCCESS);
+    std::vector<uint8_t> key(16, 0x00);
+    // 任何 key 都必须失败：共享密钥未配置，不产生期望 key
+    EXPECT_EQ(service->verify_key(0x28, key), ErrorCode::KEY_VERIFICATION_FAILED);
+    std::filesystem::remove_all("/tmp/test_seed_key_nosecret");
+}
+
 TEST_F(SeedKeyTest, VerifyKeyLockout) {
     // Get a seed
     std::vector<uint8_t> seed;
@@ -234,14 +261,8 @@ TEST_F(SeedKeyTest, SeedInvalidatedAfterUse) {
     std::vector<uint8_t> seed;
     ASSERT_EQ(service_->get_seed(0x27, seed), ErrorCode::SUCCESS);
     
-    // Compute valid key using XOR algorithm
-    std::vector<uint8_t> shared_secret(16, 0x01);
-    std::vector<uint8_t> expected_key(16);
-    
-    // XOR-based computation: key = seed XOR shared_secret
-    for (size_t i = 0; i < 16; i++) {
-        expected_key[i] = seed[i] ^ shared_secret[i];
-    }
+    // Compute valid key using AES-128-ECB algorithm
+    std::vector<uint8_t> expected_key = computeExpectedKey(seed);
     
     // Verify key (should succeed and invalidate seed)
     EXPECT_EQ(service_->verify_key(0x28, expected_key), ErrorCode::SUCCESS);

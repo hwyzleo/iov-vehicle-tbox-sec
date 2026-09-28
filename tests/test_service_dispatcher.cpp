@@ -88,10 +88,8 @@ protected:
         config.store_root = "/tmp/test_dispatcher";
         config.soft_key_config.key_path = "/tmp/test_dispatcher";
         config.state_file_path = "/tmp/test_dispatcher_state.json";
-        config.cloud_config.oapi_endpoint = "https://test.example.com:10805";
-        config.cloud_config.timeout_ms = 5000;
-        config.cloud_config.retry_count = 1;
-        config.cloud_config.retry_delay_ms = 1000;
+        // Seed-Key 共享密钥（AES-128，32 hex 字符），测试固定值
+        config.seed_key_shared_secret = "0102030405060708090a0b0c0d0e0f10";
 
         // Create mock services
         auto mock_diag = std::make_shared<MockDiagService>();
@@ -132,14 +130,13 @@ TEST_F(ServiceDispatcherTest, SendKeySuccess) {
     ASSERT_EQ(dispatcher_->handle_security_access(0x27, {}, response), ErrorCode::SUCCESS);
     std::vector<uint8_t> seed = response.data;
     
-    // Compute valid key using XOR algorithm
-    std::vector<uint8_t> shared_secret(16, 0x01);
+    // Compute valid key using AES-128-ECB (same as SecService::compute_expected_key, DSN §5)
+    const uint8_t key[16] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,
+                             0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10};
+    AES_KEY aes;
+    AES_set_encrypt_key(key, 128, &aes);
     std::vector<uint8_t> expected_key(16);
-    
-    // XOR-based computation: key = seed XOR shared_secret
-    for (size_t i = 0; i < 16; i++) {
-        expected_key[i] = seed[i] ^ shared_secret[i];
-    }
+    AES_encrypt(seed.data(), expected_key.data(), &aes);
     
     // sendKey with level 0x28 (even, = 0x27 + 1)
     ErrorCode result = dispatcher_->handle_security_access(0x28, expected_key, response);
@@ -201,14 +198,13 @@ TEST_F(ServiceDispatcherTest, SendKeyUsesRawLevelNotDecremented) {
     ASSERT_EQ(dispatcher_->handle_security_access(0x27, {}, response), ErrorCode::SUCCESS);
     std::vector<uint8_t> seed = response.data;
     
-    // Compute valid key using XOR algorithm
-    std::vector<uint8_t> shared_secret(16, 0x01);
+    // Compute valid key using AES-128-ECB (same as SecService::compute_expected_key, DSN §5)
+    const uint8_t key[16] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,
+                             0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10};
+    AES_KEY aes;
+    AES_set_encrypt_key(key, 128, &aes);
     std::vector<uint8_t> expected_key(16);
-    
-    // XOR-based computation: key = seed XOR shared_secret
-    for (size_t i = 0; i < 16; i++) {
-        expected_key[i] = seed[i] ^ shared_secret[i];
-    }
+    AES_encrypt(seed.data(), expected_key.data(), &aes);
     
     // sendKey with level 0x28 - should work because SEC expects 0x28
     ErrorCode result = dispatcher_->handle_security_access(0x28, expected_key, response);

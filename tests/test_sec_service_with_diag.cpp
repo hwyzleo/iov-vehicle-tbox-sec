@@ -355,5 +355,6 @@ TEST_F(SecServiceFallbackTest, ApplyCertificateWithoutDiagService) {
     ASSERT_EQ(result, ErrorCode::SUCCESS);
 
     result = service.apply_certificate();
-    EXPECT_EQ(result, ErrorCode::PKI_CONNECTION_FAILED);
+    // 设计：无 DIAG 时 SEC 不提供直连云端提交路径（MES 中继是唯一通道）
+    EXPECT_EQ(result, ErrorCode::NOT_IMPLEMENTED);
 }

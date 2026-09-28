@@ -38,7 +38,8 @@ TEST(ShowCsr, GenerateAndDisplay) {
     std::string vin = "TESTVIN1234567890";
     std::string hsm_uid = "00000000000000000000000000000001";
     KeyPair key_pair;
-    ASSERT_EQ(key_engine.generate_device_key(vin, hsm_uid, key_pair), ErrorCode::SUCCESS);
+    // 身份维度为 hsm_uid（DSN §1.1），与 build_csr 的 key 查找一致
+    ASSERT_EQ(key_engine.generate_device_key(hsm_uid, hsm_uid, key_pair), ErrorCode::SUCCESS);
     
     std::cout << "\n=== 生成的密钥信息 ===" << std::endl;
     std::cout << "Key ID: " << key_pair.key_id << std::endl;

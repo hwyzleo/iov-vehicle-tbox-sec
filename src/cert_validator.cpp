@@ -12,6 +12,55 @@
 namespace tbox {
 namespace sec {
 
+namespace {
+
+// Subject CN 是否与期望的 hsm_uid(ecu_uid) 一致
+bool subjectCommonNameMatches(const X509* cert, const std::string& expected) {
+    X509_NAME* subject = X509_get_subject_name(const_cast<X509*>(cert));
+    const int idx = X509_NAME_get_index_by_NID(subject, NID_commonName, -1);
+    if (idx < 0) return false;
+    X509_NAME_ENTRY* entry = X509_NAME_get_entry(subject, idx);
+    ASN1_STRING* cn = X509_NAME_ENTRY_get_data(entry);
+    unsigned char* utf8 = nullptr;
+    const int len = ASN1_STRING_to_UTF8(&utf8, cn);
+    if (len < 0) return false;
+    const std::string cn_str(reinterpret_cast<char*>(utf8), static_cast<size_t>(len));
+    OPENSSL_free(utf8);
+    return cn_str == expected;
+}
+
+// KeyUsage 必须含 digitalSignature（DSN §5 证书 profile）
+bool hasKeyUsageDigitalSignature(const X509* cert) {
+    ASN1_BIT_STRING* usage = static_cast<ASN1_BIT_STRING*>(
+        X509_get_ext_d2i(cert, NID_key_usage, nullptr, nullptr));
+    if (!usage) return false;
+    const bool ok = (usage->length > 0) && (usage->data[0] & KU_DIGITAL_SIGNATURE);
+    ASN1_BIT_STRING_free(usage);
+    return ok;
+}
+
+// ExtendedKeyUsage 必须含 clientAuth (1.3.6.1.5.5.7.3.2)（DSN §5 证书 profile）
+bool hasClientAuthEku(const X509* cert) {
+    EXTENDED_KEY_USAGE* eku = static_cast<EXTENDED_KEY_USAGE*>(
+        X509_get_ext_d2i(cert, NID_ext_key_usage, nullptr, nullptr));
+    if (!eku) return false;
+    ASN1_OBJECT* client_auth = OBJ_txt2obj("1.3.6.1.5.5.7.3.2", 1);
+    bool ok = false;
+    if (client_auth) {
+        for (int i = 0; i < sk_ASN1_OBJECT_num(eku); ++i) {
+            if (OBJ_cmp(sk_ASN1_OBJECT_value(eku, i), client_auth) == 0) {
+                ok = true;
+                break;
+            }
+        }
+        ASN1_OBJECT_free(client_auth);
+    }
+    EXTENDED_KEY_USAGE_free(eku);
+    return ok;
+}
+
+} // namespace
+
 CertValidator::CertValidator(KeyEngine* key_engine)
     : key_engine_(key_engine) {}
 
@@ -45,6 +94,33 @@ ErrorCode CertValidator::validate_certificate(const std::string& vin,
     if (!signature_valid) {
         valid = false;
         return ErrorCode::CERT_VALIDATION_FAILED;
+    }
+
+    // TBOX-SEC-DSN-CR-003 §5 / REQ US-001：证书 profile 校验。
+    //   Subject DN CN == hsm_uid(ecu_uid)；KU 含 digitalSignature；EKU 含 clientAuth。
+    // 任一不满足即拒绝写入（fail-closed），不静默接受。
+    {
+        const unsigned char* p = cert_der.data();
+        X509* cert = d2i_X509(nullptr, &p, cert_der.size());
+        if (!cert) {
+            valid = false;
+            return ErrorCode::CERT_VALIDATION_FAILED;
+        }
+        const bool cn_ok = subjectCommonNameMatches(cert, ecu_uid);
+        const bool ku_ok = hasKeyUsageDigitalSignature(cert);
+        const bool eku_ok = hasClientAuthEku(cert);
+        X509_free(cert);
+
+        if (!cn_ok || !ku_ok || !eku_ok) {
+            SecLogAdapter::certificate().error(
+                "sec.certificate.profile.rejected",
+                "证书 profile 校验失败：CN/KeyUsage/ExtendedKeyUsage 与设备身份不符",
+                {{"cn_match", tbox::fw::log::FieldValue::makeBool(cn_ok)},
+                 {"ku_digital_signature", tbox::fw::log::FieldValue::makeBool(ku_ok)},
+                 {"eku_client_auth", tbox::fw::log::FieldValue::makeBool(eku_ok)}});
+            valid = false;
+            return ErrorCode::CERT_VALIDATION_FAILED;
+        }
     }
 
     // Match certificate key with device key
@@ -284,87 +360,80 @@ ErrorCode CertValidator::verify_certificate_signature(const std::vector<uint8_t>
         {{"is_self_signed", tbox::fw::log::FieldValue::makeBool(is_self_signed)}});
 
     if (is_self_signed) {
-        // For self-signed certificates, use the certificate's own public key
-        EVP_PKEY* pubkey = X509_get_pubkey(cert);
-        if (!pubkey) {
-            SecLogAdapter::certificate().error(
-                "sec.cert.self_signed_pubkey_failed", "自签名证书获取公钥失败");
-            X509_free(cert);
-            valid = false;
-            return ErrorCode::CERT_VALIDATION_FAILED;
-        }
-
-        // Verify signature using OpenSSL
-        int verify_result = X509_verify(cert, pubkey);
-        EVP_PKEY_free(pubkey);
-
-        valid = (verify_result == 1);
-        SecLogAdapter::certificate().debug(
-            "sec.cert.self_signed_verify_result", "自签名证书验签结果",
-            {{"verify_result", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(verify_result))},
-             {"valid", tbox::fw::log::FieldValue::makeBool(valid)}});
+        // 设备叶证书禁止自签名：用自身公钥验签必然通过，等于无信任锚（fail-closed 拒绝）。
+        SecLogAdapter::certificate().error(
+            "sec.cert.self_signed_rejected", "拒绝自签名设备证书（无信任锚）");
         X509_free(cert);
-        return ErrorCode::SUCCESS;
-    } else {
-        // For CA-signed certificates, use the CA certificate's public key
-        SecLogAdapter::certificate().debug(
-            "sec.cert.ca_signed", "CA 签名证书",
-            {{"ca_cert_empty", tbox::fw::log::FieldValue::makeBool(ca_cert_der_.empty())}});
-
-        if (ca_cert_der_.empty()) {
-            // No CA certificate available for verification
-            SecLogAdapter::certificate().error(
-                "sec.cert.no_ca_available", "无可用 CA 证书用于验签");
-            X509_free(cert);
-            valid = false;
-            return ErrorCode::CERT_VALIDATION_FAILED;
-        }
-
-        // Parse CA certificate (try DER first, then PEM)
-        const unsigned char* ca_p = ca_cert_der_.data();
-        X509* ca_cert = d2i_X509(NULL, &ca_p, ca_cert_der_.size());
-        if (!ca_cert) {
-            // Try PEM format
-            SecLogAdapter::certificate().debug(
-                "sec.cert.ca_der_parse_failed_try_pem", "CA 证书 DER 解析失败，尝试 PEM");
-            BIO* bio = BIO_new_mem_buf(ca_cert_der_.data(), ca_cert_der_.size());
-            if (bio) {
-                ca_cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
-                BIO_free(bio);
-            }
-        }
-        if (!ca_cert) {
-            SecLogAdapter::certificate().error(
-                "sec.cert.ca_parse_failed", "CA 证书解析失败（DER/PEM）");
-            X509_free(cert);
-            valid = false;
-            return ErrorCode::CERT_VALIDATION_FAILED;
-        }
-
-        // Get CA certificate's public key
-        EVP_PKEY* ca_pubkey = X509_get_pubkey(ca_cert);
-        X509_free(ca_cert);
-
-        if (!ca_pubkey) {
-            SecLogAdapter::certificate().error(
-                "sec.cert.ca_pubkey_failed", "CA 证书获取公钥失败");
-            X509_free(cert);
-            valid = false;
-            return ErrorCode::CERT_VALIDATION_FAILED;
-        }
-
-        // Verify certificate signature using CA's public key
-        int verify_result = X509_verify(cert, ca_pubkey);
-        EVP_PKEY_free(ca_pubkey);
-
-        valid = (verify_result == 1);
-        SecLogAdapter::certificate().debug(
-            "sec.cert.ca_signed_verify_result", "CA 签名证书验签结果",
-            {{"verify_result", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(verify_result))},
-             {"valid", tbox::fw::log::FieldValue::makeBool(valid)}});
-        X509_free(cert);
-        return ErrorCode::SUCCESS;
+        valid = false;
+        return ErrorCode::CERT_VALIDATION_FAILED;
     }
+
+    // CA 签名证书：必须已配置 CA 且叶证书 issuer == CA subject，再用 CA 公钥验签。
+    SecLogAdapter::certificate().debug(
+        "sec.cert.ca_signed", "CA 签名证书",
+        {{"ca_cert_empty", tbox::fw::log::FieldValue::makeBool(ca_cert_der_.empty())}});
+
+    if (ca_cert_der_.empty()) {
+        SecLogAdapter::certificate().error(
+            "sec.cert.no_ca_available", "无可用 CA 证书用于验签（fail-closed）");
+        X509_free(cert);
+        valid = false;
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
+
+    // Parse CA certificate (try DER first, then PEM)
+    const unsigned char* ca_p = ca_cert_der_.data();
+    X509* ca_cert = d2i_X509(NULL, &ca_p, ca_cert_der_.size());
+    if (!ca_cert) {
+        SecLogAdapter::certificate().debug(
+            "sec.cert.ca_der_parse_failed_try_pem", "CA 证书 DER 解析失败，尝试 PEM");
+        BIO* bio = BIO_new_mem_buf(ca_cert_der_.data(), ca_cert_der_.size());
+        if (bio) {
+            ca_cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+            BIO_free(bio);
+        }
+    }
+    if (!ca_cert) {
+        SecLogAdapter::certificate().error(
+            "sec.cert.ca_parse_failed", "CA 证书解析失败（DER/PEM）");
+        X509_free(cert);
+        valid = false;
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
+
+    // 叶证书 issuer 必须与 CA subject 一致，否则验签无意义（fail-closed）
+    if (X509_NAME_cmp(issuer, X509_get_subject_name(ca_cert)) != 0) {
+        SecLogAdapter::certificate().error(
+            "sec.cert.ca_issuer_mismatch", "叶证书 issuer 与已配置 CA 不一致");
+        X509_free(ca_cert);
+        X509_free(cert);
+        valid = false;
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
+
+    // Get CA certificate's public key
+    EVP_PKEY* ca_pubkey = X509_get_pubkey(ca_cert);
+    X509_free(ca_cert);
+
+    if (!ca_pubkey) {
+        SecLogAdapter::certificate().error(
+            "sec.cert.ca_pubkey_failed", "CA 证书获取公钥失败");
+        X509_free(cert);
+        valid = false;
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
+
+    // Verify certificate signature using CA's public key
+    int verify_result = X509_verify(cert, ca_pubkey);
+    EVP_PKEY_free(ca_pubkey);
+
+    valid = (verify_result == 1);
+    SecLogAdapter::certificate().debug(
+        "sec.cert.ca_signed_verify_result", "CA 签名证书验签结果",
+        {{"verify_result", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(verify_result))},
+         {"valid", tbox::fw::log::FieldValue::makeBool(valid)}});
+    X509_free(cert);
+    return ErrorCode::SUCCESS;
 }
 
 void CertValidator::set_ca_certificate(const std::vector<uint8_t>& ca_cert_der) {
@@ -389,9 +458,9 @@ ErrorCode CertValidator::match_certificate_key(const std::vector<uint8_t>& cert_
         return result;
     }
 
-    // Get device public key
+    // Get device public key（身份维度为 hsm_uid(ecu_uid)，不绑定 VIN，见 DSN §1.1/§3）
     KeyPair key_pair;
-    result = key_engine_->get_device_key(vin, ecu_uid, key_pair);
+    result = key_engine_->get_device_key(ecu_uid, ecu_uid, key_pair);
     if (result != ErrorCode::SUCCESS) {
         match = false;
         return result;
