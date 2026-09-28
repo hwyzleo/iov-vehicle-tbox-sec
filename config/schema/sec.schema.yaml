@@ -51,6 +51,16 @@ sec:
         peer_service: { type: string, required: false }
         notify_on_change: { type: bool, required: false, default: true }
         ref_ttl_sec: { type: int, required: false, default: 3600 }
+        root_ca_source:
+          type: string
+          required: false
+          default: "/usr/share/tbox/sec/trust/mqtt-root-ca.pem"
+          path_validation: sanitized
+          description: >
+            TBOX-SEC-DSN-CR-014: Broker 信任根 source（文件路径）。量产唯一指向 BUILD
+            安装资产 /usr/share/tbox/sec/trust/mqtt-root-ca.pem；CA Material Loader 启动时
+            校验并导入 key=root_ca。缺失/非法时 TLS 保持 NOT_READY（fail-closed），
+            不得回退到 storage.ca_cert 或 MQTT 本地文件。
 
 # -----------------------------------------------------------------------------
 # hsm: HSM/SE 后端（非秘密引用）

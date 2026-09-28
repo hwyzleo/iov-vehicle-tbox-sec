@@ -46,6 +46,12 @@ std::string error_code_to_string(ErrorCode code) {
         case ErrorCode::TLS_KEY_REF_INVALID: return "TLS_KEY_REF_INVALID";
         case ErrorCode::TLS_SIGN_ALGORITHM_NOT_ALLOWED: return "TLS_SIGN_ALGORITHM_NOT_ALLOWED";
         case ErrorCode::TLS_HSM_SIGN_FAILED: return "TLS_HSM_SIGN_FAILED";
+        case ErrorCode::TLS_MATERIAL_KEY_MISSING: return "TLS_MATERIAL_KEY_MISSING";
+        case ErrorCode::TLS_MATERIAL_FORMAT_INVALID: return "TLS_MATERIAL_FORMAT_INVALID";
+        case ErrorCode::TLS_CHAIN_INVALID: return "TLS_CHAIN_INVALID";
+        case ErrorCode::TLS_KEY_MISMATCH: return "TLS_KEY_MISMATCH";
+        case ErrorCode::TLS_CERT_EXPIRED: return "TLS_CERT_EXPIRED";
+        case ErrorCode::TLS_CA_INVALID: return "TLS_CA_INVALID";
         case ErrorCode::ACL_DENIED: return "ACL_DENIED";
         case ErrorCode::CONFIG_ERROR: return "CONFIG_ERROR";
         case ErrorCode::INTERNAL_ERROR: return "INTERNAL_ERROR";
@@ -95,6 +101,12 @@ std::string error_code_to_description(ErrorCode code) {
         case ErrorCode::TLS_KEY_REF_INVALID: return "TLS private key reference invalid or expired";
         case ErrorCode::TLS_SIGN_ALGORITHM_NOT_ALLOWED: return "TLS signature algorithm or usage not allowed";
         case ErrorCode::TLS_HSM_SIGN_FAILED: return "HSM/SE TLS signing failed";
+        case ErrorCode::TLS_MATERIAL_KEY_MISSING: return "TLS material key missing (root_ca or device_cert_chain)";
+        case ErrorCode::TLS_MATERIAL_FORMAT_INVALID: return "TLS material format invalid (bad PEM/DER/profile)";
+        case ErrorCode::TLS_CHAIN_INVALID: return "TLS client certificate chain invalid";
+        case ErrorCode::TLS_KEY_MISMATCH: return "TLS client certificate public key does not match HSM private key";
+        case ErrorCode::TLS_CERT_EXPIRED: return "TLS client certificate expired or not yet valid";
+        case ErrorCode::TLS_CA_INVALID: return "Broker trust CA invalid (not a CA / unusable)";
         case ErrorCode::ACL_DENIED: return "Caller not authorized for this profile";
         case ErrorCode::CONFIG_ERROR: return "Configuration error";
         case ErrorCode::INTERNAL_ERROR: return "Internal error";

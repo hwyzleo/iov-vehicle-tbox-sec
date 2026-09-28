@@ -69,9 +69,13 @@ sec:
           - ecdsa_secp256r1_sha256
         peer_service: tbox-mqtt.service
         notify_on_change: true
-        # TLS 材料来源：SEC 受控存储 framework-store（服务名 sec）固定 key
-        #   root_ca            -> 共享信任根（多处引用：注入校验 + MQTT 服务端验证）
-        #   device_cert_chain  -> 设备客户端证书链（PEM，leaf->intermediate）
-        # 物理落点：{common.store.root}/sec/root_ca.dat、{common.store.root}/sec/device_cert_chain.dat
-        # 量产由注入流程写入；测试环境将证书 PEM 放入上述 .dat 文件即可，无需在此配置路径。
+        # TBOX-SEC-DSN-CR-014: Broker 信任根来源。量产固定指向 BUILD 安装资产
+        # /usr/share/tbox/sec/trust/mqtt-root-ca.pem；测试/开发用本仓库测试信任根
+        # （须真实经过 CA Material Loader -> store -> Provider 链路，禁止直写 .dat）。
+        root_ca_source: "./trust/mqtt-root-ca.pem"
+        # TLS 材料来源：SEC 受控存储固定 key
+        #   root_ca            -> 共享信任根（由 CA Material Loader 从 root_ca_source 导入）
+        #   device_cert_chain  -> 设备客户端证书链（由注入流程 DER→PEM 原子发布，
+        #                          读自 CertificateStore 当前 generation）
+        # 物理落点：{common.store.root}/sec/root_ca.dat、{common.store.root}/sec/certstore/
         ref_ttl_sec: 3600

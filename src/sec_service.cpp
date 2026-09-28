@@ -13,12 +13,17 @@
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/buffer.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
+#include <openssl/pem.h>
+#include <openssl/sha.h>
 
 #ifdef USE_YAML_CPP
 #include <yaml-cpp/yaml.h>
 #endif
 
 #include "tls_credential_provider.h"
+#include "certificate_store.h"
 #include "peer_credential.h"
 #include "ipc_protocol.h"
 
@@ -102,74 +107,43 @@ ErrorCode SecService::initialize() {
         }
     }
 
-    // Load CA certificate
-    // 优先从 SEC 受控存储读取共享信任根（key: root_ca，PEM），与 TLS provider 同源，
-    // 消除 storage.ca_cert 与 tls root_ca 的重复。缺失时回退到旧的配置文件路径逻辑。
-    bool ca_loaded = false;
+    // Load CA / Broker trust root via CA Material Loader（TBOX-SEC-DSN-CR-014）
+    // root_ca 的唯一量产来源为 BUILD 安装的信任根文件（sec.tls.profiles.mqtt.root_ca_source，
+    // 默认 /usr/share/tbox/sec/trust/mqtt-root-ca.pem）；CA Material Loader 校验后经
+    // framework-store 原子导入 key=root_ca。删除 storage.ca_cert 旧 fallback。
     if (store_.has_value() && store_->isReady()) {
-        try {
-            if (store_->has("root_ca")) {
+        initializeCaMaterialLoader();
+        if (store_->has("root_ca")) {
+            try {
                 std::string root_ca_pem = store_->load<std::string>("root_ca");
                 if (!root_ca_pem.empty()) {
                     std::vector<uint8_t> ca_cert_bytes(root_ca_pem.begin(), root_ca_pem.end());
                     if (set_ca_certificate(ca_cert_bytes) == ErrorCode::SUCCESS) {
                         SecLogAdapter::certificate().info(
                             "sec.ca.loaded_from_store", "CA 证书从 store 加载成功 (key=root_ca)");
-                        ca_loaded = true;
                     }
                 }
+            } catch (const std::exception& e) {
+                SecLogAdapter::certificate().error(
+                    "sec.ca.load_from_store_failed", "从 store 加载 root_ca 失败",
+                    {{"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
             }
-        } catch (const std::exception& e) {
-            SecLogAdapter::certificate().error(
-                "sec.ca.load_from_store_failed", "从 store 加载 root_ca 失败",
-                {{"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
         }
+    } else {
+        SecLogAdapter::certificate().warn(
+            "sec.ca.store_unavailable", "store 不可用，跳过 CA Material Loader（TLS 保持 NOT_READY）");
     }
 
-    if (!ca_loaded) {
-        // 回退：旧的配置文件路径（storage.ca_cert / config.yaml）
-        std::string ca_cert_path = config_.get_ca_cert_path();
-
-        SecLogAdapter::certificate().debug(
-            "sec.ca.fallback_init", "回退到配置文件路径加载 CA 证书",
-            {{"ca_cert_path", tbox::fw::log::FieldValue::makeString(ca_cert_path)}});
-
-        // If ca_cert_path is empty, try to load from default config
-        if (ca_cert_path.empty()) {
-            ca_cert_path = find_ca_cert_from_config();
-            SecLogAdapter::certificate().debug(
-                "sec.ca.config_path_resolved", "find_ca_cert_from_config 解析路径",
-                {{"ca_cert_path", tbox::fw::log::FieldValue::makeString(ca_cert_path)}});
-        }
-
-        if (!ca_cert_path.empty()) {
-            std::ifstream ca_file(ca_cert_path, std::ios::binary);
-            if (ca_file.is_open()) {
-                std::vector<uint8_t> ca_cert_der(
-                    (std::istreambuf_iterator<char>(ca_file)),
-                    std::istreambuf_iterator<char>());
-                ca_file.close();
-
-                if (!ca_cert_der.empty()) {
-                    result = set_ca_certificate(ca_cert_der);
-                    if (result != ErrorCode::SUCCESS) {
-                        SecLogAdapter::certificate().error(
-                            "sec.ca.load_file_failed", "CA 证书文件加载失败",
-                            {{"ca_cert_path", tbox::fw::log::FieldValue::makeString(ca_cert_path)},
-                             {"error_code", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(result))}});
-                        // Continue initialization - CA cert is optional for self-signed certs
-                    } else {
-                        SecLogAdapter::certificate().info(
-                            "sec.ca.loaded_from_file", "CA 证书从文件加载成功",
-                            {{"ca_cert_path", tbox::fw::log::FieldValue::makeString(ca_cert_path)}});
-                    }
-                }
-            } else {
-                SecLogAdapter::certificate().error(
-                    "sec.ca.file_open_failed", "无法打开 CA 证书文件",
-                    {{"ca_cert_path", tbox::fw::log::FieldValue::makeString(ca_cert_path)}});
-                // Continue initialization - CA cert is optional
-            }
+    // TBOX-SEC-DSN-CR-014: 初始化跨键原子证书存储（generation + manifest + CURRENT 指针）
+    // 供证书注入原子提交 device_cert_chain/DeviceCert/version/ProvisionState 使用。
+    if (store_.has_value() && store_->isReady()) {
+        std::string cert_root = config_.get_store_root() + "/sec/certstore";
+        cert_store_ = std::make_unique<CertificateStore>(cert_root);
+        if (!cert_store_->openAndRecover()) {
+            SecLogAdapter::certificate().error(
+                "sec.certstore.recover_failed",
+                "CertificateStore 启动恢复失败，证书/TLS 材料 fail-closed");
+            cert_store_.reset();
         }
     }
 
@@ -954,12 +928,23 @@ ErrorCode SecService::validate_and_store_certificate(const std::vector<uint8_t>&
         return ErrorCode::CERT_KEY_MISMATCH;
     }
 
-    // Store certificate to file system
-    result = store_certificate_to_file(cert_der);
+    // TBOX-SEC-DSN-CR-014: DER -> canonical PEM（leaf -> intermediate）
+    std::string pem;
+    if (!derToCanonicalPem(cert_der, pem)) {
+        SecLogAdapter::certificate().error(
+            "sec.certificate.install.failed",
+            "证书安装失败：DER 转 canonical PEM 失败",
+            {{"failure_stage", tbox::fw::log::FieldValue::makeString("format")}});
+        return ErrorCode::CERT_INSTALL_FAILED;
+    }
+
+    // TBOX-SEC-DSN-CR-014: 幂等判重 + 原子 commit + reload mqtt profile
+    // （commit 成功才返回成功；失败保持旧材料/旧档案/原 ProvisionState）
+    result = publishDeviceCertChain(pem);
     if (result != ErrorCode::SUCCESS) {
         SecLogAdapter::certificate().error(
             "sec.certificate.install.failed",
-            "证书安装失败",
+            "证书安装失败：材料原子发布失败",
             {
                 {"failure_stage", tbox::fw::log::FieldValue::makeString("storage")},
                 {"error_code", tbox::fw::log::FieldValue::makeString(error_code_to_string(result))}
@@ -979,99 +964,195 @@ ErrorCode SecService::validate_and_store_certificate(const std::vector<uint8_t>&
     return ErrorCode::SUCCESS;
 }
 
-ErrorCode SecService::store_certificate_to_file(const std::vector<uint8_t>& cert_der) {
-    // Try store first
-    if (store_.has_value() && store_->isReady()) {
-        try {
-            std::string cert_key = "device_cert:" + vin_ + ":" + ecu_uid_;
-            std::string encoded = base64_encode(cert_der);
-            store_->save(cert_key, encoded);
-            SecLogAdapter::certificate().info(
-                "sec.certificate.stored_in_store", "证书已存入 store",
-                {{"cert_key", tbox::fw::log::FieldValue::makeString(cert_key)}});
-            return ErrorCode::SUCCESS;
-        } catch (const std::exception& e) {
-            SecLogAdapter::certificate().error(
-                "sec.certificate.store_save_failed", "存入 store 失败，回退到文件存储",
-                {{"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
-            // Fall through to file-based storage
+// ============================================================
+// TBOX-SEC-DSN-CR-014: 证书材料原子发布（Certificate Material Publisher）
+// ============================================================
+
+ErrorCode SecService::publishDeviceCertChain(const std::string& canonical_pem) {
+    if (!cert_store_) {
+        SecLogAdapter::certificate().error(
+            "sec.certificate.commit.store_unavailable", "CertificateStore 不可用，拒绝发布证书材料");
+        return ErrorCode::STORAGE_WRITE_FAILED;
+    }
+
+    // 幂等判重：相同 canonical PEM digest 不提交、不递增版本、不发布无变化事件
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256(reinterpret_cast<const unsigned char*>(canonical_pem.data()),
+           canonical_pem.size(), hash);
+    static const char* kHex = "0123456789abcdef";
+    std::string new_digest;
+    new_digest.reserve(SHA256_DIGEST_LENGTH * 2);
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+        new_digest += kHex[hash[i] >> 4];
+        new_digest += kHex[hash[i] & 0x0F];
+    }
+    std::string cur_digest = cert_store_->currentChainDigest();
+    if (!cur_digest.empty() && cur_digest == new_digest) {
+        SecLogAdapter::certificate().info(
+            "sec.certificate.install.idempotent",
+            "相同证书重复注入，幂等跳过（不递增版本）");
+        return ErrorCode::SUCCESS;
+    }
+
+    // 版本单调递增（持久化于 generation）
+    auto snap = cert_store_->currentSnapshot();
+    uint64_t version = snap ? snap->version + 1 : 1;
+
+    // DeviceCert 档案快照（非权威密钥来源；当前有效链投影到 device_cert_chain）
+    nlohmann::json dc;
+    dc["cert_id"] = vin_ + ":" + ecu_uid_;
+    dc["bound_vin"] = vin_;
+    dc["bound_ecu_uid"] = ecu_uid_;
+    dc["status"] = "ACTIVE";
+    dc["version"] = version;
+    dc["cert_sha256"] = new_digest;
+
+    CertificateCommit commit;
+    commit.device_cert_chain_pem = canonical_pem;
+    commit.device_cert_json = dc.dump();
+    commit.provision_state = provision_state_to_string(ProvisionState::CERT_INSTALLED);
+    commit.version = version;
+
+    // 跨键原子 commit：成功才切换 CURRENT；失败保持旧材料/旧档案/原 ProvisionState
+    ErrorCode rc = cert_store_->commit(commit);
+    if (rc != ErrorCode::SUCCESS) {
+        SecLogAdapter::certificate().error(
+            "sec.certificate.commit.failed", "证书材料原子提交失败",
+            {{"error_code", tbox::fw::log::FieldValue::makeString(error_code_to_string(rc))}});
+        return rc;
+    }
+
+    // commit 成功后立即 reload mqtt profile：version 单调递增、重新校验材料、
+    // 状态 READY 时发布 sec.tls_credential.changed（reload 失败 → NOT_READY/ERROR，证书保持已提交）
+    if (tls_provider_) {
+        ErrorCode rl = tls_provider_->rotateCredential("mqtt");
+        if (rl != ErrorCode::SUCCESS) {
+            SecLogAdapter::tls_credential().warn(
+                "sec.tls_credential.reload_failed",
+                "证书已提交，TLS reload 未就绪（root_ca 缺失或材料校验失败）",
+                {{"error_code", tbox::fw::log::FieldValue::makeString(error_code_to_string(rl))}});
         }
     }
-
-    // Fallback to file-based storage
-    // Determine certificate store path
-    std::string cert_dir = config_.get_cert_store_path();
-    if (cert_dir.empty()) {
-        // Try to find from config file
-        cert_dir = find_cert_store_from_config();
-    }
-    if (cert_dir.empty()) {
-        cert_dir = "./data/certs";  // Default path
-    }
-
-    // Create directory if it doesn't exist
-    std::string mkdir_cmd = "mkdir -p " + cert_dir;
-    if (std::system(mkdir_cmd.c_str()) != 0) {
-        SecLogAdapter::certificate().error(
-            "sec.certificate.mkdir_failed", "创建证书目录失败",
-            {{"cert_dir", tbox::fw::log::FieldValue::makeString(cert_dir)}});
-        return ErrorCode::STORAGE_WRITE_FAILED;
-    }
-
-    // Generate certificate filename: {vin}_{ecu_uid}.der
-    std::string cert_path = cert_dir + "/" + vin_ + "_" + ecu_uid_ + ".der";
-
-    // Write certificate to file
-    std::ofstream cert_file(cert_path, std::ios::binary);
-    if (!cert_file.is_open()) {
-        SecLogAdapter::certificate().error(
-            "sec.certificate.file_open_failed", "无法打开证书文件写入",
-            {{"cert_path", tbox::fw::log::FieldValue::makeString(cert_path)}});
-        return ErrorCode::STORAGE_WRITE_FAILED;
-    }
-
-    cert_file.write(reinterpret_cast<const char*>(cert_der.data()), cert_der.size());
-    cert_file.close();
-
-    if (!cert_file.good()) {
-        SecLogAdapter::certificate().error(
-            "sec.certificate.file_write_failed", "证书文件写入失败",
-            {{"cert_path", tbox::fw::log::FieldValue::makeString(cert_path)}});
-        return ErrorCode::STORAGE_WRITE_FAILED;
-    }
-
-    SecLogAdapter::certificate().info(
-        "sec.certificate.stored_in_file", "证书已存入文件",
-        {{"cert_path", tbox::fw::log::FieldValue::makeString(cert_path)}});
     return ErrorCode::SUCCESS;
 }
 
-std::string SecService::find_cert_store_from_config() {
-    std::vector<std::string> config_paths = {
-        "config/config.yaml",
-        "config/config.dev.yaml",
-        "/etc/tbox/config.yaml",
-        "/var/lib/tbox/config.yaml"
-    };
+bool SecService::derToCanonicalPem(const std::vector<uint8_t>& cert_der,
+                                   std::string& out_pem) {
+    std::vector<X509*> certs;
+    std::string data(cert_der.begin(), cert_der.end());
 
-#ifdef USE_YAML_CPP
-    for (const auto& config_path : config_paths) {
-        try {
-            YAML::Node config = YAML::LoadFile(config_path);
-            YAML::Node tbox = config["tbox"];
-            if (tbox && tbox["storage"] && tbox["storage"]["cert_store"]) {
-                std::string cert_store = tbox["storage"]["cert_store"].as<std::string>();
-                if (!cert_store.empty()) {
-                    return cert_store;
-                }
-            }
-        } catch (const std::exception&) {
-            continue;
+    if (data.find("-----BEGIN") != std::string::npos) {
+        // PEM 链输入：按顺序解析（leaf -> intermediate）
+        BIO* bio = BIO_new_mem_buf(data.data(), static_cast<int>(data.size()));
+        if (!bio) return false;
+        X509* c = nullptr;
+        while ((c = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr)) != nullptr) {
+            certs.push_back(c);
+        }
+        BIO_free(bio);
+    } else {
+        // DER 输入（单证书）
+        const unsigned char* p = cert_der.data();
+        X509* c = d2i_X509(nullptr, &p, static_cast<long>(cert_der.size()));
+        if (c) certs.push_back(c);
+    }
+    if (certs.empty()) return false;
+
+    BIO* out = BIO_new(BIO_s_mem());
+    if (!out) {
+        for (auto* c : certs) X509_free(c);
+        return false;
+    }
+    for (auto* c : certs) {
+        PEM_write_bio_X509(out, c);
+    }
+    char* buf = nullptr;
+    long len = BIO_get_mem_data(out, &buf);
+    if (len > 0 && buf) {
+        out_pem.assign(buf, static_cast<size_t>(len));
+    }
+    BIO_free(out);
+    for (auto* c : certs) X509_free(c);
+    return !out_pem.empty();
+}
+
+// ============================================================
+// TBOX-SEC-DSN-CR-014: CA Material Loader
+// ============================================================
+
+void SecService::initializeCaMaterialLoader() {
+    // 找到 mqtt profile 的 root_ca_source（直接从 config_snapshot 读取，
+    // 不依赖 loadTlsProfileConfig 的执行顺序）
+    std::string source;
+    if (config_.config_snapshot) {
+        source = config_.config_snapshot->getString(
+            "sec.tls.profiles.mqtt.root_ca_source",
+            "/usr/share/tbox/sec/trust/mqtt-root-ca.pem");
+    } else {
+        auto it = config_.tls_profiles.find("mqtt");
+        if (it != config_.tls_profiles.end()) {
+            source = it->second.root_ca_source;
         }
     }
-#endif
+    if (source.empty()) {
+        SecLogAdapter::tls_credential().warn(
+            "sec.ca.source_unconfigured",
+            "CA Material Loader：root_ca_source 未配置（TLS 保持 NOT_READY）");
+        return;
+    }
 
-    return "";
+    // 读取 source 文件（BUILD 安装的公开信任根，非秘密）
+    std::ifstream f(source, std::ios::binary);
+    if (!f.is_open()) {
+        SecLogAdapter::tls_credential().warn(
+            "sec.ca.source_missing",
+            "CA Material Loader：信任根文件缺失（TLS 保持 NOT_READY）",
+            {{"root_ca_source", tbox::fw::log::FieldValue::makeString(source)}});
+        return;
+    }
+    std::string pem((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    f.close();
+    if (pem.empty()) {
+        SecLogAdapter::tls_credential().warn(
+            "sec.ca.source_empty", "CA Material Loader：信任根文件为空（TLS 保持 NOT_READY）");
+        return;
+    }
+
+    // 校验：PEM 可解析且至少一个证书为 CA（basicConstraints CA=TRUE）
+    bool parsed_ok = false;
+    bool is_ca = false;
+    BIO* bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
+    if (bio) {
+        X509* c = nullptr;
+        while ((c = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr)) != nullptr) {
+            parsed_ok = true;
+            BASIC_CONSTRAINTS* bc = static_cast<BASIC_CONSTRAINTS*>(
+                X509_get_ext_d2i(c, NID_basic_constraints, nullptr, nullptr));
+            if (bc && bc->ca) is_ca = true;
+            if (bc) BASIC_CONSTRAINTS_free(bc);
+            X509_free(c);
+        }
+        BIO_free(bio);
+    }
+    if (!parsed_ok || !is_ca) {
+        SecLogAdapter::tls_credential().warn(
+            "sec.ca.source_invalid",
+            "CA Material Loader：信任根不可解析或非 CA 证书（TLS 保持 NOT_READY）",
+            {{"root_ca_source", tbox::fw::log::FieldValue::makeString(source)}});
+        return;
+    }
+
+    // 校验通过：经 framework-store 原子导入 key=root_ca（单键原子写即可，无跨键需求）
+    try {
+        store_->save("root_ca", pem);
+        SecLogAdapter::tls_credential().info(
+            "sec.ca.imported", "CA Material Loader：信任根已导入 store (key=root_ca)",
+            {{"root_ca_source", tbox::fw::log::FieldValue::makeString(source)}});
+    } catch (const std::exception& e) {
+        SecLogAdapter::tls_credential().error(
+            "sec.ca.import_failed", "CA Material Loader：信任根导入失败（TLS 保持 NOT_READY）",
+            {{"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
+    }
 }
 
 void SecService::update_provision_state(ProvisionState state, const std::string& error) {
@@ -1138,7 +1219,12 @@ bool SecService::save_state() {
 }
 
 ErrorCode SecService::store_certificate(const std::vector<uint8_t>& cert_der) {
-    return store_certificate_to_file(cert_der);
+    // TBOX-SEC-DSN-CR-014: 不再写入 base64(DER)；统一走 canonical PEM 原子发布。
+    std::string pem;
+    if (!derToCanonicalPem(cert_der, pem)) {
+        return ErrorCode::CERT_INSTALL_FAILED;
+    }
+    return publishDeviceCertChain(pem);
 }
 
 ErrorCode SecService::generate_random_seed(std::vector<uint8_t>& seed) {
@@ -1236,39 +1322,7 @@ ErrorCode SecService::handle_diag_request(DiagRequestType request_type,
     return diag_service_->send_request_sync(request_type, request_data, response);
 }
 
-std::string SecService::find_ca_cert_from_config() {
-    // Default config paths to search
-    std::vector<std::string> config_paths = {
-        "config/config.yaml",
-        "config/config.dev.yaml",
-        "/etc/tbox/config.yaml",
-        "/var/lib/tbox/config.yaml"
-    };
-
-#ifdef USE_YAML_CPP
-    for (const auto& config_path : config_paths) {
-        try {
-            YAML::Node config = YAML::LoadFile(config_path);
-            YAML::Node tbox = config["tbox"];
-            if (tbox && tbox["storage"] && tbox["storage"]["ca_cert"]) {
-                std::string ca_cert_path = tbox["storage"]["ca_cert"].as<std::string>();
-                if (!ca_cert_path.empty()) {
-                    SecLogAdapter::certificate().debug(
-                        "sec.ca.config_path_found", "从配置发现 CA 证书路径",
-                        {{"config_path", tbox::fw::log::FieldValue::makeString(config_path)},
-                         {"ca_cert_path", tbox::fw::log::FieldValue::makeString(ca_cert_path)}});
-                    return ca_cert_path;
-                }
-            }
-        } catch (const std::exception&) {
-            // Config file not found or parse error, try next
-            continue;
-        }
-    }
-#endif
-
-    return "";
-}
+// CR-014: 已删除 storage.ca_cert 旧回退（find_ca_cert_from_config），root_ca 仅由 CA Material Loader 导入。
 
 void SecService::save_provision_status_to_store(const ProvisionStatus& status) {
     if (!store_.has_value() || !store_->isReady()) {
@@ -1311,24 +1365,6 @@ ProvisionStatus SecService::load_provision_status_from_store() const {
         status.state = ProvisionState::NONE;
         return status;
     }
-}
-
-std::string SecService::base64_encode(const std::vector<uint8_t>& data) {
-    BIO* bio = BIO_new(BIO_s_mem());
-    BIO* b64 = BIO_new(BIO_f_base64());
-    bio = BIO_push(b64, bio);
-
-    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
-    BIO_write(bio, data.data(), data.size());
-    BIO_flush(bio);
-
-    BUF_MEM* buffer_ptr;
-    BIO_get_mem_ptr(bio, &buffer_ptr);
-
-    std::string result(buffer_ptr->data, buffer_ptr->length);
-    BIO_free_all(bio);
-
-    return result;
 }
 
 std::string provision_state_to_string(ProvisionState state) {
@@ -1410,6 +1446,10 @@ void SecService::loadTlsProfileConfig() {
     pc.key_usage = snap->getString(base + ".key_usage", "clientAuth");
     pc.peer_service = snap->getString(base + ".peer_service", "tbox-mqtt.service");
     pc.notify_on_change = snap->getBool(base + ".notify_on_change", true);
+    // TBOX-SEC-DSN-CR-014: root_ca_source 为 CA Material Loader 的信任根来源（文件路径）。
+    // 量产固定指向 BUILD 安装资产 /usr/share/tbox/sec/trust/mqtt-root-ca.pem。
+    pc.root_ca_source = snap->getString(
+        base + ".root_ca_source", "/usr/share/tbox/sec/trust/mqtt-root-ca.pem");
     // 材料来源已从配置文件路径迁移到 SEC 受控存储固定 key（root_ca / device_cert_chain），
     // 不再从 profile 读取 root_ca_path / client_cert_chain_path。
     pc.ref_ttl_sec = snap->getInt(base + ".ref_ttl_sec", 3600);
@@ -1455,9 +1495,16 @@ void SecService::initializeTlsCredentialProvider() {
         return vin_ + "+" + ecu_uid_;
     };
 
-    // TLS 材料读取器：从 SEC 受控存储（framework-store，服务名 "sec"）按 key 读取 PEM 文本。
-    // root_ca = 共享信任根；device_cert_chain = 设备客户端证书链。store 不可用或缺 key 时返回空串。
+    // TLS 材料读取器：root_ca 从 SEC 受控存储（framework-store，服务名 "sec"）按键读取 PEM；
+    // device_cert_chain 从 CertificateStore 当前 generation 读取（CR-014：跨键原子提交产物，
+    // Provider 只按逻辑键读取，不得猜测档案键/文件名/格式）。store 或 cert_store 不可用时返回空串。
     TlsMaterialResolver material_resolver = [this](const std::string& key) -> std::string {
+        if (key == "device_cert_chain") {
+            return cert_store_ ? cert_store_->currentDeviceCertChain() : "";
+        }
+        if (key != "root_ca") {
+            return "";
+        }
         if (!store_.has_value() || !store_->isReady()) {
             return "";
         }

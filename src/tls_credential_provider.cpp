@@ -282,59 +282,78 @@ ErrorCode TlsCredentialProvider::validateAndStoreMaterials(ProfileState& ps) {
     if (ps.config.root_ca_key.empty() || ps.config.client_cert_chain_key.empty()
         || !material_resolver_) {
         ps.status = TlsCredentialStatus::NOT_READY;
-        ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_CREDENTIAL_NOT_READY);
-        return ErrorCode::TLS_CREDENTIAL_NOT_READY;
+        ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_MATERIAL_KEY_MISSING);
+        return ErrorCode::TLS_MATERIAL_KEY_MISSING;
     }
 
     // 从 SEC 受控存储按 key 读取 PEM 材料（root_ca 为共享信任根，device_cert_chain 为设备证书链）
     std::string root_pem = material_resolver_(ps.config.root_ca_key);
     std::string chain_pem = material_resolver_(ps.config.client_cert_chain_key);
+    // CR-014: 键缺失（resolver 返回空）-> NOT_READY / SEC-1015 MATERIAL_KEY_MISSING
+    if (root_pem.empty() || chain_pem.empty()) {
+        SecLogAdapter::certificate().warn(
+            "sec.tls_credential.rejected",
+            "TLS 材料加载失败：根 CA 或客户端证书链键缺失",
+            {{"profile", tbox::fw::log::FieldValue::makeString(ps.config.profile_name)},
+             {"material_key", tbox::fw::log::FieldValue::makeString(
+                 root_pem.empty() ? ps.config.root_ca_key : ps.config.client_cert_chain_key)},
+             {"reason_code", tbox::fw::log::FieldValue::makeInt(
+                 static_cast<int>(ErrorCode::TLS_MATERIAL_KEY_MISSING))}}
+        );
+        ps.status = TlsCredentialStatus::NOT_READY;
+        ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_MATERIAL_KEY_MISSING);
+        return ErrorCode::TLS_MATERIAL_KEY_MISSING;
+    }
+
     auto root_certs = load_certs_from_string(root_pem);
     auto chain_certs = load_certs_from_string(chain_pem);
+    // CR-014: 键存在但内容不可解析 -> ERROR / SEC-1016 MATERIAL_FORMAT_INVALID
     if (root_certs.empty() || chain_certs.empty()) {
         SecLogAdapter::certificate().warn(
             "sec.tls_credential.rejected",
-            "TLS 材料加载失败：根 CA 或客户端证书链为空",
+            "TLS 材料解析失败：PEM 格式非法",
             {{"profile", tbox::fw::log::FieldValue::makeString(ps.config.profile_name)},
              {"reason_code", tbox::fw::log::FieldValue::makeInt(
-                 static_cast<int>(ErrorCode::TLS_CREDENTIAL_NOT_READY))}}
+                 static_cast<int>(ErrorCode::TLS_MATERIAL_FORMAT_INVALID))}}
         );
-        ps.status = TlsCredentialStatus::NOT_READY;
-        ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_CREDENTIAL_NOT_READY);
-        return ErrorCode::TLS_CREDENTIAL_NOT_READY;
+        ps.status = TlsCredentialStatus::ERROR;
+        ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_MATERIAL_FORMAT_INVALID);
+        return ErrorCode::TLS_MATERIAL_FORMAT_INVALID;
     }
 
     X509* leaf = chain_certs.front().get();
 
-    // 1. 叶子证书 EKU 含 clientAuth
+    // 1. 叶子证书 EKU 含 clientAuth（CR-014: 证书 profile 违规 -> SEC-1016）
     auto eku = get_eku_oids(leaf);
     bool has_client_auth = std::find(eku.begin(), eku.end(), kOidClientAuth) != eku.end();
     if (!has_client_auth) {
         ps.status = TlsCredentialStatus::ERROR;
-        ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_CREDENTIAL_INVALID);
+        ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_MATERIAL_FORMAT_INVALID);
         SecLogAdapter::certificate().warn(
             "sec.tls_credential.rejected",
             "叶子证书缺少 clientAuth EKU",
             {{"profile", tbox::fw::log::FieldValue::makeString(ps.config.profile_name)},
-             {"credential_id_hash", tbox::fw::log::FieldValue::makeString(hashId(ps.config.credential_id))}}
+             {"credential_id_hash", tbox::fw::log::FieldValue::makeString(hashId(ps.config.credential_id))},
+             {"reason_code", tbox::fw::log::FieldValue::makeInt(
+                 static_cast<int>(ErrorCode::TLS_MATERIAL_FORMAT_INVALID))}}
         );
-        return ErrorCode::TLS_CREDENTIAL_INVALID;
+        return ErrorCode::TLS_MATERIAL_FORMAT_INVALID;
     }
 
-    // 2. 证书有效期
+    // 2. 证书有效期（CR-014: SEC-1019 CERT_EXPIRED）
     int64_t nb = 0, na = 0;
     get_validity(leaf, nb, na);
     if (!now_in_range(nb, na)) {
         ps.status = TlsCredentialStatus::EXPIRED;
-        ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_CREDENTIAL_INVALID);
+        ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_CERT_EXPIRED);
         ps.not_before = nb;
         ps.not_after = na;
-        return ErrorCode::TLS_CREDENTIAL_INVALID;
+        return ErrorCode::TLS_CERT_EXPIRED;
     }
     ps.not_before = nb;
     ps.not_after = na;
 
-    // 3. 叶子公钥 ↔ HSM 私钥匹配
+    // 3. 叶子公钥 ↔ HSM 私钥匹配（CR-014: SEC-1018 KEY_MISMATCH）
     std::string key_id = key_id_resolver_ ? key_id_resolver_() : "";
     if (key_id.empty() || !hsm_->key_exists(key_id)) {
         ps.status = TlsCredentialStatus::NOT_READY;
@@ -350,27 +369,29 @@ ErrorCode TlsCredentialProvider::validateAndStoreMaterials(ProfileState& ps) {
     std::vector<uint8_t> cert_pub = get_raw_public_key(leaf);
     if (cert_pub.empty() || cert_pub != hsm_pub) {
         ps.status = TlsCredentialStatus::ERROR;
-        ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_CREDENTIAL_INVALID);
+        ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_KEY_MISMATCH);
         SecLogAdapter::certificate().warn(
             "sec.tls_credential.rejected",
             "叶子证书公钥与 HSM 私钥不匹配",
-            {{"profile", tbox::fw::log::FieldValue::makeString(ps.config.profile_name)}}
+            {{"profile", tbox::fw::log::FieldValue::makeString(ps.config.profile_name)},
+             {"reason_code", tbox::fw::log::FieldValue::makeInt(
+                 static_cast<int>(ErrorCode::TLS_KEY_MISMATCH))}}
         );
-        return ErrorCode::TLS_CREDENTIAL_INVALID;
+        return ErrorCode::TLS_KEY_MISMATCH;
     }
 
-    // 4. 根 CA 为 CA 证书（允许 serverAuth 校验）
+    // 4. 根 CA 为 CA 证书（允许 serverAuth 校验）（CR-014: SEC-1020 CA_INVALID）
     bool root_is_ca = false;
     for (auto& rc : root_certs) {
         if (is_ca_cert(rc.get())) { root_is_ca = true; break; }
     }
     if (!root_is_ca) {
         ps.status = TlsCredentialStatus::ERROR;
-        ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_CREDENTIAL_INVALID);
-        return ErrorCode::TLS_CREDENTIAL_INVALID;
+        ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_CA_INVALID);
+        return ErrorCode::TLS_CA_INVALID;
     }
 
-    // 5. 链完整性：用 root CA bundle 校验客户端证书链
+    // 5. 链完整性：用 root CA bundle 校验客户端证书链（CR-014: SEC-1017 CHAIN_INVALID）
     StoreUniquePtr store(X509_STORE_new());
     if (!store) {
         ps.status = TlsCredentialStatus::ERROR;
@@ -393,13 +414,15 @@ ErrorCode TlsCredentialProvider::validateAndStoreMaterials(ProfileState& ps) {
 
     if (!chain_ok) {
         ps.status = TlsCredentialStatus::ERROR;
-        ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_CREDENTIAL_INVALID);
+        ps.reason_code = static_cast<int32_t>(ErrorCode::TLS_CHAIN_INVALID);
         SecLogAdapter::certificate().warn(
             "sec.tls_credential.rejected",
             "证书链校验失败",
-            {{"profile", tbox::fw::log::FieldValue::makeString(ps.config.profile_name)}}
+            {{"profile", tbox::fw::log::FieldValue::makeString(ps.config.profile_name)},
+             {"reason_code", tbox::fw::log::FieldValue::makeInt(
+                 static_cast<int>(ErrorCode::TLS_CHAIN_INVALID))}}
         );
-        return ErrorCode::TLS_CREDENTIAL_INVALID;
+        return ErrorCode::TLS_CHAIN_INVALID;
     }
 
     // 全部校验通过

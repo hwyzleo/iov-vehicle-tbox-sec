@@ -71,7 +71,9 @@ const std::set<std::string> kSecIpcKeys = {"socket_path"};
 const std::set<std::string> kSecTlsKeys = {"dev_peer_service", "profiles"};
 const std::set<std::string> kTlsProfileKeys = {
     "credential_id", "key_usage", "allowed_signature_algorithms",
-    "peer_service", "notify_on_change", "ref_ttl_sec"
+    "peer_service", "notify_on_change", "ref_ttl_sec",
+    // TBOX-SEC-DSN-CR-014: Broker 信任根 source（路径，CA Material Loader 导入 root_ca）
+    "root_ca_source"
 };
 const std::set<std::string> kHsmKeys = {"type", "library_path"};
 const std::set<std::string> kKeyProvKeys = {"mode"};

@@ -62,8 +62,16 @@ enum class ErrorCode : uint32_t {
     TLS_SIGN_ALGORITHM_NOT_ALLOWED = 1013,    ///< SEC-1013: 签名算法或用途不允许
     TLS_HSM_SIGN_FAILED = 1014,               ///< SEC-1014: HSM/SE TLS 签名失败
 
-    // ACL errors
-    ACL_DENIED = 1020,                        ///< 调用方未授权访问该 profile
+    // TLS 材料明细错误码 (SEC-1015..1020, TBOX-SEC-DSN-CR-014)
+    TLS_MATERIAL_KEY_MISSING = 1015,          ///< SEC-1015: TLS 材料键缺失 (MATERIAL_KEY_MISSING)
+    TLS_MATERIAL_FORMAT_INVALID = 1016,       ///< SEC-1016: TLS 材料格式非法 (MATERIAL_FORMAT_INVALID)
+    TLS_CHAIN_INVALID = 1017,                 ///< SEC-1017: TLS 证书链无效 (CHAIN_INVALID)
+    TLS_KEY_MISMATCH = 1018,                  ///< SEC-1018: TLS 客户端证书与私钥不匹配 (KEY_MISMATCH)
+    TLS_CERT_EXPIRED = 1019,                  ///< SEC-1019: TLS 客户端证书已过期 (CERT_EXPIRED)
+    TLS_CA_INVALID = 1020,                    ///< SEC-1020: Broker 信任 CA 无效 (CA_INVALID)
+
+    // ACL errors（CR-014 让位 1020 给 SEC-1020=CA_INVALID，ACL 改到 1021）
+    ACL_DENIED = 1021,                        ///< 调用方未授权访问该 profile
 
     // Configuration errors
     CONFIG_ERROR = 1100,

@@ -27,6 +27,20 @@ sec:
   ipc:
     socket_path: "/tmp/tbox-sec.sock"
   # 生产模板不含 sec.tls.dev_peer_service（仅非生产环境允许固定放行 TLS ACL）
+  # MQTT TLS Credential Provider（TBOX-SEC-DSN-CR-010 / CR-014）
+  tls:
+    profiles:
+      mqtt:
+        credential_id: mqtt-primary
+        key_usage: clientAuth
+        allowed_signature_algorithms:
+          - ecdsa_secp256r1_sha256
+        peer_service: tbox-mqtt.service
+        notify_on_change: true
+        # TBOX-SEC-DSN-CR-014: Broker 信任根唯一量产来源（BUILD 随 sec-runtime 安装的
+        # 公开 CA 资产，release-managed + replace；CA Material Loader 启动时校验并导入 key=root_ca）
+        root_ca_source: "/usr/share/tbox/sec/trust/mqtt-root-ca.pem"
+        ref_ttl_sec: 3600
 
 # HSM/SE 生产边界：key_provisioning.mode 必须为 hsm。
 # soft_file 密钥模式在量产环境被代码 fail-closed 拒绝（SEC_SOFT_KEY_MODE_NOT_ALLOWED）。

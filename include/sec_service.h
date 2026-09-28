@@ -24,6 +24,7 @@ namespace tbox {
 namespace sec {
 
 class TlsCredentialProvider;
+class CertificateStore;
 
 } // namespace sec
 } // namespace tbox
@@ -89,6 +90,10 @@ struct SecServiceConfig {
         std::string peer_service;
         bool notify_on_change = true;
         int64_t ref_ttl_sec = 3600;
+        /// TBOX-SEC-DSN-CR-014: Broker 信任根 source（文件路径）。
+        /// 量产固定指向 BUILD 安装资产 /usr/share/tbox/sec/trust/mqtt-root-ca.pem；
+        /// 由 CA Material Loader 在启动时校验并导入逻辑键 root_ca。
+        std::string root_ca_source;
     };
     std::map<std::string, TlsProfileConf> tls_profiles;
 
@@ -282,6 +287,8 @@ private:
     std::shared_ptr<ProvServiceInterface> prov_service_;
     std::optional<hwyz::store::Store> store_;
     std::unique_ptr<TlsCredentialProvider> tls_provider_;
+    /// TBOX-SEC-DSN-CR-014: 跨键原子证书存储（generation + manifest + CURRENT 指针）
+    std::unique_ptr<CertificateStore> cert_store_;
     // CR-011: TLS 凭据变更事件发布回调（由 SecApplication 注入 ipc::Server::push_event）
     std::function<void(uint32_t, const std::string&)> event_publisher_;
 
@@ -304,13 +311,23 @@ private:
     void initializeTlsCredentialProvider();
     void loadTlsProfileConfig();
 
+    // TBOX-SEC-DSN-CR-014: CA Material Loader
+    // 读取 sec.tls.profiles.mqtt.root_ca_source（BUILD 安装的信任根），校验 CA
+    // basicConstraints/可解析性后经 framework-store 原子导入逻辑键 root_ca；
+    // 缺失/非法时保持 NOT_READY（fail-closed），不回退到 storage.ca_cert 或本地文件。
+    void initializeCaMaterialLoader();
+    /// DER（或 PEM 链）→ canonical X.509 PEM（leaf -> intermediate）
+    static bool derToCanonicalPem(const std::vector<uint8_t>& cert_der,
+                                  std::string& out_pem);
+    /// 校验通过后发布设备证书链：DER→PEM → 幂等判重 → 原子 commit → reload mqtt profile
+    ErrorCode publishDeviceCertChain(const std::string& canonical_pem);
+
 public:
     ErrorCode generate_and_store_key_pair();
 private:
     ErrorCode build_and_store_csr();
     ErrorCode submit_csr_to_cloud();
     ErrorCode validate_and_store_certificate(const std::vector<uint8_t>& cert_der);
-    ErrorCode store_certificate_to_file(const std::vector<uint8_t>& cert_der);
 
     void update_provision_state(ProvisionState state, const std::string& error = "");
     void handle_error(ErrorCode error, const std::string& context);
@@ -348,16 +365,9 @@ private:
     void increment_failed_attempts();
     void reset_failed_attempts();
 
-    // CA certificate loading helper
-    std::string find_ca_cert_from_config();
-    std::string find_cert_store_from_config();
-
     // Store helper methods for ProvisionStatus serialization
     void save_provision_status_to_store(const ProvisionStatus& status);
     ProvisionStatus load_provision_status_from_store() const;
-
-    // Base64 encoding for certificate storage
-    static std::string base64_encode(const std::vector<uint8_t>& data);
 };
 
 } // namespace sec

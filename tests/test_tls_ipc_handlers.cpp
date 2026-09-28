@@ -326,8 +326,8 @@ TEST_F(TlsIpcHandlerTest, Subscribe_AclDenied) {
 
 // ---- 错误码：未就绪 SEC-1010 ----
 
-TEST_F(TlsIpcHandlerTest, GetTlsCredential_NotReady_1010) {
-    // 重新配置一个未加载材料的 profile
+TEST_F(TlsIpcHandlerTest, GetTlsCredential_NotReady_1015) {
+    // 重新配置一个未加载材料的 profile（CR-014: 键缺失 -> SEC-1015 MATERIAL_KEY_MISSING）
     TlsProfileConfig cfg;
     cfg.profile_name = "mqtt2";
     cfg.credential_id = "x";
@@ -340,7 +340,7 @@ TEST_F(TlsIpcHandlerTest, GetTlsCredential_NotReady_1010) {
     json params; params["profile"] = "mqtt2";
     auto resp = dispatcher_->dispatch(
         static_cast<uint32_t>(ipc::MethodId::GET_TLS_CREDENTIAL), params.dump(), 1);
-    EXPECT_EQ(status_of(resp), static_cast<int32_t>(ErrorCode::TLS_CREDENTIAL_NOT_READY));
+    EXPECT_EQ(status_of(resp), static_cast<int32_t>(ErrorCode::TLS_MATERIAL_KEY_MISSING));
 }
 
 // ---- 无 provider 时返回 NOT_IMPLEMENTED ----
