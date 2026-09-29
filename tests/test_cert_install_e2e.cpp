@@ -210,9 +210,19 @@ protected:
         cfg.hsm_type = "software";
 
         prov_ = std::make_shared<SimpleProvService>();
+        // TBOX-SEC-DSN-CR-017：注入可信 fake（fixture 证书以真实 now 生成，
+        // fake 取当前墙钟以满足有效期窗口；无注入则 SecService fail-closed）
+        TrustedTimeSample ts;
+        ts.utc_now = std::chrono::system_clock::now();
+        ts.trust_state = TimeTrustState::Trusted;
+        ts.source = TimeSource::FakeTest;
+        ts.reason = TimeReason::FakeTest;
+        fake_time_ = std::make_shared<FakeTrustedTimeProvider>(ts);
+
         // Store 是 move-only：move 一份给 SecService，测试侧另开一个句柄读取同一目录
         service_ = std::make_unique<SecService>(cfg, nullptr, prov_,
                                                 hwyz::store::Store::open("sec", test_dir_));
+        service_->set_trusted_time_provider(fake_time_);
         store_ = std::make_optional<hwyz::store::Store>(
             hwyz::store::Store::open("sec", test_dir_));
         ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
@@ -251,6 +261,7 @@ protected:
     std::optional<hwyz::store::Store> store_;
     std::shared_ptr<SimpleProvService> prov_;
     std::shared_ptr<MockConfigView> snap_;
+    std::shared_ptr<FakeTrustedTimeProvider> fake_time_;
     EvpPkeyUP ca_key_;
     X509UP ca_cert_;
     EvpPkeyUP dev_pkey_;

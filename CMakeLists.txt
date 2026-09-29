@@ -72,6 +72,7 @@ set(LIB_SOURCES
     src/certificate_store.cpp
     src/csr_builder.cpp
     src/cert_validator.cpp
+    src/trusted_time.cpp
     src/error_codes.cpp
     src/diag_service_adapter.cpp
     src/service_dispatcher.cpp
@@ -239,6 +240,7 @@ if(GTest_FOUND)
         tests/test_key_engine.cpp
         tests/test_csr_builder.cpp
         tests/test_cert_validator.cpp
+        tests/test_trusted_time.cpp
         tests/test_sec_service.cpp
         tests/test_sec_service_with_diag.cpp
         tests/test_hsm_interface.cpp

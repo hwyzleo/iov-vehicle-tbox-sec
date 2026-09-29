@@ -20,6 +20,7 @@
 
 #include "application.h"
 #include "sec_service.h"
+#include "trusted_time.h"
 #include "ipc.h"
 #include "ipc_types.h"
 
@@ -87,6 +88,12 @@ private:
     // initialize 读取、execute/cleanup 复用的配置
     std::string ipc_socket_path_;
     tbox::fw::ipc::IpcConfig ipc_config_{};
+
+    // TBOX-SEC-DSN-CR-017：可信时间装配（生产 composite；dev/test 可显式 fake）。
+    // adapter 由组合根持有，composite 以裸指针引用；析构顺序在 cleanup 内保证。
+    std::unique_ptr<PlatformTimeSource> trusted_time_platform_;
+    std::unique_ptr<HardwareRtcSource> trusted_time_rtc_;
+    std::shared_ptr<TrustedTimeProvider> trusted_time_provider_;
 };
 
 } // namespace sec

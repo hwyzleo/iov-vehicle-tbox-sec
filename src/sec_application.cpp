@@ -110,8 +110,55 @@ bool SecApplication::initialize() {
 
     // ---- c. SecService（安全业务内核：HSM/KeyEngine/CsrBuilder/CertValidator/
     //                    CloudClient/SeedKey/TlsCredentialProvider）----
+    // TBOX-SEC-DSN-CR-017 §5/§7：按配置装配可信时间提供方。
+    // production 仅允许 provider=composite（平台同步时间 → 硬件 RTC，未落地前
+    // adapter 返回不可用 → 证书注入 fail-closed，绝不回退墙钟）；
+    // dev/test 可显式配置 sec.trusted_time.provider=fake（时间由显式 profile 注入）。
+    {
+        TrustedTimeConfig tt_cfg;
+        tt_cfg.platform_enabled = cfg->getBool("sec.trusted_time.platform.enabled", true);
+        tt_cfg.max_freshness = std::chrono::milliseconds(
+            cfg->getInt("sec.trusted_time.platform.max_freshness_ms", 300000));
+        tt_cfg.max_uncertainty = std::chrono::milliseconds(
+            cfg->getInt("sec.trusted_time.platform.max_uncertainty_ms", 2000));
+        tt_cfg.hw_rtc_enabled = cfg->getBool("sec.trusted_time.hardware_rtc.enabled", true);
+        tt_cfg.hw_rtc_require_provisioned =
+            cfg->getBool("sec.trusted_time.hardware_rtc.require_provisioned", true);
+        tt_cfg.rollback_tolerance = std::chrono::milliseconds(
+            cfg->getInt("sec.trusted_time.rollback_tolerance_ms", 2000));
+
+        const std::string provider = cfg->getString("sec.trusted_time.provider", "composite");
+        const bool is_production = svc_config.get_is_production();
+        if (provider == "fake" && !is_production) {
+            // dev/test 显式选择 fake：时间由显式 dev/test profile 注入，
+            // 不继承生产配置（CR-017 §5）。开发 bring-up 默认取当前墙钟。
+            TrustedTimeSample sample;
+            sample.utc_now = std::chrono::system_clock::now();
+            sample.trust_state = TimeTrustState::Trusted;
+            sample.source = TimeSource::FakeTest;
+            sample.reason = TimeReason::FakeTest;
+            trusted_time_provider_ = std::make_shared<FakeTrustedTimeProvider>(sample);
+            SecLogAdapter::service().warn(
+                "sec.trusted_time.fake_enabled",
+                "已启用 dev/test fake 可信时间，仅限非生产环境（证书注入据此判定有效期）");
+        } else {
+            // production / 缺省：composite + 平台/RTC adapter。
+            // 平台接口未落地前 adapter 恒返回不可用 → 注入 fail-closed（CR-017 §9）。
+            trusted_time_platform_ = std::make_unique<PlatformTimeAdapter>();
+            trusted_time_rtc_ = std::make_unique<HardwareRtcAdapter>();
+            trusted_time_provider_ = std::make_shared<CompositeTrustedTimeProvider>(
+                trusted_time_platform_.get(), trusted_time_rtc_.get(), tt_cfg);
+            SecLogAdapter::service().info(
+                "sec.trusted_time.composite",
+                "可信时间装配为 composite（平台→RTC）；平台接口未落地前证书注入 fail-closed",
+                {tbox::fw::log::Field("provider",
+                     tbox::fw::log::FieldValue::makeString(provider))});
+        }
+    }
+
     security_service_ = std::make_shared<SecService>(
         svc_config, nullptr, prov_client_, std::move(*store_opt));
+    security_service_->set_trusted_time_provider(trusted_time_provider_);
     if (security_service_->initialize() != ErrorCode::SUCCESS) {
         SecLogAdapter::service().error(
             "sec.application.service_init_failed",

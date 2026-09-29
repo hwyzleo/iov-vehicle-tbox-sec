@@ -12,6 +12,7 @@
 #include "key_engine.h"
 #include "csr_builder.h"
 #include "cert_validator.h"
+#include "trusted_time.h"
 #include "error_codes.h"
 #include "diag_service_interface.h"
 #include "prov_service_interface.h"
@@ -198,6 +199,10 @@ public:
 
     virtual ErrorCode initialize();
 
+    /// TBOX-SEC-DSN-CR-017：注入可信时间提供方（SecApplication 装配后调用，
+    /// 也可在 initialize 前调用）。未注入时证书注入 fail-closed（无来源 Composite）。
+    void set_trusted_time_provider(std::shared_ptr<TrustedTimeProvider> provider);
+
     // TBOX-SEC-DSN-CR-011: 停机 quiesce。beginShutdown 后拒绝新安全操作（fail-closed），
     // 供 SecApplication::cleanup 首步调用。
     virtual void beginShutdown();
@@ -273,6 +278,11 @@ private:
     std::unique_ptr<KeyEngine> key_engine_;
     std::unique_ptr<CsrBuilder> csr_builder_;
     std::unique_ptr<CertValidator> cert_validator_;
+    /// TBOX-SEC-DSN-CR-017：可信时间提供方（SecApplication 按配置装配后注入；
+    /// 未注入时默认使用无来源 CompositeTrustedTimeProvider → 注入 fail-closed，绝不回退墙钟）。
+    std::shared_ptr<TrustedTimeProvider> trusted_time_provider_;
+    /// 返回当前可信时间提供方；未注入时惰性创建无来源 Composite（永不 TRUSTED）。
+    TrustedTimeProvider* getTrustedTimeProvider();
     std::vector<uint8_t> csr_der_;  // 存储构建的 CSR
 
     ErrorCode initialize_hsm();

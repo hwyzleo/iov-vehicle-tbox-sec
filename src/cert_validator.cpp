@@ -76,22 +76,9 @@ bool is_verifiable_self_signed(const X509* cert) {
 
 } // namespace
 
-TrustedTime SystemClockTrustedTimeProvider::get_trusted_time() const {
-    // 过渡实现（TBOX-SEC-DSN-CR-016 阻塞项）：framework/平台时间可信度接口
-    // 确认前，将系统时钟视为可信。生产语义须随该契约收敛。
-    TrustedTime tt;
-    tt.trusted = true;
-    tt.utc_now = std::chrono::system_clock::now();
-    tt.source = "system_clock";
-    return tt;
-}
-
 CertValidator::CertValidator(KeyEngine* key_engine,
-                             TrustedTimeProvider* time_provider)
-    : key_engine_(key_engine),
-      owned_time_provider_(
-          time_provider ? nullptr : std::make_unique<SystemClockTrustedTimeProvider>()),
-      time_provider_(time_provider ? time_provider : owned_time_provider_.get()) {}
+                             TrustedTimeProvider& time_provider)
+    : key_engine_(key_engine), time_provider_(&time_provider) {}
 
 ErrorCode CertValidator::validate_certificate(const std::string& vin,
                                              const std::string& ecu_uid,
@@ -328,23 +315,32 @@ bool CertValidator::is_certificate_expired(const std::vector<uint8_t>& cert_der)
         return true; // Assume expired if can't parse
     }
 
-    TrustedTime tt = time_provider_->get_trusted_time();
-    // 时间不可判定时按 fail-closed 视为不可用（TBOX-SEC-DSN-CR-016 §3.2）
-    if (!tt.trusted) {
+    TrustedTimeSample tt = time_provider_->now();
+    // 时间不可判定时按 fail-closed 视为不可用（CR-016 §3.2 / CR-017 §6）
+    if (tt.trust_state != TimeTrustState::Trusted) {
         return true;
     }
-    return tt.utc_now < info.not_before || tt.utc_now > info.not_after;
+    // 闭区间 + uncertainty（CR-017 §3）：不确定边界按不可用处理
+    const auto lo = tt.utc_now - tt.uncertainty;
+    const auto hi = tt.utc_now + tt.uncertainty;
+    return lo < info.not_before || hi > info.not_after;
 }
 
 ErrorCode CertValidator::check_certificate_validity(const std::vector<uint8_t>& cert_der,
                                                    bool& valid) {
-    TrustedTime tt = time_provider_->get_trusted_time();
-    if (!tt.trusted) {
-        // TBOX-SEC-DSN-CR-016 §3.2：可信时间不可用时显式失败，不得 commit
+    TrustedTimeSample tt = time_provider_->now();
+    if (tt.trust_state != TimeTrustState::Trusted) {
+        // TBOX-SEC-DSN-CR-016 §3.2 / CR-017 §6：可信时间不可用时显式失败，
+        // failure_stage=time_untrusted，不得 commit
         SecLogAdapter::certificate().error(
             "sec.cert.time_untrusted",
             "可信时间不可用，拒绝证书注入（fail-closed，不得 commit）",
-            {{"time_source", tbox::fw::log::FieldValue::makeString(tt.source)}});
+            {{"failure_stage", tbox::fw::log::FieldValue::makeString("time_untrusted")},
+             {"time_source", tbox::fw::log::FieldValue::makeString(timeSourceToString(tt.source))},
+             {"trust_state", tbox::fw::log::FieldValue::makeString(timeTrustStateToString(tt.trust_state))},
+             {"time_reason", tbox::fw::log::FieldValue::makeString(timeReasonToString(tt.reason))},
+             {"freshness_ms", tbox::fw::log::FieldValue::makeInt(
+                  static_cast<int64_t>(tt.freshness_age.count()))}});
         valid = false;
         return ErrorCode::CERT_EXPIRED;
     }
@@ -355,7 +351,29 @@ ErrorCode CertValidator::check_certificate_validity(const std::vector<uint8_t>& 
         valid = false;
         return result;
     }
-    valid = !(tt.utc_now < info.not_before || tt.utc_now > info.not_after);
+
+    // 闭区间 + uncertainty（CR-017 §3）：仅当 utc_now-uncertainty >= notBefore 且
+    // utc_now+uncertainty <= notAfter 时通过；不确定边界跨越按 fail-closed 处理。
+    const auto lo = tt.utc_now - tt.uncertainty;
+    const auto hi = tt.utc_now + tt.uncertainty;
+    if (lo < info.not_before || hi > info.not_after) {
+        // CR-017 §6：确定早于 notBefore/晚于 notAfter → failure_stage=time；
+        // 仅 uncertainty 跨越边界 → failure_stage=time_untrusted（不得在不确定边界继续）
+        const bool definite_outside =
+            tt.utc_now < info.not_before || tt.utc_now > info.not_after;
+        SecLogAdapter::certificate().error(
+            "sec.cert.expired",
+            definite_outside ? "证书未生效或已过期"
+                             : "时间不确定边界跨越有效期窗口，拒绝注入（fail-closed）",
+            {{"failure_stage", tbox::fw::log::FieldValue::makeString(
+                 definite_outside ? "time" : "time_untrusted")},
+             {"time_source", tbox::fw::log::FieldValue::makeString(timeSourceToString(tt.source))},
+             {"time_reason", tbox::fw::log::FieldValue::makeString(timeReasonToString(tt.reason))}});
+        valid = false;
+        return ErrorCode::CERT_EXPIRED;
+    }
+
+    valid = true;
     return ErrorCode::SUCCESS;
 }
 

@@ -66,9 +66,16 @@ const std::set<std::string> kAllowedTopLevel = {
     "environment"
 };
 
-const std::set<std::string> kSecKeys = {"ipc", "tls"};
+const std::set<std::string> kSecKeys = {"ipc", "tls", "trusted_time"};
 const std::set<std::string> kSecIpcKeys = {"socket_path"};
 const std::set<std::string> kSecTlsKeys = {"dev_peer_service", "profiles"};
+const std::set<std::string> kSecTrustedTimeKeys = {
+    "provider", "platform", "hardware_rtc", "rollback_tolerance_ms"
+};
+const std::set<std::string> kTrustedTimePlatformKeys = {
+    "enabled", "max_freshness_ms", "max_uncertainty_ms"
+};
+const std::set<std::string> kTrustedTimeRtcKeys = {"enabled", "require_provisioned"};
 const std::set<std::string> kTlsProfileKeys = {
     "credential_id", "key_usage", "allowed_signature_algorithms",
     "peer_service", "notify_on_change", "ref_ttl_sec",
@@ -346,6 +353,52 @@ private:
                 }
             }
         }
+
+        YAML::Node trusted_time = sec["trusted_time"];
+        if (trusted_time) {
+            checkTrustedTime(trusted_time);
+        }
+    }
+
+    // TBOX-SEC-DSN-CR-017 §5：可信时间配置校验。
+    // production 仅允许 provider=composite（fail-closed）；fake 仅限 dev/test；
+    // system_clock 为已删除的过渡实现，任何 profile 均拒绝。
+    void checkTrustedTime(const YAML::Node& tt) {
+        if (!tt.IsMap()) return;
+        checkUnknownFields(tt, kSecTrustedTimeKeys, "sec.trusted_time");
+
+        YAML::Node provider = tt["provider"];
+        if (provider) {
+            const std::string p = toLower(trim(provider.as<std::string>()));
+            static const std::set<std::string> allowed = {"composite", "fake", "system_clock"};
+            if (allowed.find(p) == allowed.end()) {
+                error("schema.allowed_values", "sec.trusted_time.provider",
+                      "must be one of: composite, fake");
+            } else if (p == "system_clock") {
+                error("profile.no_system_clock_time", "sec.trusted_time.provider",
+                      "system_clock pseudo-trusted time provider was removed (CR-017); "
+                      "use composite or dev/test fake");
+            } else if (isProduction() && p == "fake") {
+                error("profile.production_composite_time_only", "sec.trusted_time.provider",
+                      "production profile only allows sec.trusted_time.provider=composite");
+            }
+        }
+
+        YAML::Node platform = tt["platform"];
+        if (platform && platform.IsMap()) {
+            checkUnknownFields(platform, kTrustedTimePlatformKeys, "sec.trusted_time.platform");
+            checkIntField(platform, "sec.trusted_time.platform.max_freshness_ms",
+                          1000, 86400000);
+            checkIntField(platform, "sec.trusted_time.platform.max_uncertainty_ms",
+                          0, 60000);
+        }
+
+        YAML::Node rtc = tt["hardware_rtc"];
+        if (rtc && rtc.IsMap()) {
+            checkUnknownFields(rtc, kTrustedTimeRtcKeys, "sec.trusted_time.hardware_rtc");
+        }
+
+        checkIntField(tt, "sec.trusted_time.rollback_tolerance_ms", 0, 60000);
     }
 
     void checkCloud() {

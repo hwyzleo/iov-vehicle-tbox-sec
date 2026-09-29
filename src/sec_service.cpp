@@ -84,6 +84,20 @@ SecService::SecService(const SecServiceConfig& config,
                       hwyz::store::Store store)
     : config_(config), initialized_(false), diag_service_(diag_service), prov_service_(prov_service), store_(std::make_optional(std::move(store))) {}
 
+void SecService::set_trusted_time_provider(
+    std::shared_ptr<TrustedTimeProvider> provider) {
+    trusted_time_provider_ = std::move(provider);
+}
+
+TrustedTimeProvider* SecService::getTrustedTimeProvider() {
+    if (!trusted_time_provider_) {
+        // TBOX-SEC-DSN-CR-017：未注入时 fail-closed 默认（无来源 Composite，
+        // 永不 TRUSTED），绝不回退墙钟/进程启动时间/文件时间。
+        trusted_time_provider_ =
+            std::make_shared<CompositeTrustedTimeProvider>(nullptr, nullptr);
+    }
+    return trusted_time_provider_.get();
+}
 ErrorCode SecService::initialize() {
     // Validate required config
     if (config_.get_hsm_type().empty() &&
@@ -890,7 +904,8 @@ ErrorCode SecService::build_and_store_csr() {
 
 ErrorCode SecService::validate_and_store_certificate(const std::vector<uint8_t>& cert_der) {
     if (!cert_validator_) {
-        cert_validator_ = std::make_unique<CertValidator>(key_engine_.get());
+        cert_validator_ = std::make_unique<CertValidator>(key_engine_.get(),
+                                                          *getTrustedTimeProvider());
     }
 
     bool valid = false;

@@ -34,6 +34,20 @@
 sec:
   ipc:
     socket_path: "/tmp/tbox-sec.sock"
+  # 可信时间（TBOX-SEC-DSN-CR-017 §5）：production 仅允许 provider=composite
+  # （平台同步时间 → 硬件 RTC 顺序选择）。平台时间服务/硬件 RTC 真实后端未落地前
+  # （阻塞项，CR-017 §9），adapter 返回不可用 → 证书注入 fail-closed（time_untrusted，
+  # 不得 commit），绝不回退墙钟。dev/test 可经显式 profile 配置 provider=fake。
+  trusted_time:
+    provider: "composite"
+    platform:
+      enabled: true
+      max_freshness_ms: 300000
+      max_uncertainty_ms: 2000
+    hardware_rtc:
+      enabled: true
+      require_provisioned: true
+    rollback_tolerance_ms: 2000
   # Seed-Key 共享密钥由 provisioning 注入（sec.seed_key.shared_secret，32 hex 字符）。
   # 本模板不含该键；缺失时 verify_key fail-closed（TBOX-SEC-DSN-CR-003 / US-002）。
   # MQTT TLS Credential Provider（TBOX-SEC-DSN-CR-010 / CR-014）

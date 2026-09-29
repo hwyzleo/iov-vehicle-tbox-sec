@@ -447,3 +447,84 @@ hsm:
     EXPECT_NE(r.output.find("hsm.type"), std::string::npos) << r.output;
     EXPECT_NE(r.output.find("allowed_values"), std::string::npos) << r.output;
 }
+
+// =========================================================================
+// TBOX-SEC-DSN-CR-017 §5 - trusted_time 配置门控
+// =========================================================================
+// production 仅允许 provider=composite；fake 仅限 dev/test；
+// system_clock 为已删除的过渡实现，任何 profile 拒绝。
+TEST(SecConfigCheckerTest, ProductionAcceptsCompositeTrustedTime) {
+    std::string cfg = R"yaml(
+key_provisioning:
+  mode: "hsm"
+sec:
+  trusted_time:
+    provider: "composite"
+    platform:
+      enabled: true
+      max_freshness_ms: 300000
+      max_uncertainty_ms: 2000
+    hardware_rtc:
+      enabled: true
+      require_provisioned: true
+    rollback_tolerance_ms: 2000
+)yaml";
+    auto path = writeTempConfig("trusted_time_composite.yaml", cfg);
+    auto r = runChecker(path, "production");
+    EXPECT_EQ(r.exit_code, 0) << r.output;
+}
+
+TEST(SecConfigCheckerTest, ProductionRejectsFakeTrustedTime) {
+    std::string cfg = R"yaml(
+key_provisioning:
+  mode: "hsm"
+sec:
+  trusted_time:
+    provider: "fake"
+)yaml";
+    auto path = writeTempConfig("trusted_time_fake.yaml", cfg);
+    auto r = runChecker(path, "production");
+    EXPECT_EQ(r.exit_code, 1) << r.output;
+    EXPECT_NE(r.output.find("production_composite_time_only"), std::string::npos) << r.output;
+}
+
+TEST(SecConfigCheckerTest, ProductionRejectsSystemClockTrustedTime) {
+    std::string cfg = R"yaml(
+key_provisioning:
+  mode: "hsm"
+sec:
+  trusted_time:
+    provider: "system_clock"
+)yaml";
+    auto path = writeTempConfig("trusted_time_system_clock.yaml", cfg);
+    auto r = runChecker(path, "production");
+    EXPECT_EQ(r.exit_code, 1) << r.output;
+    EXPECT_NE(r.output.find("no_system_clock_time"), std::string::npos) << r.output;
+}
+
+TEST(SecConfigCheckerTest, TestAcceptsFakeTrustedTime) {
+    std::string cfg = R"yaml(
+key_provisioning:
+  mode: "soft_file"
+sec:
+  trusted_time:
+    provider: "fake"
+)yaml";
+    auto path = writeTempConfig("trusted_time_fake_test.yaml", cfg);
+    auto r = runChecker(path, "test");
+    EXPECT_EQ(r.exit_code, 0) << r.output;
+}
+
+TEST(SecConfigCheckerTest, TrustedTimeUnknownProviderRejected) {
+    std::string cfg = R"yaml(
+key_provisioning:
+  mode: "hsm"
+sec:
+  trusted_time:
+    provider: "wall_clock"
+)yaml";
+    auto path = writeTempConfig("trusted_time_unknown.yaml", cfg);
+    auto r = runChecker(path, "production");
+    EXPECT_EQ(r.exit_code, 1) << r.output;
+    EXPECT_NE(r.output.find("allowed_values"), std::string::npos) << r.output;
+}

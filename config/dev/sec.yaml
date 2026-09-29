@@ -54,6 +54,10 @@ environment:
 sec:
   ipc:
     socket_path: "/tmp/tbox-sec.sock"
+  # 可信时间（TBOX-SEC-DSN-CR-017 §5）：dev/test 显式选择 fake，证书注入据此判定
+  # 有效期。仅限非生产环境；生产模板固定 provider=composite（fail-closed）。
+  trusted_time:
+    provider: "fake"
   # Seed-Key 共享密钥（AES-128，32 hex 字符）。开发/测试显式提供；
   # 出厂默认模板不含此键，缺失时 verify_key fail-closed。
   seed_key:

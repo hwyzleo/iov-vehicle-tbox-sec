@@ -37,6 +37,49 @@ sec:
       description: >
         Seed-Key 共享密钥（AES-128，16 字节 = 32 hex 字符）。由 provisioning 注入，
         出厂默认模板不含该键；缺失时 verify_key fail-closed（不允许退回 XOR/占位算法）。
+  trusted_time:
+    type: map
+    required: false
+    description: >
+      TBOX-SEC-DSN-CR-017：可信时间配置。production 仅允许 provider=composite
+      （平台同步时间 → 硬件 RTC，fail-closed）；dev/test 可显式 provider=fake。
+      平台时间服务/硬件 RTC 真实后端未落地前（阻塞项）证书注入 fail-closed，
+      绝不回退墙钟。
+    item_schema:
+      provider:
+        type: string
+        required: false
+        default: "composite"
+        allowed_values: [composite, fake]
+        profile_restriction:
+          production: composite_only   # production 只允许 composite，fake/system_clock 拒绝
+          test: fake_allowed
+      platform:
+        type: map
+        required: false
+        item_schema:
+          enabled: { type: bool, required: false, default: true }
+          max_freshness_ms:
+            type: int
+            required: false
+            default: 300000
+            range: [1000, 86400000]
+          max_uncertainty_ms:
+            type: int
+            required: false
+            default: 2000
+            range: [0, 60000]
+      hardware_rtc:
+        type: map
+        required: false
+        item_schema:
+          enabled: { type: bool, required: false, default: true }
+          require_provisioned: { type: bool, required: false, default: true }
+      rollback_tolerance_ms:
+        type: int
+        required: false
+        default: 2000
+        range: [0, 60000]
   tls:
     dev_peer_service:
       type: string

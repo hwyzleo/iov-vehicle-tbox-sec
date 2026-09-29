@@ -240,7 +240,16 @@ protected:
         key_engine->generate_device_key("00000000000000000000000000000001",
                                         "00000000000000000000000000000001", key_pair);
 
-        validator = std::make_unique<CertValidator>(key_engine.get());
+        // TBOX-SEC-DSN-CR-017：显式注入可信 fake（fixture 证书以真实 now 生成，
+        // 故 fake 也取当前墙钟，验证有效期窗口通过）
+        TrustedTimeSample sample;
+        sample.utc_now = std::chrono::system_clock::now();
+        sample.trust_state = TimeTrustState::Trusted;
+        sample.source = TimeSource::FakeTest;
+        sample.reason = TimeReason::FakeTest;
+        fake_time = std::make_unique<FakeTrustedTimeProvider>(sample);
+
+        validator = std::make_unique<CertValidator>(key_engine.get(), *fake_time);
     }
 
     void TearDown() override {
@@ -249,6 +258,7 @@ protected:
     }
 
     std::unique_ptr<KeyEngine> key_engine;
+    std::unique_ptr<FakeTrustedTimeProvider> fake_time;
     std::unique_ptr<CertValidator> validator;
     std::string test_vin = "TESTVIN1234567890";
     std::string test_ecu_uid = "00000000000000000000000000000001";
@@ -365,6 +375,89 @@ TEST_F(CertValidatorTest, RejectMissingClientAuthEku) {
     bool valid = false;
     ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
     EXPECT_EQ(result, ErrorCode::CERT_VALIDATION_FAILED);
+    EXPECT_FALSE(valid);
+}
+
+// ---- TBOX-SEC-DSN-CR-017：可信时间 fail-closed（不再有 system_clock 伪可信）----
+
+// 可信时间 UNTRUSTED → 拒绝注入（time_untrusted，key-match/commit 不执行）
+TEST_F(CertValidatorTest, TimeUntrusted_FailClosed) {
+    KeyPair key_pair;
+    key_engine->get_device_key(test_ecu_uid, test_ecu_uid, key_pair);
+    auto [cert, ca] = make_ca_signed_leaf_pair_with_pubkey(
+        test_ecu_uid.c_str(), key_pair.public_key, true, true);
+    (void)ca;
+
+    TrustedTimeSample bad;
+    bad.utc_now = std::chrono::system_clock::now();
+    bad.trust_state = TimeTrustState::Untrusted;   // 产线 RTC 未同步场景
+    bad.source = TimeSource::HardwareRtc;
+    bad.reason = TimeReason::RtcNotProvisioned;
+    fake_time->set_now(bad);
+
+    bool valid = false;
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
+    EXPECT_EQ(result, ErrorCode::CERT_EXPIRED);
+    EXPECT_FALSE(valid);
+}
+
+// 时间未到 notBefore（如产线时钟停在 1970，刚签发证书 notBefore 在未来）→ 拒绝
+TEST_F(CertValidatorTest, NotYetValid_Rejected) {
+    KeyPair key_pair;
+    key_engine->get_device_key(test_ecu_uid, test_ecu_uid, key_pair);
+    auto [cert, ca] = make_ca_signed_leaf_pair_with_pubkey(
+        test_ecu_uid.c_str(), key_pair.public_key, true, true);
+    (void)ca;
+
+    // fixture 证书 notBefore == 当前墙钟；将 fake 拨回 2 天前 → 证书“尚未生效”
+    TrustedTimeSample early = fake_time->now();
+    early.utc_now -= std::chrono::hours(48);
+    early.uncertainty = std::chrono::milliseconds(0);
+    fake_time->set_now(early);
+
+    bool valid = false;
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
+    EXPECT_EQ(result, ErrorCode::CERT_EXPIRED);
+    EXPECT_FALSE(valid);
+}
+
+// 时间越过 notAfter → 拒绝
+TEST_F(CertValidatorTest, Expired_Rejected) {
+    KeyPair key_pair;
+    key_engine->get_device_key(test_ecu_uid, test_ecu_uid, key_pair);
+    auto [cert, ca] = make_ca_signed_leaf_pair_with_pubkey(
+        test_ecu_uid.c_str(), key_pair.public_key, true, true);
+    (void)ca;
+
+    // fixture 证书 notAfter == now + 365d；拨快 400 天 → 已过期
+    TrustedTimeSample late = fake_time->now();
+    late.utc_now += std::chrono::hours(400 * 24);
+    late.uncertainty = std::chrono::milliseconds(0);
+    fake_time->set_now(late);
+
+    bool valid = false;
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
+    EXPECT_EQ(result, ErrorCode::CERT_EXPIRED);
+    EXPECT_FALSE(valid);
+}
+
+// uncertainty 跨越边界（CR-017 §3 闭区间）→ fail-closed
+TEST_F(CertValidatorTest, UncertaintyCrossesBoundary_Rejected) {
+    KeyPair key_pair;
+    key_engine->get_device_key(test_ecu_uid, test_ecu_uid, key_pair);
+    auto [cert, ca] = make_ca_signed_leaf_pair_with_pubkey(
+        test_ecu_uid.c_str(), key_pair.public_key, true, true);
+    (void)ca;
+
+    // 正常时间，但 uncertainty 大跨 notAfter 边界（fake now == notAfter 附近）
+    TrustedTimeSample near = fake_time->now();
+    near.utc_now += std::chrono::hours(365 * 24) - std::chrono::milliseconds(1);
+    near.uncertainty = std::chrono::seconds(2);   // 跨过 notAfter
+    fake_time->set_now(near);
+
+    bool valid = false;
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
+    EXPECT_EQ(result, ErrorCode::CERT_EXPIRED);
     EXPECT_FALSE(valid);
 }
 
