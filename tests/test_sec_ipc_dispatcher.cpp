@@ -22,7 +22,6 @@ public:
     ErrorCode submit_csr_result = ErrorCode::SUCCESS;
     ErrorCode inject_cert_result = ErrorCode::SUCCESS;
     ErrorCode apply_cert_result = ErrorCode::SUCCESS;
-    ErrorCode set_ca_cert_result = ErrorCode::SUCCESS;
     ErrorCode get_seed_result = ErrorCode::SUCCESS;
     ErrorCode verify_key_result = ErrorCode::SUCCESS;
     ErrorCode reset_result = ErrorCode::SUCCESS;
@@ -42,7 +41,6 @@ public:
     bool submit_csr_called = false;
     bool inject_certificate_called = false;
     bool apply_certificate_called = false;
-    bool set_ca_certificate_called = false;
     bool get_seed_called = false;
     bool verify_key_called = false;
     bool get_provision_status_called = false;
@@ -92,12 +90,6 @@ public:
     ErrorCode apply_certificate() override {
         apply_certificate_called = true;
         return apply_cert_result;
-    }
-
-    ErrorCode set_ca_certificate(const std::vector<uint8_t>& ca_cert_der) override {
-        set_ca_certificate_called = true;
-        last_ca_cert_der = ca_cert_der;
-        return set_ca_cert_result;
     }
 
     ErrorCode get_seed(uint8_t level, std::vector<uint8_t>& seed) override {
@@ -246,15 +238,15 @@ TEST_F(SecIpcDispatcherTest, DispatchApplyCertificate) {
     EXPECT_EQ(extract_status(response), 0);
 }
 
-TEST_F(SecIpcDispatcherTest, DispatchSetCaCertificate) {
+TEST_F(SecIpcDispatcherTest, DispatchSetCaCertificateRejected) {
+    // TBOX-SEC-DSN-CR-016 §4.3: SET_CA_CERTIFICATE 写入口已移除，旧调用固定失败且不产生写入
     json params;
     params["cert"] = "MIIBAQA=";
     std::string response = dispatcher_->dispatch(
         static_cast<uint32_t>(ipc::MethodId::SET_CA_CERTIFICATE),
         params.dump(), 0);
-
-    EXPECT_TRUE(mock_service_->set_ca_certificate_called);
-    EXPECT_FALSE(mock_service_->last_ca_cert_der.empty());
+    EXPECT_NE(extract_status(response), 0);
+    EXPECT_FALSE(mock_service_->inject_certificate_called);
 }
 
 TEST_F(SecIpcDispatcherTest, DispatchGetSeed) {

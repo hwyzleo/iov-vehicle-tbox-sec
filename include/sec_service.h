@@ -248,9 +248,6 @@ public:
     /// 避免因启动时 PROV 尚未就绪而永久停留在 NOT_READY。
     ErrorCode ensure_tls_material_ready(const std::string& profile);
 
-    // Set CA certificate for signature verification
-    virtual ErrorCode set_ca_certificate(const std::vector<uint8_t>& ca_cert_der);
-
     // Save current provision state to store
     bool save_state();
 

@@ -102,7 +102,6 @@ void print_usage() {
     std::cout << "  submit_csr                   - Submit CSR to cloud" << std::endl;
     std::cout << "  inject_cert <file>           - Inject certificate from file" << std::endl;
     std::cout << "  apply_cert                   - Apply certificate (full flow)" << std::endl;
-    std::cout << "  set_ca_cert <file>           - Set CA certificate" << std::endl;
     std::cout << "  get_seed <level>             - Get security seed" << std::endl;
     std::cout << "  verify_key <level> <hex_key> - Verify key" << std::endl;
     std::cout << "  get_status                   - Get provision status" << std::endl;
@@ -264,31 +263,6 @@ int main(int argc, char* argv[]) {
             std::cout << "Certificate application completed" << std::endl;
         } else {
             std::cerr << "Failed to apply certificate: "
-                      << error_code_to_string(result) << std::endl;
-            return 1;
-        }
-    }
-    else if (command == "set_ca_cert") {
-        if (argc < 3) {
-            std::cerr << "Usage: sec_cli set_ca_cert <file>" << std::endl;
-            return 1;
-        }
-        std::string file_path = argv[2];
-        std::ifstream file(file_path, std::ios::binary);
-        if (!file.is_open()) {
-            std::cerr << "Failed to open file: " << file_path << std::endl;
-            return 1;
-        }
-        std::vector<uint8_t> ca_cert_der(
-            (std::istreambuf_iterator<char>(file)),
-            std::istreambuf_iterator<char>());
-        file.close();
-
-        auto result = client.set_ca_certificate(ca_cert_der);
-        if (result == ErrorCode::SUCCESS) {
-            std::cout << "CA certificate set successfully" << std::endl;
-        } else {
-            std::cerr << "Failed to set CA certificate: "
                       << error_code_to_string(result) << std::endl;
             return 1;
         }

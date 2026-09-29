@@ -63,7 +63,6 @@ private:
     std::pair<int32_t, std::string> handle_submit_csr();
     std::pair<int32_t, std::string> handle_inject_certificate(std::string_view params);
     std::pair<int32_t, std::string> handle_apply_certificate();
-    std::pair<int32_t, std::string> handle_set_ca_certificate(std::string_view params);
     std::pair<int32_t, std::string> handle_get_seed(std::string_view params);
     std::pair<int32_t, std::string> handle_verify_key(std::string_view params);
     std::pair<int32_t, std::string> handle_get_status();

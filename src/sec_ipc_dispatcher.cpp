@@ -107,9 +107,9 @@ std::string SecIpcDispatcher::dispatch(uint32_t method_id,
             case ipc::MethodId::APPLY_CERTIFICATE:
                 result = handle_apply_certificate();
                 break;
-            case ipc::MethodId::SET_CA_CERTIFICATE:
-                result = handle_set_ca_certificate(params_json);
-                break;
+            // TBOX-SEC-DSN-CR-016 §4.3: SET_CA_CERTIFICATE 写入口已移除。
+            // MethodId 数值保留（wire/ABI 兼容）但不路由：旧调用落到 default
+            // 返回未知方法并失败，不产生任何写入，不改变材料/版本/READY 状态。
             case ipc::MethodId::GET_SEED:
                 result = handle_get_seed(params_json);
                 break;
@@ -269,29 +269,6 @@ std::pair<int32_t, std::string> SecIpcDispatcher::handle_apply_certificate() {
     nlohmann::json j;
     j["success"] = (result == ErrorCode::SUCCESS);
     return {static_cast<int32_t>(result), j.dump()};
-}
-
-std::pair<int32_t, std::string> SecIpcDispatcher::handle_set_ca_certificate(std::string_view params) {
-    try {
-        auto j = nlohmann::json::parse(params);
-        std::string ca_cert_b64 = j.value("cert", "");
-        if (ca_cert_b64.empty()) {
-            nlohmann::json resp;
-            resp["success"] = false;
-            resp["error"] = "Missing cert parameter";
-            return {static_cast<int32_t>(ErrorCode::INVALID_PARAMETER), resp.dump()};
-        }
-        std::vector<uint8_t> ca_cert_der = b64_decode(ca_cert_b64);
-        auto result = service_->set_ca_certificate(ca_cert_der);
-        nlohmann::json resp;
-        resp["success"] = (result == ErrorCode::SUCCESS);
-        return {static_cast<int32_t>(result), resp.dump()};
-    } catch (const nlohmann::json::exception&) {
-        nlohmann::json resp;
-        resp["success"] = false;
-        resp["error"] = "Invalid JSON";
-        return {FW_SERIALIZATION_FAILED, resp.dump()};
-    }
 }
 
 std::pair<int32_t, std::string> SecIpcDispatcher::handle_get_seed(std::string_view params) {

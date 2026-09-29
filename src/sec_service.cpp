@@ -107,27 +107,17 @@ ErrorCode SecService::initialize() {
         }
     }
 
-    // Load CA / Broker trust root via CA Material Loader（TBOX-SEC-DSN-CR-014）
+    // Load CA / Broker trust root via CA Material Loader（TBOX-SEC-DSN-CR-014 / CR-016 §4.3）
     // root_ca 的唯一量产来源为 BUILD 安装的信任根文件（sec.tls.profiles.mqtt.root_ca_source，
     // 默认 /usr/share/tbox/sec/trust/mqtt-root-ca.pem）；CA Material Loader 校验后经
-    // framework-store 原子导入 key=root_ca。删除 storage.ca_cert 旧 fallback。
+    // framework-store 原子导入 key=root_ca，仅供 TlsCredentialProvider 作为 trust anchor。
+    // CR-016：CertValidator 不再持有/接收 CA，root_ca 不进入注入 sanity check 路径；
+    // 不存在可覆盖 trust anchor 的外部写入口（SecService/IPC/CLI/client 均已移除）。
     if (store_.has_value() && store_->isReady()) {
         initializeCaMaterialLoader();
         if (store_->has("root_ca")) {
-            try {
-                std::string root_ca_pem = store_->load<std::string>("root_ca");
-                if (!root_ca_pem.empty()) {
-                    std::vector<uint8_t> ca_cert_bytes(root_ca_pem.begin(), root_ca_pem.end());
-                    if (set_ca_certificate(ca_cert_bytes) == ErrorCode::SUCCESS) {
-                        SecLogAdapter::certificate().info(
-                            "sec.ca.loaded_from_store", "CA 证书从 store 加载成功 (key=root_ca)");
-                    }
-                }
-            } catch (const std::exception& e) {
-                SecLogAdapter::certificate().error(
-                    "sec.ca.load_from_store_failed", "从 store 加载 root_ca 失败",
-                    {{"reason", tbox::fw::log::FieldValue::makeString(e.what())}});
-            }
+            SecLogAdapter::certificate().info(
+                "sec.ca.loaded_from_store", "CA 信任根已从 store 导入 (key=root_ca, 供 Provider)");
         }
     } else {
         SecLogAdapter::certificate().warn(
@@ -1171,19 +1161,6 @@ void SecService::set_diag_service(std::shared_ptr<DiagServiceInterface> diag_ser
 
 void SecService::set_prov_service(std::shared_ptr<ProvServiceInterface> prov_service) {
     prov_service_ = prov_service;
-}
-
-ErrorCode SecService::set_ca_certificate(const std::vector<uint8_t>& ca_cert_der) {
-    if (ca_cert_der.empty()) {
-        return ErrorCode::INVALID_PARAMETER;
-    }
-
-    // Create or update cert validator with CA certificate
-    if (!cert_validator_) {
-        cert_validator_ = std::make_unique<CertValidator>(key_engine_.get());
-    }
-    cert_validator_->set_ca_certificate(ca_cert_der);
-    return ErrorCode::SUCCESS;
 }
 
 bool SecService::save_state() {

@@ -403,6 +403,8 @@ ErrorCode TlsCredentialProvider::validateAndStoreMaterials(ProfileState& ps) {
     }
     StoreCtxUniquePtr ctx(X509_STORE_CTX_new());
     X509_STORE_CTX_init(ctx.get(), store.get(), leaf, nullptr);
+    // TBOX-SEC-DSN-CR-016 §4.1: 以 sslclient purpose 校验，强制 EKU/purpose 匹配
+    X509_STORE_CTX_set_purpose(ctx.get(), X509_PURPOSE_SSL_CLIENT);
     // 中间证书作为 untrusted chain
     STACK_OF(X509)* untrusted = sk_X509_new_null();
     for (size_t i = 1; i < chain_certs.size(); ++i) {

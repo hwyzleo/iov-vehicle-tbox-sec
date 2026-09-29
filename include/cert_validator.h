@@ -21,11 +21,38 @@ struct CertificateInfo {
     std::string extended_key_usage;
 };
 
+/// 可信时间查询结果（TBOX-SEC-DSN-CR-016 §3.2）。
+/// framework/平台时间可信度接口确认前，默认实现将系统时钟视为 TRUSTED；
+/// 该默认仅为过渡实现，不构成最终安全决策，须随 framework 时间接口契约收敛
+/// （生产环境 UNTRUSTED/UNKNOWN 时注入必须显式失败，不得 commit）。
+struct TrustedTime {
+    bool trusted = false;                            ///< trust_state == TRUSTED
+    std::chrono::system_clock::time_point utc_now{}; ///< 可信 UTC
+    std::string source;                              ///< 时间来源标识
+};
+
+/// 可信时间提供方抽象。CR-016 阻塞项：具体提供方/同步状态接口/freshness
+/// 门限属 framework/平台依赖，待确认后注入真实实现。
+class TrustedTimeProvider {
+public:
+    virtual ~TrustedTimeProvider() = default;
+    virtual TrustedTime get_trusted_time() const = 0;
+};
+
+/// 默认实现：以系统时钟作为当前可信时间源（过渡实现，待 framework 时间接口确认）。
+class SystemClockTrustedTimeProvider final : public TrustedTimeProvider {
+public:
+    TrustedTime get_trusted_time() const override;
+};
+
 class CertValidator {
 public:
-    CertValidator(KeyEngine* key_engine);
+    CertValidator(KeyEngine* key_engine,
+                  TrustedTimeProvider* time_provider = nullptr);
 
-    // Validate certificate against device key
+    // 注入 sanity check：仅校验单个 leaf（TBOX-SEC-DSN-CR-016）。
+    // 不验证 CA 签名、不构建证书路径、不要求配置 root_ca；chain 解析与
+    // leaf 识别由 Certificate Install Service 完成后再调用本接口。
     ErrorCode validate_certificate(const std::string& vin,
                                    const std::string& ecu_uid,
                                    const std::vector<uint8_t>& cert_der,
@@ -38,21 +65,12 @@ public:
     // Check if certificate is expired
     bool is_certificate_expired(const std::vector<uint8_t>& cert_der);
 
-    // Check certificate chain
-    ErrorCode validate_certificate_chain(const std::vector<std::vector<uint8_t>>& chain,
-                                         bool& valid);
-
-    // Set CA certificate for signature verification
-    void set_ca_certificate(const std::vector<uint8_t>& ca_cert_der);
-
 private:
     KeyEngine* key_engine_;
-    std::vector<uint8_t> ca_cert_der_;  // CA certificate for signature verification
+    std::unique_ptr<TrustedTimeProvider> owned_time_provider_;
+    TrustedTimeProvider* time_provider_;
 
     // Internal validation methods
-    ErrorCode verify_certificate_signature(const std::vector<uint8_t>& cert_der,
-                                          bool& valid);
-
     ErrorCode check_certificate_validity(const std::vector<uint8_t>& cert_der,
                                         bool& valid);
 

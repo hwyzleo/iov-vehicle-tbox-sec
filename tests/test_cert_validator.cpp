@@ -46,16 +46,15 @@ void set_common_exts(X509* cert, bool ca, bool ku, bool eku, const char* cn) {
     (void)ca;
 }
 
-// 生成自签名证书（作为“伪造/无信任锚”用例）
+// 生成自签名证书（作为“伪造/无信任锚”用例）；含合法 profile（KU/EKU），
+// 以便稳定命中自签名 leaf 检查而非被 profile 其它字段提前拒绝。
 std::vector<uint8_t> make_self_signed(const char* cn) {
     EvpUP key = gen_ec_key();
     X509UP cert(X509_new());
     X509_set_version(cert.get(), 2);
     ASN1_INTEGER_set(X509_get_serialNumber(cert.get()), 99);
-    X509_NAME* n = X509_get_subject_name(cert.get());
-    X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC,
-        reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
-    X509_set_issuer_name(cert.get(), n);
+    set_common_exts(cert.get(), false, true, true, cn); // CN + KU + EKU
+    X509_set_issuer_name(cert.get(), X509_get_subject_name(cert.get()));
     X509_set_pubkey(cert.get(), key.get());
     X509_gmtime_adj(X509_get_notBefore(cert.get()), 0);
     X509_gmtime_adj(X509_get_notAfter(cert.get()), 365 * 24 * 3600L);
@@ -108,6 +107,121 @@ std::pair<std::vector<uint8_t>, std::vector<uint8_t>> make_ca_signed_leaf_pair(
     return {std::move(leaf_der), std::move(ca_der_out)};
 }
 
+// 由未压缩 EC 公钥点重建 EVP_PKEY（与 key_engine.public_key 格式一致，
+// i2d_PublicKey/o2i_ECPublicKey 均为主公钥原始字节）
+EvpUP pkey_from_raw_pub(const std::vector<uint8_t>& raw) {
+    if (raw.empty()) return {};
+    const unsigned char* p = raw.data();
+    EC_KEY* ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (!ec) return {};
+    if (!o2i_ECPublicKey(&ec, &p, raw.size())) {
+        EC_KEY_free(ec);
+        return {};
+    }
+    EvpUP pkey(EVP_PKEY_new());
+    EVP_PKEY_assign_EC_KEY(pkey.get(), ec);
+    return pkey;
+}
+
+// 生成由同一 ca 签发的叶证书（leaf 公钥使用给定原始公钥，使 key match 可通过）
+std::pair<std::vector<uint8_t>, std::vector<uint8_t>> make_ca_signed_leaf_pair_with_pubkey(
+    const char* cn, const std::vector<uint8_t>& leaf_pub_raw, bool ku, bool eku) {
+    EvpUP ca_key = gen_ec_key();
+    X509UP ca(X509_new());
+    X509_set_version(ca.get(), 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(ca.get()), 1);
+    X509_NAME* can = X509_get_subject_name(ca.get());
+    X509_NAME_add_entry_by_txt(can, "CN", MBSTRING_ASC,
+        reinterpret_cast<const unsigned char*>("Test Root CA"), -1, -1, 0);
+    X509_set_issuer_name(ca.get(), can);
+    X509_set_pubkey(ca.get(), ca_key.get());
+    X509_gmtime_adj(X509_get_notBefore(ca.get()), 0);
+    X509_gmtime_adj(X509_get_notAfter(ca.get()), 3650 * 24 * 3600L);
+    X509_sign(ca.get(), ca_key.get(), EVP_sha256());
+
+    EvpUP dev_key = pkey_from_raw_pub(leaf_pub_raw);
+    X509UP leaf(X509_new());
+    X509_set_version(leaf.get(), 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(leaf.get()), 2);
+    X509_NAME* n = X509_get_subject_name(leaf.get());
+    X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC,
+        reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
+    X509_set_issuer_name(leaf.get(), X509_get_subject_name(ca.get()));
+    X509_set_pubkey(leaf.get(), dev_key.get());
+    X509_gmtime_adj(X509_get_notBefore(leaf.get()), 0);
+    X509_gmtime_adj(X509_get_notAfter(leaf.get()), 365 * 24 * 3600L);
+    set_common_exts(leaf.get(), false, ku, eku, cn);
+    X509_sign(leaf.get(), ca_key.get(), EVP_sha256());
+
+    unsigned char* buf = nullptr;
+    int len = i2d_X509(leaf.get(), &buf);
+    std::vector<uint8_t> leaf_der(buf, buf + len);
+    OPENSSL_free(buf);
+    buf = nullptr;
+    len = i2d_X509(ca.get(), &buf);
+    std::vector<uint8_t> ca_der_out(buf, buf + len);
+    OPENSSL_free(buf);
+    return {std::move(leaf_der), std::move(ca_der_out)};
+}
+
+// 两级 CA：Root(自签名) → Issuing CA(Root 签发) → leaf(Issuing CA 签发)
+// leaf 公钥使用给定原始公钥（设备公钥），使 key match 可通过。
+std::tuple<std::vector<uint8_t>, std::vector<uint8_t>, std::vector<uint8_t>>
+make_two_level_chain(const char* cn, const std::vector<uint8_t>& leaf_pub_raw,
+                     bool ku, bool eku) {
+    // Root：自签名
+    EvpUP root_key = gen_ec_key();
+    X509UP root(X509_new());
+    X509_set_version(root.get(), 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(root.get()), 1);
+    X509_NAME* rn = X509_get_subject_name(root.get());
+    X509_NAME_add_entry_by_txt(rn, "CN", MBSTRING_ASC,
+        reinterpret_cast<const unsigned char*>("Test Root CA"), -1, -1, 0);
+    X509_set_issuer_name(root.get(), rn);
+    X509_set_pubkey(root.get(), root_key.get());
+    X509_gmtime_adj(X509_get_notBefore(root.get()), 0);
+    X509_gmtime_adj(X509_get_notAfter(root.get()), 3650 * 24 * 3600L);
+    X509_sign(root.get(), root_key.get(), EVP_sha256());
+
+    // Issuing CA：由 Root 签发（issuer = Root subject）
+    EvpUP issuing_key = gen_ec_key();
+    X509UP issuing(X509_new());
+    X509_set_version(issuing.get(), 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(issuing.get()), 2);
+    X509_NAME* in = X509_get_subject_name(issuing.get());
+    X509_NAME_add_entry_by_txt(in, "CN", MBSTRING_ASC,
+        reinterpret_cast<const unsigned char*>("Test Issuing CA"), -1, -1, 0);
+    X509_set_issuer_name(issuing.get(), rn);
+    X509_set_pubkey(issuing.get(), issuing_key.get());
+    X509_gmtime_adj(X509_get_notBefore(issuing.get()), 0);
+    X509_gmtime_adj(X509_get_notAfter(issuing.get()), 3650 * 24 * 3600L);
+    X509_sign(issuing.get(), root_key.get(), EVP_sha256());
+
+    // leaf：由 Issuing CA 签发（issuer = Issuing CA subject，≠ Root subject）
+    EvpUP leaf_key = pkey_from_raw_pub(leaf_pub_raw);
+    X509UP leaf(X509_new());
+    X509_set_version(leaf.get(), 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(leaf.get()), 3);
+    X509_NAME* n = X509_get_subject_name(leaf.get());
+    X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC,
+        reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
+    X509_set_issuer_name(leaf.get(), in);
+    X509_set_pubkey(leaf.get(), leaf_key.get());
+    X509_gmtime_adj(X509_get_notBefore(leaf.get()), 0);
+    X509_gmtime_adj(X509_get_notAfter(leaf.get()), 365 * 24 * 3600L);
+    set_common_exts(leaf.get(), false, ku, eku, cn);
+    X509_sign(leaf.get(), issuing_key.get(), EVP_sha256());
+
+    auto der = [](X509* c) {
+        unsigned char* buf = nullptr;
+        int len = i2d_X509(c, &buf);
+        std::vector<uint8_t> d(buf, buf + len);
+        OPENSSL_free(buf);
+        return d;
+    };
+    return {der(leaf.get()), der(root.get()), der(issuing.get())};
+}
+
 } // namespace
 
 class CertValidatorTest : public ::testing::Test {
@@ -144,7 +258,8 @@ TEST_F(CertValidatorTest, ValidateCertificate_EmptyCert) {
     std::vector<uint8_t> empty_cert;
     bool valid = false;
     ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, empty_cert, valid);
-    EXPECT_EQ(result, ErrorCode::CERT_EXPIRED);
+    // CR-016 §3.2: parse 位于最前，空证书按解析失败处理
+    EXPECT_EQ(result, ErrorCode::CERT_VALIDATION_FAILED);
     EXPECT_FALSE(valid);
 }
 
@@ -180,23 +295,8 @@ TEST_F(CertValidatorTest, IsCertificateExpired_InvalidDer) {
     EXPECT_TRUE(validator->is_certificate_expired(cert_der));
 }
 
-TEST_F(CertValidatorTest, ValidateCertificateChain_EmptyChain) {
-    std::vector<std::vector<uint8_t>> empty_chain;
-    bool valid = false;
-    ErrorCode result = validator->validate_certificate_chain(empty_chain, valid);
-    EXPECT_EQ(result, ErrorCode::CERT_VALIDATION_FAILED);
-    EXPECT_FALSE(valid);
-}
-
-TEST_F(CertValidatorTest, ValidateCertificateChain_InvalidCert) {
-    std::vector<std::vector<uint8_t>> chain = {{0x30, 0x82, 0x01, 0x00}};
-    bool valid = false;
-    ErrorCode result = validator->validate_certificate_chain(chain, valid);
-    EXPECT_NE(result, ErrorCode::SUCCESS);
-    EXPECT_FALSE(valid);
-}
-
-// 自签名叶证书必须被拒绝（无信任锚，禁止自身公钥验签）
+// 自签名叶证书必须被拒绝（无信任锚，profile 非法；该检查先于 key match，
+// 独立密钥生成的自签名 fixture 稳定返回 profile-invalid）
 TEST_F(CertValidatorTest, RejectSelfSignedLeaf) {
     std::vector<uint8_t> cert = make_self_signed("00000000000000000000000000000001");
     bool valid = false;
@@ -205,31 +305,53 @@ TEST_F(CertValidatorTest, RejectSelfSignedLeaf) {
     EXPECT_FALSE(valid);
 }
 
-// 无 CA 时 CA 签名证书无法验签（fail-closed）
-TEST_F(CertValidatorTest, RejectCaSignedWithoutConfiguredCa) {
+// 未配置 root_ca 不阻断注入 sanity check：sanity 通过，最终在 key match 阶段拒绝
+// （TBOX-SEC-DSN-CR-016：注入不再要求配置 CA / 不再验 CA 签名）
+TEST_F(CertValidatorTest, AcceptValidProfileWithoutConfiguredCaForInstall) {
     auto [cert, ca] = make_ca_signed_leaf_pair(test_ecu_uid.c_str(), true, true);
     (void)ca;
-    bool valid = false;
-    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
-    EXPECT_EQ(result, ErrorCode::CERT_VALIDATION_FAILED);
-    EXPECT_FALSE(valid);
-}
-
-// 合法 CA 签名 + 正确 profile（CN==ecu_uid, KU=digitalSignature, EKU=clientAuth）
-// 签名/profile 通过；因叶证书公钥与设备密钥不同，最终在 key match 阶段拒绝。
-TEST_F(CertValidatorTest, AcceptCaSignedValidProfile) {
-    auto [cert, ca] = make_ca_signed_leaf_pair(test_ecu_uid.c_str(), true, true);
-    validator->set_ca_certificate(ca);
     bool valid = false;
     ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
     EXPECT_EQ(result, ErrorCode::CERT_KEY_MISMATCH);
     EXPECT_FALSE(valid);
 }
 
+// 合法 CA 签名 + 正确 profile（CN==ecu_uid, KU=digitalSignature, EKU=clientAuth）
+// 且叶证书公钥==设备公钥 → 完整 sanity check 通过（不依赖任何 Root/单跳验签）
+TEST_F(CertValidatorTest, AcceptCaSignedValidProfile) {
+    KeyPair key_pair;
+    key_engine->get_device_key(test_ecu_uid, test_ecu_uid, key_pair);
+    auto [cert, ca] = make_ca_signed_leaf_pair_with_pubkey(
+        test_ecu_uid.c_str(), key_pair.public_key, true, true);
+    (void)ca;
+    bool valid = false;
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
+    EXPECT_EQ(result, ErrorCode::SUCCESS);
+    EXPECT_TRUE(valid);
+}
+
+// 两级 CA：合法 leaf 由 Issuing CA 签发（issuer ≠ Root subject），公钥==设备公钥
+// → 注入 sanity check 必须通过（不得因 leaf issuer 与 Root subject 不同而拒绝）
+TEST_F(CertValidatorTest, AcceptIssuingCaSignedLeafForInstall) {
+    KeyPair key_pair;
+    key_engine->get_device_key(test_ecu_uid, test_ecu_uid, key_pair);
+    auto [leaf, root, issuing] =
+        make_two_level_chain(test_ecu_uid.c_str(), key_pair.public_key, true, true);
+    // 构造即证明 leaf.issuer(=Issuing CA) != root.subject(=Root CA)
+    CertificateInfo info;
+    ASSERT_EQ(validator->extract_certificate_info(leaf, info), ErrorCode::SUCCESS);
+    ASSERT_NE(info.issuer.find("Test Issuing CA"), std::string::npos);
+    bool valid = false;
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, leaf, valid);
+    EXPECT_EQ(result, ErrorCode::SUCCESS);
+    EXPECT_TRUE(valid);
+    (void)issuing;
+}
+
 // CN 与 ecu_uid 不一致被拒绝
 TEST_F(CertValidatorTest, RejectCnMismatch) {
     auto [cert, ca] = make_ca_signed_leaf_pair("OTHER-ECU", true, true);
-    validator->set_ca_certificate(ca);
+    (void)ca;
     bool valid = false;
     ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
     EXPECT_EQ(result, ErrorCode::CERT_VALIDATION_FAILED);
@@ -239,10 +361,11 @@ TEST_F(CertValidatorTest, RejectCnMismatch) {
 // 缺 EKU=clientAuth 被拒绝
 TEST_F(CertValidatorTest, RejectMissingClientAuthEku) {
     auto [cert, ca] = make_ca_signed_leaf_pair(test_ecu_uid.c_str(), true, false);
-    validator->set_ca_certificate(ca);
+    (void)ca;
     bool valid = false;
     ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
     EXPECT_EQ(result, ErrorCode::CERT_VALIDATION_FAILED);
     EXPECT_FALSE(valid);
 }
+
 

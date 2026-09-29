@@ -59,7 +59,6 @@ public:
     // 证书操作
     ErrorCode inject_certificate(const std::vector<uint8_t>& cert_der);
     ErrorCode apply_certificate();
-    ErrorCode set_ca_certificate(const std::vector<uint8_t>& ca_cert_der);
 
     // 安全访问（Seed-Key）
     ErrorCode get_seed(uint8_t level, std::vector<uint8_t>& seed);

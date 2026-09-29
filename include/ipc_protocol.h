@@ -17,6 +17,8 @@ enum class MethodId : uint32_t {
     SUBMIT_CSR = 4,
     INJECT_CERTIFICATE = 5,
     APPLY_CERTIFICATE = 6,
+    /// @deprecated TBOX-SEC-DSN-CR-016 §4.3: 写入口已移除。数值保留以维持
+    /// wire/ABI 兼容，但 dispatcher 不再路由——旧调用固定失败且不产生任何写入。
     SET_CA_CERTIFICATE = 7,
     GET_SEED = 8,
     VERIFY_KEY = 9,

@@ -59,20 +59,81 @@ bool hasClientAuthEku(const X509* cert) {
     return ok;
 }
 
+// 可验证自签名 leaf 识别（TBOX-SEC-DSN-CR-016 §3.2）：
+// 同时满足 subject==issuer 且可用自身公钥验证签名；仅 DN 相等不足以判定自签名，
+// 该检查属于 leaf profile 约束，不作为 CA 信任验证。
+bool is_verifiable_self_signed(const X509* cert) {
+    if (X509_NAME_cmp(X509_get_subject_name(const_cast<X509*>(cert)),
+                      X509_get_issuer_name(const_cast<X509*>(cert))) != 0) {
+        return false;
+    }
+    EVP_PKEY* pkey = X509_get_pubkey(const_cast<X509*>(cert));
+    if (!pkey) return false;
+    const int r = X509_verify(const_cast<X509*>(cert), pkey);
+    EVP_PKEY_free(pkey);
+    return r == 1;
+}
+
 } // namespace
 
-CertValidator::CertValidator(KeyEngine* key_engine)
-    : key_engine_(key_engine) {}
+TrustedTime SystemClockTrustedTimeProvider::get_trusted_time() const {
+    // 过渡实现（TBOX-SEC-DSN-CR-016 阻塞项）：framework/平台时间可信度接口
+    // 确认前，将系统时钟视为可信。生产语义须随该契约收敛。
+    TrustedTime tt;
+    tt.trusted = true;
+    tt.utc_now = std::chrono::system_clock::now();
+    tt.source = "system_clock";
+    return tt;
+}
+
+CertValidator::CertValidator(KeyEngine* key_engine,
+                             TrustedTimeProvider* time_provider)
+    : key_engine_(key_engine),
+      owned_time_provider_(
+          time_provider ? nullptr : std::make_unique<SystemClockTrustedTimeProvider>()),
+      time_provider_(time_provider ? time_provider : owned_time_provider_.get()) {}
 
 ErrorCode CertValidator::validate_certificate(const std::string& vin,
                                              const std::string& ecu_uid,
                                              const std::vector<uint8_t>& cert_der,
                                              bool& valid) {
+    valid = false;
     if (!key_engine_) {
         return ErrorCode::INVALID_PARAMETER;
     }
 
-    // Check certificate validity period
+    // 1. parse/structure —— 解析 leaf DER（TBOX-SEC-DSN-CR-016 §3.2）
+    const unsigned char* p = cert_der.data();
+    X509* cert = d2i_X509(nullptr, &p, cert_der.size());
+    if (!cert) {
+        SecLogAdapter::certificate().error(
+            "sec.cert.parse_der_failed", "证书 DER 解析失败");
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
+
+    // 2~4. 证书 profile（TBOX-SEC-DSN-CR-003 §5 / REQ US-001）：
+    //   Subject CN == hsm_uid(ecu_uid)；KU 含 digitalSignature；EKU 含 clientAuth。
+    const bool cn_ok = subjectCommonNameMatches(cert, ecu_uid);
+    const bool ku_ok = hasKeyUsageDigitalSignature(cert);
+    const bool eku_ok = hasClientAuthEku(cert);
+
+    // 5. 可验证自签名 leaf 以 profile 非法拒绝（位于 key match 之前，
+    //    确保自签名 leaf 稳定返回 profile-invalid 而非被独立密钥提前映射为 key mismatch）
+    const bool self_signed = is_verifiable_self_signed(cert);
+    X509_free(cert);
+
+    if (!cn_ok || !ku_ok || !eku_ok || self_signed) {
+        SecLogAdapter::certificate().error(
+            "sec.certificate.profile.rejected",
+            "证书 profile 校验失败：CN/KeyUsage/ExtendedKeyUsage/自签名与设备身份不符",
+            {{"cn_match", tbox::fw::log::FieldValue::makeBool(cn_ok)},
+             {"ku_digital_signature", tbox::fw::log::FieldValue::makeBool(ku_ok)},
+             {"eku_client_auth", tbox::fw::log::FieldValue::makeBool(eku_ok)},
+             {"self_signed", tbox::fw::log::FieldValue::makeBool(self_signed)}});
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
+
+    // 6. 可信时间位于 [notBefore, notAfter]（TBOX-SEC-DSN-CR-016 §3.2）
     bool not_expired = false;
     ErrorCode result = check_certificate_validity(cert_der, not_expired);
     if (result != ErrorCode::SUCCESS) {
@@ -80,50 +141,13 @@ ErrorCode CertValidator::validate_certificate(const std::string& vin,
     }
 
     if (!not_expired) {
+        SecLogAdapter::certificate().error(
+            "sec.cert.expired", "证书未生效或已过期");
         valid = false;
         return ErrorCode::CERT_EXPIRED;
     }
 
-    // Verify certificate signature
-    bool signature_valid = false;
-    result = verify_certificate_signature(cert_der, signature_valid);
-    if (result != ErrorCode::SUCCESS) {
-        return result;
-    }
-
-    if (!signature_valid) {
-        valid = false;
-        return ErrorCode::CERT_VALIDATION_FAILED;
-    }
-
-    // TBOX-SEC-DSN-CR-003 §5 / REQ US-001：证书 profile 校验。
-    //   Subject DN CN == hsm_uid(ecu_uid)；KU 含 digitalSignature；EKU 含 clientAuth。
-    // 任一不满足即拒绝写入（fail-closed），不静默接受。
-    {
-        const unsigned char* p = cert_der.data();
-        X509* cert = d2i_X509(nullptr, &p, cert_der.size());
-        if (!cert) {
-            valid = false;
-            return ErrorCode::CERT_VALIDATION_FAILED;
-        }
-        const bool cn_ok = subjectCommonNameMatches(cert, ecu_uid);
-        const bool ku_ok = hasKeyUsageDigitalSignature(cert);
-        const bool eku_ok = hasClientAuthEku(cert);
-        X509_free(cert);
-
-        if (!cn_ok || !ku_ok || !eku_ok) {
-            SecLogAdapter::certificate().error(
-                "sec.certificate.profile.rejected",
-                "证书 profile 校验失败：CN/KeyUsage/ExtendedKeyUsage 与设备身份不符",
-                {{"cn_match", tbox::fw::log::FieldValue::makeBool(cn_ok)},
-                 {"ku_digital_signature", tbox::fw::log::FieldValue::makeBool(ku_ok)},
-                 {"eku_client_auth", tbox::fw::log::FieldValue::makeBool(eku_ok)}});
-            valid = false;
-            return ErrorCode::CERT_VALIDATION_FAILED;
-        }
-    }
-
-    // Match certificate key with device key
+    // 7. 证书公钥与本地私钥匹配
     bool key_match = false;
     result = match_certificate_key(cert_der, vin, ecu_uid, key_match);
     if (result != ErrorCode::SUCCESS) {
@@ -131,7 +155,7 @@ ErrorCode CertValidator::validate_certificate(const std::string& vin,
     }
 
     valid = key_match;
-    
+
     if (key_match) {
         SecLogAdapter::certificate().info(
             "sec.certificate.install.succeeded",
@@ -151,7 +175,7 @@ ErrorCode CertValidator::validate_certificate(const std::string& vin,
             }
         );
     }
-    
+
     return key_match ? ErrorCode::SUCCESS : ErrorCode::CERT_KEY_MISMATCH;
 }
 
@@ -304,145 +328,34 @@ bool CertValidator::is_certificate_expired(const std::vector<uint8_t>& cert_der)
         return true; // Assume expired if can't parse
     }
 
-    auto now = std::chrono::system_clock::now();
-    return now < info.not_before || now > info.not_after;
-}
-
-ErrorCode CertValidator::validate_certificate_chain(const std::vector<std::vector<uint8_t>>& chain,
-                                                   bool& valid) {
-    if (chain.empty()) {
-        valid = false;
-        return ErrorCode::CERT_VALIDATION_FAILED;
+    TrustedTime tt = time_provider_->get_trusted_time();
+    // 时间不可判定时按 fail-closed 视为不可用（TBOX-SEC-DSN-CR-016 §3.2）
+    if (!tt.trusted) {
+        return true;
     }
-
-    // In real implementation, validate the entire chain
-    // For now, just validate the first certificate
-    CertificateInfo info;
-    ErrorCode result = extract_certificate_info(chain[0], info);
-    if (result != ErrorCode::SUCCESS) {
-        valid = false;
-        return result;
-    }
-
-    // Check if self-signed (simplified)
-    valid = (info.issuer == info.subject);
-    return ErrorCode::SUCCESS;
-}
-
-ErrorCode CertValidator::verify_certificate_signature(const std::vector<uint8_t>& cert_der,
-                                                     bool& valid) {
-    SecLogAdapter::certificate().debug(
-        "sec.cert.verify_signature.start", "校验证书签名",
-        {{"cert_size", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(cert_der.size()))}});
-
-    if (cert_der.empty()) {
-        valid = false;
-        return ErrorCode::INVALID_PARAMETER;
-    }
-
-    // Parse DER-encoded certificate
-    const unsigned char* p = cert_der.data();
-    X509* cert = d2i_X509(NULL, &p, cert_der.size());
-    if (!cert) {
-        SecLogAdapter::certificate().error(
-            "sec.cert.parse_der_failed", "证书 DER 解析失败");
-        valid = false;
-        return ErrorCode::CERT_VALIDATION_FAILED;
-    }
-
-    // Check if self-signed by comparing issuer and subject
-    X509_NAME* issuer = X509_get_issuer_name(cert);
-    X509_NAME* subject = X509_get_subject_name(cert);
-
-    bool is_self_signed = (X509_NAME_cmp(issuer, subject) == 0);
-    SecLogAdapter::certificate().debug(
-        "sec.cert.self_signed_check", "自签名检查",
-        {{"is_self_signed", tbox::fw::log::FieldValue::makeBool(is_self_signed)}});
-
-    if (is_self_signed) {
-        // 设备叶证书禁止自签名：用自身公钥验签必然通过，等于无信任锚（fail-closed 拒绝）。
-        SecLogAdapter::certificate().error(
-            "sec.cert.self_signed_rejected", "拒绝自签名设备证书（无信任锚）");
-        X509_free(cert);
-        valid = false;
-        return ErrorCode::CERT_VALIDATION_FAILED;
-    }
-
-    // CA 签名证书：必须已配置 CA 且叶证书 issuer == CA subject，再用 CA 公钥验签。
-    SecLogAdapter::certificate().debug(
-        "sec.cert.ca_signed", "CA 签名证书",
-        {{"ca_cert_empty", tbox::fw::log::FieldValue::makeBool(ca_cert_der_.empty())}});
-
-    if (ca_cert_der_.empty()) {
-        SecLogAdapter::certificate().error(
-            "sec.cert.no_ca_available", "无可用 CA 证书用于验签（fail-closed）");
-        X509_free(cert);
-        valid = false;
-        return ErrorCode::CERT_VALIDATION_FAILED;
-    }
-
-    // Parse CA certificate (try DER first, then PEM)
-    const unsigned char* ca_p = ca_cert_der_.data();
-    X509* ca_cert = d2i_X509(NULL, &ca_p, ca_cert_der_.size());
-    if (!ca_cert) {
-        SecLogAdapter::certificate().debug(
-            "sec.cert.ca_der_parse_failed_try_pem", "CA 证书 DER 解析失败，尝试 PEM");
-        BIO* bio = BIO_new_mem_buf(ca_cert_der_.data(), ca_cert_der_.size());
-        if (bio) {
-            ca_cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
-            BIO_free(bio);
-        }
-    }
-    if (!ca_cert) {
-        SecLogAdapter::certificate().error(
-            "sec.cert.ca_parse_failed", "CA 证书解析失败（DER/PEM）");
-        X509_free(cert);
-        valid = false;
-        return ErrorCode::CERT_VALIDATION_FAILED;
-    }
-
-    // 叶证书 issuer 必须与 CA subject 一致，否则验签无意义（fail-closed）
-    if (X509_NAME_cmp(issuer, X509_get_subject_name(ca_cert)) != 0) {
-        SecLogAdapter::certificate().error(
-            "sec.cert.ca_issuer_mismatch", "叶证书 issuer 与已配置 CA 不一致");
-        X509_free(ca_cert);
-        X509_free(cert);
-        valid = false;
-        return ErrorCode::CERT_VALIDATION_FAILED;
-    }
-
-    // Get CA certificate's public key
-    EVP_PKEY* ca_pubkey = X509_get_pubkey(ca_cert);
-    X509_free(ca_cert);
-
-    if (!ca_pubkey) {
-        SecLogAdapter::certificate().error(
-            "sec.cert.ca_pubkey_failed", "CA 证书获取公钥失败");
-        X509_free(cert);
-        valid = false;
-        return ErrorCode::CERT_VALIDATION_FAILED;
-    }
-
-    // Verify certificate signature using CA's public key
-    int verify_result = X509_verify(cert, ca_pubkey);
-    EVP_PKEY_free(ca_pubkey);
-
-    valid = (verify_result == 1);
-    SecLogAdapter::certificate().debug(
-        "sec.cert.ca_signed_verify_result", "CA 签名证书验签结果",
-        {{"verify_result", tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(verify_result))},
-         {"valid", tbox::fw::log::FieldValue::makeBool(valid)}});
-    X509_free(cert);
-    return ErrorCode::SUCCESS;
-}
-
-void CertValidator::set_ca_certificate(const std::vector<uint8_t>& ca_cert_der) {
-    ca_cert_der_ = ca_cert_der;
+    return tt.utc_now < info.not_before || tt.utc_now > info.not_after;
 }
 
 ErrorCode CertValidator::check_certificate_validity(const std::vector<uint8_t>& cert_der,
                                                    bool& valid) {
-    valid = !is_certificate_expired(cert_der);
+    TrustedTime tt = time_provider_->get_trusted_time();
+    if (!tt.trusted) {
+        // TBOX-SEC-DSN-CR-016 §3.2：可信时间不可用时显式失败，不得 commit
+        SecLogAdapter::certificate().error(
+            "sec.cert.time_untrusted",
+            "可信时间不可用，拒绝证书注入（fail-closed，不得 commit）",
+            {{"time_source", tbox::fw::log::FieldValue::makeString(tt.source)}});
+        valid = false;
+        return ErrorCode::CERT_EXPIRED;
+    }
+
+    CertificateInfo info;
+    ErrorCode result = extract_certificate_info(cert_der, info);
+    if (result != ErrorCode::SUCCESS) {
+        valid = false;
+        return result;
+    }
+    valid = !(tt.utc_now < info.not_before || tt.utc_now > info.not_after);
     return ErrorCode::SUCCESS;
 }
 

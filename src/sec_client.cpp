@@ -194,15 +194,6 @@ ErrorCode SecClient::apply_certificate() {
     return static_cast<ErrorCode>(status);
 }
 
-ErrorCode SecClient::set_ca_certificate(const std::vector<uint8_t>& ca_cert_der) {
-    nlohmann::json params;
-    params["cert"] = impl_->b64_encode(ca_cert_der);
-    auto [ok, status, json] = impl_->send_request(
-        static_cast<uint32_t>(ipc::MethodId::SET_CA_CERTIFICATE), params.dump());
-    if (!ok) return ErrorCode::CONNECTION_FAILED;
-    return static_cast<ErrorCode>(status);
-}
-
 ErrorCode SecClient::get_seed(uint8_t level, std::vector<uint8_t>& seed) {
     nlohmann::json params;
     params["level"] = level;
