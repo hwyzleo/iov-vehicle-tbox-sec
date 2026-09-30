@@ -72,6 +72,8 @@ set(LIB_SOURCES
     src/certificate_store.cpp
     src/csr_builder.cpp
     src/cert_validator.cpp
+    src/certificate_chain_parser.cpp
+    src/certificate_chain_canonicalizer.cpp
     src/trusted_time.cpp
     src/error_codes.cpp
     src/diag_service_adapter.cpp
@@ -267,6 +269,7 @@ if(GTest_FOUND)
         tests/test_tls_integration.cpp
         tests/test_certificate_store.cpp
         tests/test_cert_install_e2e.cpp
+        tests/test_certificate_chain_parser.cpp
         tests/test_sec_application.cpp
         tests/test_sec_config_checker.cpp
     )

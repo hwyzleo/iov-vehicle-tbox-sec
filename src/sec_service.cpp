@@ -905,29 +905,55 @@ ErrorCode SecService::build_and_store_csr() {
     return result;
 }
 
-ErrorCode SecService::validate_and_store_certificate(const std::vector<uint8_t>& cert_der) {
+ErrorCode SecService::validate_and_store_certificate(const std::vector<uint8_t>& payload) {
+    // TBOX-SEC-DSN-CR-018：严格解析完整输入（PEM 链 / legacy 单 DER），
+    // 解析发生在 CertValidator 之前；CertValidator 只接收 leaf。
+    ParseResult parsed = chain_parser_.parse(payload, chain_limits_);
+    if (!parsed.ok) {
+        SecLogAdapter::certificate().error(
+            "sec.certificate.install.failed",
+            "证书注入失败：输入解析/链形状非法",
+            {{"failure_stage", tbox::fw::log::FieldValue::makeString(
+                 certificate_parse_stage_to_string(parsed.stage))},
+             {"error_code", tbox::fw::log::FieldValue::makeString("SEC-1004")}});
+        return ErrorCode::CERT_VALIDATION_FAILED;
+    }
+
+    // Root 入链安装策略检查：禁止把 Loader 导入的信任根写入设备证书链（CR-018 §3.3）。
+    // parser 不访问 store，故在此比对链内证书 digest 与 store root_ca 的证书 digest。
+    ErrorCode root_rc = rejectRootInjectedIntoChain(parsed.chain);
+    if (root_rc != ErrorCode::SUCCESS) {
+        SecLogAdapter::certificate().error(
+            "sec.certificate.install.failed",
+            "证书注入失败：信任根证书禁止入链",
+            {{"failure_stage", tbox::fw::log::FieldValue::makeString("root_in_chain")}});
+        return root_rc;
+    }
+
+    // leaf sanity check（CR-018 §4）：CertValidator 只接收 leaf，
+    // 不验证 CA 签名、不构建路径、不要求 root_ca 已配置。
     if (!cert_validator_) {
         cert_validator_ = std::make_unique<CertValidator>(key_engine_.get(),
                                                           *getTrustedTimeProvider());
     }
 
     bool valid = false;
-    ErrorCode result = cert_validator_->validate_certificate(vin_, ecu_uid_, cert_der, valid);
-
+    ErrorCode result = cert_validator_->validate_certificate(
+        vin_, ecu_uid_, parsed.chain.leaf.get(), valid);
     if (result != ErrorCode::SUCCESS) {
         return result;
     }
-
     if (!valid) {
         return ErrorCode::CERT_KEY_MISMATCH;
     }
 
-    // TBOX-SEC-DSN-CR-014: DER -> canonical PEM（leaf -> intermediate）
+    // canonical PEM：以解析后的 X509 重新序列化 leaf + 全部 intermediate（CR-018 §5），
+    // 不复制输入 PEM 的空白/换行/header 文本；Root 永不输出。
     std::string pem;
-    if (!derToCanonicalPem(cert_der, pem)) {
+    if (!chain_canonicalizer_.toPem(parsed.chain, pem)) {
         SecLogAdapter::certificate().error(
             "sec.certificate.install.failed",
-            "证书安装失败：DER 转 canonical PEM 失败",
+            "证书安装失败：canonical PEM 序列化失败",
             {{"failure_stage", tbox::fw::log::FieldValue::makeString("format")}});
         return ErrorCode::CERT_INSTALL_FAILED;
     }
@@ -1030,44 +1056,61 @@ ErrorCode SecService::publishDeviceCertChain(const std::string& canonical_pem) {
     return ErrorCode::SUCCESS;
 }
 
-bool SecService::derToCanonicalPem(const std::vector<uint8_t>& cert_der,
-                                   std::string& out_pem) {
-    std::vector<X509*> certs;
-    std::string data(cert_der.begin(), cert_der.end());
+// ============================================================
+// TBOX-SEC-DSN-CR-018 §3.3: Root 入链安装策略检查
+// ============================================================
 
-    if (data.find("-----BEGIN") != std::string::npos) {
-        // PEM 链输入：按顺序解析（leaf -> intermediate）
-        BIO* bio = BIO_new_mem_buf(data.data(), static_cast<int>(data.size()));
-        if (!bio) return false;
-        X509* c = nullptr;
-        while ((c = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr)) != nullptr) {
-            certs.push_back(c);
+ErrorCode SecService::rejectRootInjectedIntoChain(
+    const ParsedCertificateChain& chain) const {
+    // parser 不访问 store；此处读取 Loader 导入的信任根并计算其证书 digest。
+    // 无 root_ca（未配置/读取失败）则跳过比对：可验证自签名已在 parser 拒绝，
+    // 缺少信任根时 Provider 保持 NOT_READY（fail-closed 由 Provider 承担）。
+    if (!store_.has_value() || !store_->isReady() || !store_->has("root_ca")) {
+        return ErrorCode::SUCCESS;
+    }
+
+    std::string root_pem;
+    try {
+        root_pem = store_->load<std::string>("root_ca");
+    } catch (const std::exception&) {
+        return ErrorCode::SUCCESS;
+    }
+    if (root_pem.empty()) {
+        return ErrorCode::SUCCESS;
+    }
+
+    std::vector<std::array<uint8_t, 32>> root_digests;
+    BIO* bio = BIO_new_mem_buf(root_pem.data(), static_cast<int>(root_pem.size()));
+    if (!bio) {
+        return ErrorCode::SUCCESS;
+    }
+    X509* c = nullptr;
+    while ((c = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr)) != nullptr) {
+        unsigned char* der = nullptr;
+        const int len = i2d_X509(c, &der);
+        if (len > 0 && der) {
+            std::array<uint8_t, 32> d{};
+            SHA256(der, static_cast<size_t>(len), d.data());
+            root_digests.push_back(d);
         }
-        BIO_free(bio);
-    } else {
-        // DER 输入（单证书）
-        const unsigned char* p = cert_der.data();
-        X509* c = d2i_X509(nullptr, &p, static_cast<long>(cert_der.size()));
-        if (c) certs.push_back(c);
+        OPENSSL_free(der);
+        X509_free(c);
     }
-    if (certs.empty()) return false;
+    BIO_free(bio);
 
-    BIO* out = BIO_new(BIO_s_mem());
-    if (!out) {
-        for (auto* c : certs) X509_free(c);
-        return false;
+    if (root_digests.empty()) {
+        return ErrorCode::SUCCESS;
     }
-    for (auto* c : certs) {
-        PEM_write_bio_X509(out, c);
+
+    // 该比较只用于禁止 Root 存储，不把输入证书提升为锚。
+    for (const auto& d : chain.cert_der_sha256) {
+        for (const auto& rd : root_digests) {
+            if (d == rd) {
+                return ErrorCode::CERT_VALIDATION_FAILED;  // Root 入链拒绝
+            }
+        }
     }
-    char* buf = nullptr;
-    long len = BIO_get_mem_data(out, &buf);
-    if (len > 0 && buf) {
-        out_pem.assign(buf, static_cast<size_t>(len));
-    }
-    BIO_free(out);
-    for (auto* c : certs) X509_free(c);
-    return !out_pem.empty();
+    return ErrorCode::SUCCESS;
 }
 
 // ============================================================
@@ -1199,10 +1242,19 @@ bool SecService::save_state() {
     return success;
 }
 
-ErrorCode SecService::store_certificate(const std::vector<uint8_t>& cert_der) {
-    // TBOX-SEC-DSN-CR-014: 不再写入 base64(DER)；统一走 canonical PEM 原子发布。
+ErrorCode SecService::store_certificate(const std::vector<uint8_t>& payload) {
+    // TBOX-SEC-DSN-CR-018：保持"仅存储"语义（不做 leaf sanity），
+    // 统一走 严格解析 → canonical 全链 → 原子发布。
+    ParseResult parsed = chain_parser_.parse(payload, chain_limits_);
+    if (!parsed.ok) {
+        return ErrorCode::CERT_INSTALL_FAILED;
+    }
+    ErrorCode root_rc = rejectRootInjectedIntoChain(parsed.chain);
+    if (root_rc != ErrorCode::SUCCESS) {
+        return root_rc;
+    }
     std::string pem;
-    if (!derToCanonicalPem(cert_der, pem)) {
+    if (!chain_canonicalizer_.toPem(parsed.chain, pem)) {
         return ErrorCode::CERT_INSTALL_FAILED;
     }
     return publishDeviceCertChain(pem);

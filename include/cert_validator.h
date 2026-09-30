@@ -4,6 +4,7 @@
 #include <vector>
 #include <memory>
 #include <chrono>
+#include <openssl/x509.h>
 #include "key_engine.h"
 #include "error_codes.h"
 #include "trusted_time.h"
@@ -32,21 +33,21 @@ struct CertificateInfo {
 ///   真实/测试 provider 由调用方（SecApplication 装配 / 测试注入）显式传入。
 ///
 /// 本类不验证 CA 签名、不构建证书路径、不要求配置 root_ca；chain 解析与
-/// leaf 识别由 Certificate Install Service 完成后再调用本接口。
+/// leaf 识别由 Certificate Install Service（CertificateChainParser）完成后再调用本接口。
 class CertValidator {
 public:
     CertValidator(KeyEngine* key_engine,
                   TrustedTimeProvider& time_provider);
 
-    // 注入 sanity check：仅校验单个 leaf（TBOX-SEC-DSN-CR-016）。
-    // 不验证 CA 签名、不构建证书路径、不要求配置 root_ca；chain 解析与
-    // leaf 识别由 Certificate Install Service 完成后再调用本接口。
+    // 注入 sanity check：仅校验单个 leaf（TBOX-SEC-DSN-CR-016 / CR-018 §4）。
+    // leaf 由 Chain Parser 提取后传入（X509*，本类不拥有、不释放）。
+    // 不验证 CA 签名、不构建证书路径、不要求配置 root_ca。
     ErrorCode validate_certificate(const std::string& vin,
                                    const std::string& ecu_uid,
-                                   const std::vector<uint8_t>& cert_der,
+                                   X509* leaf,
                                    bool& valid);
 
-    // Extract certificate information
+    // Extract certificate information（DER 工具方法）
     ErrorCode extract_certificate_info(const std::vector<uint8_t>& cert_der,
                                        CertificateInfo& info);
 
@@ -57,11 +58,11 @@ private:
     KeyEngine* key_engine_;
     TrustedTimeProvider* time_provider_;
 
-    // Internal validation methods
-    ErrorCode check_certificate_validity(const std::vector<uint8_t>& cert_der,
+    // Internal validation methods（基于已解析 X509*，避免二次解析）
+    ErrorCode check_certificate_validity(X509* cert,
                                         bool& valid);
 
-    ErrorCode match_certificate_key(const std::vector<uint8_t>& cert_der,
+    ErrorCode match_certificate_key(X509* cert,
                                    const std::string& vin,
                                    const std::string& ecu_uid,
                                    bool& match);

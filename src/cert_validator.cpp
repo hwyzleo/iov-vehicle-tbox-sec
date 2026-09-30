@@ -5,6 +5,8 @@
 #include <openssl/x509.h>
 #include <openssl/pem.h>
 #include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/ec.h>
 #include <openssl/x509v3.h>
 #include <chrono>
 #include <ctime>
@@ -82,23 +84,21 @@ CertValidator::CertValidator(KeyEngine* key_engine,
 
 ErrorCode CertValidator::validate_certificate(const std::string& vin,
                                              const std::string& ecu_uid,
-                                             const std::vector<uint8_t>& cert_der,
+                                             X509* cert,
                                              bool& valid) {
     valid = false;
     if (!key_engine_) {
         return ErrorCode::INVALID_PARAMETER;
     }
-
-    // 1. parse/structure —— 解析 leaf DER（TBOX-SEC-DSN-CR-016 §3.2）
-    const unsigned char* p = cert_der.data();
-    X509* cert = d2i_X509(nullptr, &p, cert_der.size());
     if (!cert) {
         SecLogAdapter::certificate().error(
-            "sec.cert.parse_der_failed", "证书 DER 解析失败");
+            "sec.cert.leaf_null", "证书注入失败：leaf 为空（解析器未提取到证书）");
         return ErrorCode::CERT_VALIDATION_FAILED;
     }
 
-    // 2~4. 证书 profile（TBOX-SEC-DSN-CR-003 §5 / REQ US-001）：
+    // TBOX-SEC-DSN-CR-018 §4：CertValidator 不再解析原始 payload，leaf 由
+    // CertificateChainParser 提取后传入（X509*，避免二次解析，本类不拥有 chain）。
+    // 1~4. 证书 profile（TBOX-SEC-DSN-CR-003 §5 / REQ US-001）：
     //   Subject CN == hsm_uid(ecu_uid)；KU 含 digitalSignature；EKU 含 clientAuth。
     const bool cn_ok = subjectCommonNameMatches(cert, ecu_uid);
     const bool ku_ok = hasKeyUsageDigitalSignature(cert);
@@ -107,7 +107,6 @@ ErrorCode CertValidator::validate_certificate(const std::string& vin,
     // 5. 可验证自签名 leaf 以 profile 非法拒绝（位于 key match 之前，
     //    确保自签名 leaf 稳定返回 profile-invalid 而非被独立密钥提前映射为 key mismatch）
     const bool self_signed = is_verifiable_self_signed(cert);
-    X509_free(cert);
 
     if (!cn_ok || !ku_ok || !eku_ok || self_signed) {
         SecLogAdapter::certificate().error(
@@ -122,7 +121,7 @@ ErrorCode CertValidator::validate_certificate(const std::string& vin,
 
     // 6. 可信时间位于 [notBefore, notAfter]（TBOX-SEC-DSN-CR-016 §3.2）
     bool not_expired = false;
-    ErrorCode result = check_certificate_validity(cert_der, not_expired);
+    ErrorCode result = check_certificate_validity(cert, not_expired);
     if (result != ErrorCode::SUCCESS) {
         return result;
     }
@@ -136,7 +135,7 @@ ErrorCode CertValidator::validate_certificate(const std::string& vin,
 
     // 7. 证书公钥与本地私钥匹配
     bool key_match = false;
-    result = match_certificate_key(cert_der, vin, ecu_uid, key_match);
+    result = match_certificate_key(cert, vin, ecu_uid, key_match);
     if (result != ErrorCode::SUCCESS) {
         return result;
     }
@@ -326,7 +325,7 @@ bool CertValidator::is_certificate_expired(const std::vector<uint8_t>& cert_der)
     return lo < info.not_before || hi > info.not_after;
 }
 
-ErrorCode CertValidator::check_certificate_validity(const std::vector<uint8_t>& cert_der,
+ErrorCode CertValidator::check_certificate_validity(X509* cert,
                                                    bool& valid) {
     TrustedTimeSample tt = time_provider_->now();
     if (tt.trust_state != TimeTrustState::Trusted) {
@@ -345,22 +344,33 @@ ErrorCode CertValidator::check_certificate_validity(const std::vector<uint8_t>& 
         return ErrorCode::CERT_EXPIRED;
     }
 
-    CertificateInfo info;
-    ErrorCode result = extract_certificate_info(cert_der, info);
-    if (result != ErrorCode::SUCCESS) {
+    // 从 X509* 直接读取有效期（CR-018 §4：避免二次解析）
+    const ASN1_TIME* nb = X509_get0_notBefore(cert);
+    const ASN1_TIME* na = X509_get0_notAfter(cert);
+    struct tm tm_nb = {};
+    struct tm tm_na = {};
+    if (!nb || !na || !ASN1_TIME_to_tm(nb, &tm_nb) || !ASN1_TIME_to_tm(na, &tm_na)) {
         valid = false;
-        return result;
+        return ErrorCode::CERT_EXPIRED;
     }
+    const time_t t_nb = timegm(&tm_nb);
+    const time_t t_na = timegm(&tm_na);
+    if (t_nb == -1 || t_na == -1) {
+        valid = false;
+        return ErrorCode::CERT_EXPIRED;
+    }
+    const auto not_before = std::chrono::system_clock::from_time_t(t_nb);
+    const auto not_after = std::chrono::system_clock::from_time_t(t_na);
 
     // 闭区间 + uncertainty（CR-017 §3）：仅当 utc_now-uncertainty >= notBefore 且
     // utc_now+uncertainty <= notAfter 时通过；不确定边界跨越按 fail-closed 处理。
     const auto lo = tt.utc_now - tt.uncertainty;
     const auto hi = tt.utc_now + tt.uncertainty;
-    if (lo < info.not_before || hi > info.not_after) {
+    if (lo < not_before || hi > not_after) {
         // CR-017 §6：确定早于 notBefore/晚于 notAfter → failure_stage=time；
         // 仅 uncertainty 跨越边界 → failure_stage=time_untrusted（不得在不确定边界继续）
         const bool definite_outside =
-            tt.utc_now < info.not_before || tt.utc_now > info.not_after;
+            tt.utc_now < not_before || tt.utc_now > not_after;
         SecLogAdapter::certificate().error(
             "sec.cert.expired",
             definite_outside ? "证书未生效或已过期"
@@ -377,28 +387,45 @@ ErrorCode CertValidator::check_certificate_validity(const std::vector<uint8_t>& 
     return ErrorCode::SUCCESS;
 }
 
-ErrorCode CertValidator::match_certificate_key(const std::vector<uint8_t>& cert_der,
+ErrorCode CertValidator::match_certificate_key(X509* cert,
                                               const std::string& vin,
                                               const std::string& ecu_uid,
                                               bool& match) {
-    // Extract public key from certificate
-    CertificateInfo info;
-    ErrorCode result = extract_certificate_info(cert_der, info);
-    if (result != ErrorCode::SUCCESS) {
+    // 从 X509* 提取证书公钥（未压缩 EC 点，与 key_engine.public_key / HSM 导出格式一致）
+    std::vector<uint8_t> cert_pub;
+    EVP_PKEY* pk = X509_get0_pubkey(cert);  // 借用指针，不释放
+    if (pk) {
+        EC_KEY* ec = EVP_PKEY_get1_EC_KEY(pk);  // 新引用，需释放
+        if (ec) {
+            const EC_GROUP* group = EC_KEY_get0_group(ec);
+            const EC_POINT* pt = EC_KEY_get0_public_key(ec);
+            if (group && pt) {
+                size_t len = EC_POINT_point2oct(group, pt, POINT_CONVERSION_UNCOMPRESSED,
+                                                nullptr, 0, nullptr);
+                if (len > 0) {
+                    cert_pub.resize(len);
+                    EC_POINT_point2oct(group, pt, POINT_CONVERSION_UNCOMPRESSED,
+                                       cert_pub.data(), len, nullptr);
+                }
+            }
+            EC_KEY_free(ec);
+        }
+    }
+    if (cert_pub.empty()) {
         match = false;
-        return result;
+        return ErrorCode::CERT_VALIDATION_FAILED;
     }
 
     // Get device public key（身份维度为 hsm_uid(ecu_uid)，不绑定 VIN，见 DSN §1.1/§3）
     KeyPair key_pair;
-    result = key_engine_->get_device_key(ecu_uid, ecu_uid, key_pair);
+    ErrorCode result = key_engine_->get_device_key(ecu_uid, ecu_uid, key_pair);
     if (result != ErrorCode::SUCCESS) {
         match = false;
         return result;
     }
 
     // Compare public keys
-    match = (info.public_key == key_pair.public_key);
+    match = (cert_pub == key_pair.public_key);
     return ErrorCode::SUCCESS;
 }
 

@@ -108,6 +108,64 @@ X509UP make_leaf(EVP_PKEY* ca_key, X509* ca_cert, EVP_PKEY* dev_pubkey) {
     return cert;
 }
 
+// CR-018：由指定签发者（Intermediate CA）签发的 leaf，证书 profile 与 make_leaf 一致
+X509UP make_leaf_signed(EVP_PKEY* issuer_key, X509* issuer_cert, EVP_PKEY* dev_pubkey) {
+    X509UP cert(X509_new());
+    X509_set_version(cert.get(), 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(cert.get()), 4);
+    X509_NAME* n = X509_get_subject_name(cert.get());
+    X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC, (const unsigned char*)"ecu1", -1, -1, 0);
+    X509_set_issuer_name(cert.get(), X509_get_subject_name(issuer_cert));
+    X509_set_pubkey(cert.get(), dev_pubkey);
+    X509_gmtime_adj(X509_get_notBefore(cert.get()), 0);
+    X509_gmtime_adj(X509_get_notAfter(cert.get()), 365 * 24 * 3600L);
+    BASIC_CONSTRAINTS* bc = BASIC_CONSTRAINTS_new(); bc->ca = 0;
+    X509_EXTENSION* ext = X509V3_EXT_i2d(NID_basic_constraints, 1, bc);
+    X509_add_ext(cert.get(), ext, -1); X509_EXTENSION_free(ext); BASIC_CONSTRAINTS_free(bc);
+    ASN1_BIT_STRING* ku = ASN1_BIT_STRING_new();
+    ASN1_BIT_STRING_set_bit(ku, 0, 1);
+    X509_EXTENSION* ku_ext = X509V3_EXT_i2d(NID_key_usage, 0, ku);
+    X509_add_ext(cert.get(), ku_ext, -1); X509_EXTENSION_free(ku_ext); ASN1_BIT_STRING_free(ku);
+    EXTENDED_KEY_USAGE* eku = EXTENDED_KEY_USAGE_new();
+    sk_ASN1_OBJECT_push(eku, OBJ_txt2obj("1.3.6.1.5.5.7.3.2", 1));
+    X509_EXTENSION* ext2 = X509V3_EXT_i2d(NID_ext_key_usage, 0, eku);
+    X509_add_ext(cert.get(), ext2, -1); X509_EXTENSION_free(ext2); EXTENDED_KEY_USAGE_free(eku);
+    X509_sign(cert.get(), issuer_key, EVP_sha256());
+    return cert;
+}
+
+// CR-018：由 Root 签发的 Intermediate CA（basicConstraints CA=TRUE）
+X509UP make_intermediate_ca(EVP_PKEY* root_key, X509* root_cert, EVP_PKEY* int_key) {
+    X509UP cert(X509_new());
+    X509_set_version(cert.get(), 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(cert.get()), 3);
+    X509_NAME* n = X509_get_subject_name(cert.get());
+    X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC, (const unsigned char*)"E2E Intermediate CA", -1, -1, 0);
+    X509_set_issuer_name(cert.get(), X509_get_subject_name(root_cert));
+    X509_set_pubkey(cert.get(), int_key);
+    X509_gmtime_adj(X509_get_notBefore(cert.get()), 0);
+    X509_gmtime_adj(X509_get_notAfter(cert.get()), 3650 * 24 * 3600L);
+    BASIC_CONSTRAINTS* bc = BASIC_CONSTRAINTS_new(); bc->ca = 1;
+    X509_EXTENSION* ext = X509V3_EXT_i2d(NID_basic_constraints, 1, bc);
+    X509_add_ext(cert.get(), ext, -1); X509_EXTENSION_free(ext); BASIC_CONSTRAINTS_free(bc);
+    X509_sign(cert.get(), root_key, EVP_sha256());
+    return cert;
+}
+
+std::string pem_of(X509* cert) {
+    BIO* bio = BIO_new(BIO_s_mem());
+    PEM_write_bio_X509(bio, cert);
+    char* buf = nullptr;
+    long len = BIO_get_mem_data(bio, &buf);
+    std::string s(buf, static_cast<size_t>(len));
+    BIO_free(bio);
+    return s;
+}
+
+std::vector<uint8_t> bytes_of(const std::string& s) {
+    return std::vector<uint8_t>(s.begin(), s.end());
+}
+
 std::vector<uint8_t> cert_to_der(X509* cert) {
     unsigned char* buf = nullptr;
     int len = i2d_X509(cert, &buf);
@@ -130,6 +188,17 @@ std::vector<uint8_t> hex_to_bytes(const std::string& hex) {
         out.push_back(static_cast<uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16)));
     }
     return out;
+}
+
+// 统计 PEM 中的 CERTIFICATE 块数
+size_t count_pem_blocks(const std::string& pem) {
+    size_t n = 0;
+    size_t pos = 0;
+    while ((pos = pem.find("-----BEGIN CERTIFICATE-----", pos)) != std::string::npos) {
+        ++n;
+        pos += 27;
+    }
+    return n;
 }
 
 // ---- Mock 配置 ----
@@ -254,6 +323,21 @@ protected:
         ps.ecu_uid = "ecu1";
         ps.state = st;
         store_->save("provision_state", ps.to_json().dump());
+    }
+
+    // 读取当前生效 generation 的 device_cert_chain.pem（验证存储 PEM 块数）
+    std::string readStoredChain() {
+        std::ifstream cur(test_dir_ + "/sec/certstore/CURRENT");
+        if (!cur.is_open()) return "";
+        std::string gid;
+        std::getline(cur, gid);
+        cur.close();
+        std::string path =
+            test_dir_ + "/sec/certstore/generations/" + gid + "/device_cert_chain.pem";
+        std::ifstream f(path);
+        if (!f.is_open()) return "";
+        return std::string((std::istreambuf_iterator<char>(f)),
+                           std::istreambuf_iterator<char>());
     }
 
     std::string test_dir_;
@@ -388,6 +472,126 @@ TEST_F(CertInstallE2ETest, RootCaMissing_NotReady_MaterialKeyMissing) {
               ErrorCode::SUCCESS);
     EXPECT_EQ(st.status, TlsCredentialStatus::NOT_READY);
     EXPECT_EQ(st.reason_code, static_cast<int32_t>(ErrorCode::TLS_MATERIAL_KEY_MISSING));
+}
+
+// ---- CR-018：PEM 链注入 ----
+
+// leaf(Intermediate 签发) + Intermediate(Root 签发) 两级 PEM 链注入
+// → CERT_INSTALLED、存储 2 个 PEM 块、Provider Root→Intermediate→leaf READY
+TEST_F(CertInstallE2ETest, Inject_PemChain_LeafPlusIntermediate_StoreTwoBlocks_ProviderReady) {
+    buildService(true);
+    ASSERT_TRUE(store_->has("root_ca"));
+
+    // 构造两级链：Root(ca_cert_) → Intermediate → leaf
+    EXPECT_EQ(service_->generate_key_pair(), ErrorCode::SUCCESS);
+    std::string meta = store_->load<std::string>("key_metadata_ecu1+ecu1");
+    auto j = nlohmann::json::parse(meta);
+    std::string pub_hex = j.value("public_key", "");
+    ASSERT_FALSE(pub_hex.empty());
+    dev_pkey_ = pkey_from_raw(hex_to_bytes(pub_hex));
+    ASSERT_NE(dev_pkey_, nullptr);
+    EvpPkeyUP int_key = gen_ec_key();
+    X509UP int_cert = make_intermediate_ca(ca_key_.get(), ca_cert_.get(), int_key.get());
+    leaf_ = make_leaf_signed(int_key.get(), int_cert.get(), dev_pkey_.get());
+
+    // leaf-first PEM 链（产线 VMD leaf+chain 响应的推荐组织方式）
+    std::vector<uint8_t> payload = bytes_of(pem_of(leaf_.get()) + pem_of(int_cert.get()));
+    setProvisionState(ProvisionState::CSR_SUBMITTED);
+    ASSERT_EQ(service_->inject_certificate(payload), ErrorCode::SUCCESS);
+
+    // 存储 2 个 canonical PEM 块（leaf + intermediate，顺序保留）
+    std::string stored = readStoredChain();
+    EXPECT_EQ(count_pem_blocks(stored), 2u);
+
+    // Provider 以 root 为锚、intermediate 为 untrusted 链完成 path validation → READY
+    TlsCredentialState st;
+    ASSERT_EQ(service_->tls_credential_provider()->getTlsCredentialState("mqtt", st),
+              ErrorCode::SUCCESS);
+    EXPECT_EQ(st.status, TlsCredentialStatus::READY);
+    EXPECT_EQ(st.reason_code, 0);
+}
+
+// 单 leaf 可安装（CERT_INSTALLED），但缺 intermediate → Provider NOT_READY/SEC-1017
+// （证明安装与 READY 分离：注入成功不代表信任路径可构建）
+TEST_F(CertInstallE2ETest, Inject_LeafOnly_MissingIntermediate_InstalledButNotReady) {
+    buildService(true);
+
+    EXPECT_EQ(service_->generate_key_pair(), ErrorCode::SUCCESS);
+    std::string meta = store_->load<std::string>("key_metadata_ecu1+ecu1");
+    auto j = nlohmann::json::parse(meta);
+    std::string pub_hex = j.value("public_key", "");
+    ASSERT_FALSE(pub_hex.empty());
+    dev_pkey_ = pkey_from_raw(hex_to_bytes(pub_hex));
+    EvpPkeyUP int_key = gen_ec_key();
+    X509UP int_cert = make_intermediate_ca(ca_key_.get(), ca_cert_.get(), int_key.get());
+    leaf_ = make_leaf_signed(int_key.get(), int_cert.get(), dev_pkey_.get());
+
+    // 只注入 leaf（PEM 单块；等价 DER 单 leaf 的退化链）—— 缺 intermediate
+    std::vector<uint8_t> payload = bytes_of(pem_of(leaf_.get()));
+    setProvisionState(ProvisionState::CSR_SUBMITTED);
+    ASSERT_EQ(service_->inject_certificate(payload), ErrorCode::SUCCESS);
+
+    // 存储 1 个 PEM 块
+    EXPECT_EQ(count_pem_blocks(readStoredChain()), 1u);
+
+    // Provider 无法构建 leaf→Intermediate→Root 路径 → ERROR + SEC-1017
+    // （DSN §10.2：缺 intermediate → SEC-1017；状态为 NOT_READY/ERROR 皆可）
+    TlsCredentialState st;
+    ASSERT_EQ(service_->tls_credential_provider()->getTlsCredentialState("mqtt", st),
+              ErrorCode::SUCCESS);
+    EXPECT_EQ(st.status, TlsCredentialStatus::ERROR);
+    EXPECT_EQ(st.reason_code, static_cast<int32_t>(ErrorCode::TLS_CHAIN_INVALID));
+}
+
+// 相同 PEM 链重复注入 → canonical digest 幂等、版本不递增、不发布无变化事件
+TEST_F(CertInstallE2ETest, Inject_PemChain_Idempotent_NoVersionBump) {
+    buildService(true);
+
+    EXPECT_EQ(service_->generate_key_pair(), ErrorCode::SUCCESS);
+    std::string meta = store_->load<std::string>("key_metadata_ecu1+ecu1");
+    auto j = nlohmann::json::parse(meta);
+    std::string pub_hex = j.value("public_key", "");
+    dev_pkey_ = pkey_from_raw(hex_to_bytes(pub_hex));
+    EvpPkeyUP int_key = gen_ec_key();
+    X509UP int_cert = make_intermediate_ca(ca_key_.get(), ca_cert_.get(), int_key.get());
+    leaf_ = make_leaf_signed(int_key.get(), int_cert.get(), dev_pkey_.get());
+    std::vector<uint8_t> payload = bytes_of(pem_of(leaf_.get()) + pem_of(int_cert.get()));
+    setProvisionState(ProvisionState::CSR_SUBMITTED);
+
+    ASSERT_EQ(service_->inject_certificate(payload), ErrorCode::SUCCESS);
+    TlsCredentialState s1;
+    ASSERT_EQ(service_->tls_credential_provider()->getTlsCredentialState("mqtt", s1),
+              ErrorCode::SUCCESS);
+    EXPECT_EQ(s1.status, TlsCredentialStatus::READY);
+
+    setProvisionState(ProvisionState::CSR_SUBMITTED);
+    ASSERT_EQ(service_->inject_certificate(payload), ErrorCode::SUCCESS);
+    TlsCredentialState s2;
+    ASSERT_EQ(service_->tls_credential_provider()->getTlsCredentialState("mqtt", s2),
+              ErrorCode::SUCCESS);
+    EXPECT_EQ(s2.version, s1.version);  // 幂等：不递增版本
+}
+
+// Root 入链拒绝：注入失败且不改变当前 generation（leaf + root 自签名 → chain_shape）
+TEST_F(CertInstallE2ETest, Inject_RootInChain_Rejected_NoStateChange) {
+    buildService(true);
+
+    EXPECT_EQ(service_->generate_key_pair(), ErrorCode::SUCCESS);
+    std::string meta = store_->load<std::string>("key_metadata_ecu1+ecu1");
+    auto j = nlohmann::json::parse(meta);
+    std::string pub_hex = j.value("public_key", "");
+    dev_pkey_ = pkey_from_raw(hex_to_bytes(pub_hex));
+    leaf_ = make_leaf(ca_key_.get(), ca_cert_.get(), dev_pkey_.get());
+
+    // leaf + Root（可验证自签名）→ 拒绝
+    std::vector<uint8_t> payload = bytes_of(pem_of(leaf_.get()) + pem_of(ca_cert_.get()));
+    setProvisionState(ProvisionState::CSR_SUBMITTED);
+    ASSERT_EQ(service_->inject_certificate(payload), ErrorCode::CERT_VALIDATION_FAILED);
+
+    // 无 CURRENT generation（未 commit），状态保持原样
+    EXPECT_FALSE(fs::exists(test_dir_ + "/sec/certstore/CURRENT"));
+    ProvisionStatus ps = service_->get_provision_status();
+    EXPECT_NE(ps.state, ProvisionState::CERT_INSTALLED);
 }
 
 // ---- 错误码映射 ----

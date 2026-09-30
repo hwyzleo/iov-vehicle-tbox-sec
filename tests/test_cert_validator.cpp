@@ -1,3 +1,7 @@
+// CertValidator 单元测试（TBOX-SEC-DSN-CR-016 §3.2 / CR-017 §6 / CR-018 §4）
+// 仅覆盖 leaf sanity check：CN/KU/EKU、自签名、可信时间、公私钥匹配。
+// 链解析（PEM/DER 分流、顺序、重复、Root 入链）由 test_certificate_chain_parser.cpp 覆盖，
+// 本文件不再用 CertValidator 证明 chain 解析。
 #include <gtest/gtest.h>
 #include <cstdio>
 #include "cert_validator.h"
@@ -18,6 +22,13 @@ struct X509D { void operator()(X509* p) const { if (p) X509_free(p); } };
 using X509UP = std::unique_ptr<X509, X509D>;
 struct EvpD { void operator()(EVP_PKEY* p) const { if (p) EVP_PKEY_free(p); } };
 using EvpUP = std::unique_ptr<EVP_PKEY, EvpD>;
+
+// DER → X509*（测试夹具把 DER 转成 leaf 传入；生产由 CertificateChainParser 提供）
+X509UP der_to_x509(const std::vector<uint8_t>& der) {
+    if (der.empty()) return nullptr;
+    const unsigned char* p = der.data();
+    return X509UP(d2i_X509(nullptr, &p, static_cast<long>(der.size())));
+}
 
 EvpUP gen_ec_key() {
     EC_KEY* ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
@@ -48,7 +59,7 @@ void set_common_exts(X509* cert, bool ca, bool ku, bool eku, const char* cn) {
 
 // 生成自签名证书（作为“伪造/无信任锚”用例）；含合法 profile（KU/EKU），
 // 以便稳定命中自签名 leaf 检查而非被 profile 其它字段提前拒绝。
-std::vector<uint8_t> make_self_signed(const char* cn) {
+X509UP make_self_signed(const char* cn) {
     EvpUP key = gen_ec_key();
     X509UP cert(X509_new());
     X509_set_version(cert.get(), 2);
@@ -59,11 +70,7 @@ std::vector<uint8_t> make_self_signed(const char* cn) {
     X509_gmtime_adj(X509_get_notBefore(cert.get()), 0);
     X509_gmtime_adj(X509_get_notAfter(cert.get()), 365 * 24 * 3600L);
     X509_sign(cert.get(), key.get(), EVP_sha256());
-    unsigned char* buf = nullptr;
-    int len = i2d_X509(cert.get(), &buf);
-    std::vector<uint8_t> der(buf, buf + len);
-    OPENSSL_free(buf);
-    return der;
+    return cert;
 }
 
 // 生成由同一 ca 签发的叶证书 + CA 证书 DER（CN / KU / EKU 可配置）
@@ -264,20 +271,11 @@ protected:
     std::string test_ecu_uid = "00000000000000000000000000000001";
 };
 
-TEST_F(CertValidatorTest, ValidateCertificate_EmptyCert) {
-    std::vector<uint8_t> empty_cert;
-    bool valid = false;
-    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, empty_cert, valid);
-    // CR-016 §3.2: parse 位于最前，空证书按解析失败处理
+// CR-018 §4：CertValidator 只接收解析器提取出的 leaf（X509*）；空 leaf 按失败处理
+TEST_F(CertValidatorTest, ValidateCertificate_NullLeaf) {
+    bool valid = true;
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, nullptr, valid);
     EXPECT_EQ(result, ErrorCode::CERT_VALIDATION_FAILED);
-    EXPECT_FALSE(valid);
-}
-
-TEST_F(CertValidatorTest, ValidateCertificate_InvalidDer) {
-    std::vector<uint8_t> cert_der = {0x30, 0x82, 0x01, 0x00}; // Dummy DER
-    bool valid = false;
-    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert_der, valid);
-    EXPECT_NE(result, ErrorCode::SUCCESS);
     EXPECT_FALSE(valid);
 }
 
@@ -308,9 +306,9 @@ TEST_F(CertValidatorTest, IsCertificateExpired_InvalidDer) {
 // 自签名叶证书必须被拒绝（无信任锚，profile 非法；该检查先于 key match，
 // 独立密钥生成的自签名 fixture 稳定返回 profile-invalid）
 TEST_F(CertValidatorTest, RejectSelfSignedLeaf) {
-    std::vector<uint8_t> cert = make_self_signed("00000000000000000000000000000001");
+    X509UP cert = make_self_signed("00000000000000000000000000000001");
     bool valid = false;
-    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert.get(), valid);
     EXPECT_EQ(result, ErrorCode::CERT_VALIDATION_FAILED);
     EXPECT_FALSE(valid);
 }
@@ -320,8 +318,9 @@ TEST_F(CertValidatorTest, RejectSelfSignedLeaf) {
 TEST_F(CertValidatorTest, AcceptValidProfileWithoutConfiguredCaForInstall) {
     auto [cert, ca] = make_ca_signed_leaf_pair(test_ecu_uid.c_str(), true, true);
     (void)ca;
+    X509UP leaf = der_to_x509(cert);
     bool valid = false;
-    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, leaf.get(), valid);
     EXPECT_EQ(result, ErrorCode::CERT_KEY_MISMATCH);
     EXPECT_FALSE(valid);
 }
@@ -334,8 +333,9 @@ TEST_F(CertValidatorTest, AcceptCaSignedValidProfile) {
     auto [cert, ca] = make_ca_signed_leaf_pair_with_pubkey(
         test_ecu_uid.c_str(), key_pair.public_key, true, true);
     (void)ca;
+    X509UP leaf = der_to_x509(cert);
     bool valid = false;
-    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, leaf.get(), valid);
     EXPECT_EQ(result, ErrorCode::SUCCESS);
     EXPECT_TRUE(valid);
 }
@@ -351,8 +351,9 @@ TEST_F(CertValidatorTest, AcceptIssuingCaSignedLeafForInstall) {
     CertificateInfo info;
     ASSERT_EQ(validator->extract_certificate_info(leaf, info), ErrorCode::SUCCESS);
     ASSERT_NE(info.issuer.find("Test Issuing CA"), std::string::npos);
+    X509UP leaf_x509 = der_to_x509(leaf);
     bool valid = false;
-    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, leaf, valid);
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, leaf_x509.get(), valid);
     EXPECT_EQ(result, ErrorCode::SUCCESS);
     EXPECT_TRUE(valid);
     (void)issuing;
@@ -362,8 +363,9 @@ TEST_F(CertValidatorTest, AcceptIssuingCaSignedLeafForInstall) {
 TEST_F(CertValidatorTest, RejectCnMismatch) {
     auto [cert, ca] = make_ca_signed_leaf_pair("OTHER-ECU", true, true);
     (void)ca;
+    X509UP leaf = der_to_x509(cert);
     bool valid = false;
-    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, leaf.get(), valid);
     EXPECT_EQ(result, ErrorCode::CERT_VALIDATION_FAILED);
     EXPECT_FALSE(valid);
 }
@@ -372,8 +374,9 @@ TEST_F(CertValidatorTest, RejectCnMismatch) {
 TEST_F(CertValidatorTest, RejectMissingClientAuthEku) {
     auto [cert, ca] = make_ca_signed_leaf_pair(test_ecu_uid.c_str(), true, false);
     (void)ca;
+    X509UP leaf = der_to_x509(cert);
     bool valid = false;
-    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, leaf.get(), valid);
     EXPECT_EQ(result, ErrorCode::CERT_VALIDATION_FAILED);
     EXPECT_FALSE(valid);
 }
@@ -395,8 +398,9 @@ TEST_F(CertValidatorTest, TimeUntrusted_FailClosed) {
     bad.reason = TimeReason::RtcNotProvisioned;
     fake_time->set_now(bad);
 
+    X509UP leaf = der_to_x509(cert);
     bool valid = false;
-    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, leaf.get(), valid);
     EXPECT_EQ(result, ErrorCode::CERT_EXPIRED);
     EXPECT_FALSE(valid);
 }
@@ -415,8 +419,9 @@ TEST_F(CertValidatorTest, NotYetValid_Rejected) {
     early.uncertainty = std::chrono::milliseconds(0);
     fake_time->set_now(early);
 
+    X509UP leaf = der_to_x509(cert);
     bool valid = false;
-    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, leaf.get(), valid);
     EXPECT_EQ(result, ErrorCode::CERT_EXPIRED);
     EXPECT_FALSE(valid);
 }
@@ -435,8 +440,9 @@ TEST_F(CertValidatorTest, Expired_Rejected) {
     late.uncertainty = std::chrono::milliseconds(0);
     fake_time->set_now(late);
 
+    X509UP leaf = der_to_x509(cert);
     bool valid = false;
-    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, leaf.get(), valid);
     EXPECT_EQ(result, ErrorCode::CERT_EXPIRED);
     EXPECT_FALSE(valid);
 }
@@ -455,10 +461,9 @@ TEST_F(CertValidatorTest, UncertaintyCrossesBoundary_Rejected) {
     near.uncertainty = std::chrono::seconds(2);   // 跨过 notAfter
     fake_time->set_now(near);
 
+    X509UP leaf = der_to_x509(cert);
     bool valid = false;
-    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, cert, valid);
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, leaf.get(), valid);
     EXPECT_EQ(result, ErrorCode::CERT_EXPIRED);
     EXPECT_FALSE(valid);
 }
-
-

@@ -12,6 +12,8 @@
 #include "key_engine.h"
 #include "csr_builder.h"
 #include "cert_validator.h"
+#include "certificate_chain_parser.h"
+#include "certificate_chain_canonicalizer.h"
 #include "trusted_time.h"
 #include "error_codes.h"
 #include "diag_service_interface.h"
@@ -269,6 +271,10 @@ private:
     std::unique_ptr<TlsCredentialProvider> tls_provider_;
     /// TBOX-SEC-DSN-CR-014: 跨键原子证书存储（generation + manifest + CURRENT 指针）
     std::unique_ptr<CertificateStore> cert_store_;
+    /// TBOX-SEC-DSN-CR-018: 严格证书链解析器 + canonical PEM 规范化器 + 链限制
+    CertificateChainParser chain_parser_;
+    CertificateChainCanonicalizer chain_canonicalizer_;
+    CertificateChainLimits chain_limits_;
     // CR-011: TLS 凭据变更事件发布回调（由 SecApplication 注入 ipc::Server::push_event）
     std::function<void(uint32_t, const std::string&)> event_publisher_;
 
@@ -298,17 +304,18 @@ private:
     // basicConstraints/可解析性后经 framework-store 原子导入逻辑键 root_ca；
     // 缺失/非法时保持 NOT_READY（fail-closed），不回退到 storage.ca_cert 或本地文件。
     void initializeCaMaterialLoader();
-    /// DER（或 PEM 链）→ canonical X.509 PEM（leaf -> intermediate）
-    static bool derToCanonicalPem(const std::vector<uint8_t>& cert_der,
-                                  std::string& out_pem);
-    /// 校验通过后发布设备证书链：DER→PEM → 幂等判重 → 原子 commit → reload mqtt profile
+    /// 校验通过后发布设备证书链：canonical PEM → 幂等判重 → 原子 commit → reload mqtt profile
     ErrorCode publishDeviceCertChain(const std::string& canonical_pem);
 
 public:
     ErrorCode generate_and_store_key_pair();
 private:
     ErrorCode build_and_store_csr();
-    ErrorCode validate_and_store_certificate(const std::vector<uint8_t>& cert_der);
+    ErrorCode validate_and_store_certificate(const std::vector<uint8_t>& payload);
+    /// TBOX-SEC-DSN-CR-018 §3.3：Root 入链安装策略检查。
+    /// parser 不访问 store，故在此比对链内证书 digest 与 Loader 导入的 root_ca
+    /// （禁止把信任根写入设备证书链；不把输入证书提升为锚）。
+    ErrorCode rejectRootInjectedIntoChain(const ParsedCertificateChain& chain) const;
 
     void update_provision_state(ProvisionState state, const std::string& error = "");
     void handle_error(ErrorCode error, const std::string& context);
