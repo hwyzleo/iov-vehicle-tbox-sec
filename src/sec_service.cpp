@@ -674,6 +674,9 @@ ErrorCode SecService::reset_provision_status() {
         }
     }
 
+    // 同时清空内存中已构建的 CSR，避免重置后重建时旧 CSR 被追加拼接（畸形 ASN.1）
+    csr_der_.clear();
+
     return ErrorCode::SUCCESS;
 }
 

@@ -1,0 +1,56 @@
+# =============================================================================
+# DEVELOPMENT-ONLY — TBOX-SEC-DSN-CR-013 §3 / SEC-CONFIG-REQ-001
+# =============================================================================
+# 本文件仅供本地启动、单元测试、HSM 模拟器或隔离开发环境显式使用。
+# - 不得由 sec-runtime 安装（CMake 无 install 规则）。
+# - 不得进入 BUILD staging 或正式发布包。
+# - 不得包含生产私钥、对称密钥、Seed-Key secret、PIN、Token、HSM handle、
+#   private_key_ref、真实证书身份或生产设备材料。
+# - 测试值必须为明确占位值并受 allowlist 管理。
+#
+# 独立调试时将本文件作为 framework-config 的 common 层加载：
+#   ConfigManager::load("sec", {<repo>/config/dev})
+# 或在开发运行目录软链/复制为 common.yaml。
+# =============================================================================
+
+# TBOX 公共配置（开发调试最小集）
+common:
+  store:
+    root: "/var/tbox"
+  ipc:
+    max_frame_bytes: 10485760    # 10 MiB
+    receive_timeout_ms: 60000    # 60 秒空闲超时
+    connect_timeout_ms: 3000
+    listen_backlog: 5
+    reconnect:
+      initial_backoff_ms: 100
+      max_backoff_ms: 5000
+      multiplier: 2.0
+  log:
+    level: "info"                       # 默认日志级别（trace/debug/info/warn/error）
+    strict: false                       # strict=true 时初始化失败 fail-closed；false 降级
+    format: "standard"
+    console:
+      enabled: true
+    file:
+      enabled: false                    # 生产部署改 true 并指向 /var/log/tbox
+      root: "/var/log/tbox"
+      max_file_size_mb: 20
+      max_files: 5
+      total_budget_mb: 100
+    async:
+      enabled: true
+      queue_size: 4096
+      flush_interval_ms: 1000
+    redact:
+      identifiers: "mask"
+      raw_payload_max_bytes: 256
+
+cloud:
+  endpoint: "https://api.example.com"
+  timeout_ms: 5000
+  retry_count: 3
+  retry_delay_ms: 1000
+
+environment:
+  is_production: false

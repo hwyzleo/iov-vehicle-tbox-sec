@@ -367,6 +367,9 @@ ErrorCode CsrBuilder::build_csr(const std::string& vin,
         return ErrorCode::INVALID_PARAMETER;
     }
 
+    // 构建前清空输出，避免重复构建时旧 CSR 被追加拼接（DER 拼接导致畸形 ASN.1）
+    csr_der.clear();
+
     KeyPair key_pair;
     // 身份维度使用 hsm_uid(ecu_uid)，不绑定 VIN（DSN §1.1 Identity Contract / §3 幂等键）
     ErrorCode result = key_engine_->get_device_key(

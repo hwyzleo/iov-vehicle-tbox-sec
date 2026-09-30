@@ -1,0 +1,89 @@
+# =============================================================================
+# DEVELOPMENT-ONLY — TBOX-SEC-DSN-CR-013 §3 / SEC-CONFIG-REQ-001
+# =============================================================================
+# 本文件仅供本地启动、单元测试、HSM 模拟器或隔离开发环境显式使用。
+# - 不得由 sec-runtime 安装（CMake 无 install 规则）。
+# - 不得进入 BUILD staging 或正式发布包。
+# - 不得包含生产私钥、对称密钥、Seed-Key secret、PIN、Token、HSM handle、
+#   private_key_ref、真实证书身份或生产设备材料。
+# - 测试值必须为明确占位值并受 allowlist 管理。
+#
+# 独立调试时将本文件作为 framework-config 的服务层加载：
+#   ConfigManager::load("sec", {<repo>/config/dev})
+# 或在开发运行目录软链/复制为 conf.d/sec.yaml。
+# 工作目录 ./sec.yaml 仍为测试 profile 最高优先级覆盖（SEC-CONFIG-REQ-006）。
+# =============================================================================
+
+# 公共配置覆盖示例（按需启用）
+common:
+  store:
+    root: "./data"
+  log:
+    level: "debug"                       # 默认日志级别（trace/debug/info/warn/error）
+    file:
+      enabled: true                     # 开发环境落盘
+      root: "./log"
+
+hsm:
+  type: "software"
+  library_path: ""
+
+key_provisioning:
+  mode: "soft_file"
+
+cloud:
+  endpoint: "https://oapi.example.com"
+  timeout_ms: 5000
+  retry_count: 3
+  retry_delay_ms: 1000
+
+storage:
+  state_file: "./provision_state.json"
+  ca_cert: ""
+  cert_store: "./certs"
+
+soft_key:
+  path: "./"
+  encryption_algo: "aes-256-gcm"
+  # KEK(主加密密钥)文件的完整路径；留空则默认 {common.store.root}/.soft_kek
+  encryption_key_path: ""
+
+environment:
+  is_production: false
+
+sec:
+  ipc:
+    socket_path: "/tmp/tbox-sec.sock"
+  # 可信时间（TBOX-SEC-DSN-CR-017 §5）：dev/test 显式选择 fake，证书注入据此判定
+  # 有效期。仅限非生产环境；生产模板固定 provider=composite（fail-closed）。
+  trusted_time:
+    provider: "fake"
+  # Seed-Key 共享密钥（AES-128，32 hex 字符）。开发/测试显式提供；
+  # 出厂默认模板不含此键，缺失时 verify_key fail-closed。
+  seed_key:
+    shared_secret: "0102030405060708090a0b0c0d0e0f10"
+  # MQTT TLS Credential Provider (TBOX-SEC-DSN-CR-010)
+  # 提供该 profile 后 SEC 才会创建 TlsCredentialProvider；
+  # 缺失时 getTlsCredential 直接返回 NOT_IMPLEMENTED (SEC-8004)
+  tls:
+    # 开发/测试专用：非生产环境下用固定服务名放行 TLS ACL，
+    # 绕过 macOS 无 SO_PEERCRED 的限制。生产环境请删除或置空此项！
+    dev_peer_service: "tbox-mqtt.service"
+    profiles:
+      mqtt:
+        credential_id: mqtt-primary
+        key_usage: clientAuth
+        allowed_signature_algorithms:
+          - ecdsa_secp256r1_sha256
+        peer_service: tbox-mqtt.service
+        notify_on_change: true
+        # TBOX-SEC-DSN-CR-014: Broker 信任根来源。量产固定指向 BUILD 安装资产
+        # /usr/share/tbox/sec/trust/mqtt-root-ca.pem；测试/开发用本仓库测试信任根
+        # （须真实经过 CA Material Loader -> store -> Provider 链路，禁止直写 .dat）。
+        root_ca_source: "./trust/mqtt-root-ca.pem"
+        # TLS 材料来源：SEC 受控存储固定 key
+        #   root_ca            -> 共享信任根（由 CA Material Loader 从 root_ca_source 导入）
+        #   device_cert_chain  -> 设备客户端证书链（由注入流程 DER→PEM 原子发布，
+        #                          读自 CertificateStore 当前 generation）
+        # 物理落点：{common.store.root}/sec/root_ca.dat、{common.store.root}/sec/certstore/
+        ref_ttl_sec: 3600
