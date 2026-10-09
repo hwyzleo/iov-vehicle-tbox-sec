@@ -358,9 +358,36 @@ ErrorCode SecService::inject_certificate(const std::vector<uint8_t>& cert_der) {
     // 允许在 CSR_BUILT 或 CSR_SUBMITTED 状态下注入证书
     // CSR_BUILT: 工位自己走 MES→OAPI→PKI 提交 CSR，不经过 DIAG
     // CSR_SUBMITTED: 通过 DIAG 提交了 CSR
+    //
+    // FAILED: 同样允许，用于失败后重试。注入失败（可信时间不可用、链校验失败、
+    // 存储发布失败等）会把 ProvisionState 置为 FAILED，而 FAILED 此前不被接受，
+    // 调用方必须先调一次 get_csr() 把状态推回 CSR_BUILT 才能重试 —— 既不直观，
+    // 返回的又是笼统的 INVALID_PARAMETER（经 DIAG 变成 NRC 0x72），排查成本很高。
+    // 放宽这一条没有安全损失：证书是否与设备私钥匹配由 CertValidator 把关
+    // （不匹配返回 CERT_KEY_MISMATCH），与 provision 状态无关；这里仅额外要求
+    // 设备上确实存在密钥对，即失败确实发生在密钥生成之后。
+    const bool retry_after_failure =
+        status.state == ProvisionState::FAILED && device_key_present();
+
     if (status.state != ProvisionState::CSR_BUILT &&
-        status.state != ProvisionState::CSR_SUBMITTED) {
+        status.state != ProvisionState::CSR_SUBMITTED &&
+        !retry_after_failure) {
+        SecLogAdapter::certificate().warn(
+            "sec.certificate.install.state_not_allowed",
+            "证书注入被拒绝：provision 状态不允许",
+            {{"state", tbox::fw::log::FieldValue::makeInt(
+                  static_cast<int64_t>(status.state))},
+             {"device_key_present", tbox::fw::log::FieldValue::makeBool(
+                  device_key_present())}});
         return ErrorCode::INVALID_PARAMETER;
+    }
+
+    if (retry_after_failure) {
+        SecLogAdapter::certificate().info(
+            "sec.certificate.install.retry_after_failure",
+            "上次注入失败，使用现有密钥对重试证书注入",
+            {{"retry_count", tbox::fw::log::FieldValue::makeInt(
+                  static_cast<int64_t>(status.retry_count))}});
     }
 
     if (diag_service_) {
@@ -861,6 +888,10 @@ ErrorCode SecService::export_private_key(std::vector<uint8_t>& private_key) {
     }
 
     return key_engine_->export_device_private_key(ecu_uid_, ecu_uid_, private_key);
+}
+
+bool SecService::device_key_present() const {
+    return key_engine_ && key_engine_->device_key_exists(ecu_uid_, ecu_uid_);
 }
 
 ErrorCode SecService::build_and_store_csr() {

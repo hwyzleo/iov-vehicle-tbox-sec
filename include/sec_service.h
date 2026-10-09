@@ -310,6 +310,9 @@ private:
 public:
     ErrorCode generate_and_store_key_pair();
 private:
+    /// 设备密钥对是否已存在于 key engine（用于判断注入失败是否可安全重试）。
+    bool device_key_present() const;
+
     ErrorCode build_and_store_csr();
     ErrorCode validate_and_store_certificate(const std::vector<uint8_t>& payload);
     /// TBOX-SEC-DSN-CR-018 §3.3：Root 入链安装策略检查。

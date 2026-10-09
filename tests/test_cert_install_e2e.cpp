@@ -596,6 +596,56 @@ TEST_F(CertInstallE2ETest, Inject_RootInChain_Rejected_NoStateChange) {
 
 // ---- 错误码映射 ----
 
+// ---- 注入失败后重试（provision 状态卡在 FAILED）----
+//
+// 实车故障：第一次注入因可信时间不可用失败，ProvisionState 被置为 FAILED；
+// 而 FAILED 此前不被 inject_certificate 接受，返回笼统的 INVALID_PARAMETER
+// （经 DIAG 变成 NRC 0x72），必须先调一次 get_csr() 把状态推回 CSR_BUILT 才能重试。
+
+TEST_F(CertInstallE2ETest, Inject_RetryAfterFailure_AllowedWithoutRereadingCsr) {
+    buildService(true);
+
+    std::vector<uint8_t> leaf_der = makeDeviceLeaf();
+    ASSERT_FALSE(leaf_der.empty());
+
+    // 模拟上一次注入失败留下的状态。
+    setProvisionState(ProvisionState::FAILED);
+
+    // 修复前这里是 INVALID_PARAMETER。
+    ASSERT_EQ(service_->inject_certificate(leaf_der), ErrorCode::SUCCESS);
+
+    EXPECT_EQ(service_->get_provision_status().state, ProvisionState::CERT_INSTALLED);
+
+    TlsCredentialState st;
+    ASSERT_EQ(service_->tls_credential_provider()->getTlsCredentialState("mqtt", st),
+              ErrorCode::SUCCESS);
+    EXPECT_EQ(st.status, TlsCredentialStatus::READY);
+}
+
+// 放宽只针对「已有设备密钥对」的 FAILED：没有密钥对说明失败发生在密钥生成之前，
+// 不允许借 FAILED 态绕过状态机。
+TEST_F(CertInstallE2ETest, Inject_RetryAfterFailure_RejectedWithoutDeviceKey) {
+    buildService(true);
+
+    // 注意：不调用 makeDeviceLeaf()，设备上没有密钥对。
+    setProvisionState(ProvisionState::FAILED);
+
+    std::vector<uint8_t> dummy_der = {0x30, 0x82, 0x01, 0x00};
+    EXPECT_EQ(service_->inject_certificate(dummy_der), ErrorCode::INVALID_PARAMETER);
+    EXPECT_EQ(service_->get_provision_status().state, ProvisionState::FAILED);
+}
+
+// NONE 等早期状态仍必须拒绝，放宽不得扩散到整条状态机。
+TEST_F(CertInstallE2ETest, Inject_StateNone_StillRejected) {
+    buildService(true);
+
+    std::vector<uint8_t> leaf_der = makeDeviceLeaf();
+    ASSERT_FALSE(leaf_der.empty());
+
+    setProvisionState(ProvisionState::NONE);
+    EXPECT_EQ(service_->inject_certificate(leaf_der), ErrorCode::INVALID_PARAMETER);
+}
+
 TEST_F(CertInstallE2ETest, NewErrorCodes_StringMapping) {
     EXPECT_EQ(error_code_to_string(ErrorCode::TLS_MATERIAL_KEY_MISSING), "TLS_MATERIAL_KEY_MISSING");
     EXPECT_EQ(error_code_to_string(ErrorCode::TLS_MATERIAL_FORMAT_INVALID), "TLS_MATERIAL_FORMAT_INVALID");
