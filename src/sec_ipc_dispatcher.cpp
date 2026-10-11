@@ -4,7 +4,9 @@
 #include "ipc_protocol.h"
 #include "tls_credential_provider.h"
 #include "peer_credential.h"
+#include "business_key_provisioning.h"
 #include "tbox/sec/types.h"
+#include "tbox/sec/business_key.h"
 #include "utils.h"
 #include <nlohmann/json.hpp>
 #include <chrono>
@@ -47,6 +49,10 @@ SecIpcDispatcher::~SecIpcDispatcher() = default;
 
 void SecIpcDispatcher::setTlsCredentialProvider(TlsCredentialProvider* provider) {
     tls_provider_ = provider;
+}
+
+void SecIpcDispatcher::setBusinessKeyService(BusinessKeyProvisioningService* service) {
+    business_key_service_ = service;
 }
 
 void SecIpcDispatcher::setPeerCredentialResolver(std::shared_ptr<PeerCredentialResolver> resolver) {
@@ -136,6 +142,15 @@ std::string SecIpcDispatcher::dispatch(uint32_t method_id,
                 break;
             case ipc::MethodId::SUBSCRIBE_TLS_CREDENTIAL_CHANGED:
                 result = handle_subscribe_tls_credential_changed(params_json, client_fd);
+                break;
+            case ipc::MethodId::GET_BUSINESS_KEY_STATUS:
+                result = handle_get_business_key_status(params_json, client_fd);
+                break;
+            case ipc::MethodId::IMPORT_WRAPPED_BUSINESS_KEYS:
+                result = handle_import_wrapped_business_keys(params_json, client_fd);
+                break;
+            case ipc::MethodId::GET_BUSINESS_KEY_IMPORT_RESULT:
+                result = handle_get_business_key_import_result(params_json, client_fd);
                 break;
             default:
                 SecLogAdapter::ipc().warn(
@@ -506,6 +521,179 @@ std::pair<int32_t, std::string> SecIpcDispatcher::handle_subscribe_tls_credentia
     resp["success"] = true;
     resp["event_type"] = static_cast<uint32_t>(ipc::EventId::TLS_CREDENTIAL_CHANGED);
     return {0, resp.dump()};
+}
+
+// ============================================================
+// V2C 业务密钥 handlers (TBOX-SEC-DSN-CR-019)
+// ============================================================
+
+namespace {
+
+nlohmann::json business_key_status_to_json(const BusinessKeyStatus& s) {
+    nlohmann::json j;
+    j["business_domain"] = s.business_domain;
+    j["purpose"] = s.purpose;
+    j["business_key_version"] = s.business_key_version;
+    j["state"] = business_key_state_to_string(s.state);
+    j["key_id_digest"] = s.key_id_digest;
+    j["algorithm"] = s.algorithm;
+    j["valid_from_ms"] = s.valid_from_ms;
+    j["valid_to_ms"] = s.valid_to_ms;
+    return j;
+}
+
+nlohmann::json import_result_to_json(const ImportResult& r) {
+    nlohmann::json j;
+    j["request_id"] = r.request_id;
+    j["business_domain"] = r.business_domain;
+    j["state"] = business_key_import_state_to_string(r.state);
+    nlohmann::json items = nlohmann::json::array();
+    for (const auto& s : r.items) items.push_back(business_key_status_to_json(s));
+    j["items"] = items;
+    j["committed_at_ms"] = r.committed_at_ms;
+    j["provider_version_digest"] = r.provider_version_digest;
+    if (!r.import_proof.empty()) {
+        j["import_proof"] = b64_encode(std::vector<uint8_t>(
+            r.import_proof.data(), r.import_proof.data() + r.import_proof.size()));
+    }
+    j["proof_algorithm"] = r.proof_algorithm;
+    return j;
+}
+
+} // namespace
+
+std::pair<int32_t, std::string> SecIpcDispatcher::handle_get_business_key_status(
+        std::string_view params, int client_fd) {
+    if (!business_key_service_) {
+        nlohmann::json resp;
+        resp["success"] = false;
+        return {static_cast<int32_t>(ErrorCode::NOT_IMPLEMENTED), resp.dump()};
+    }
+    PeerIdentity caller = resolvePeer(client_fd);
+    if (!caller.valid || caller.service_name != business_key_peer_service_) {
+        SecLogAdapter::ipc().warn(
+            "sec.ipc.acl_denied",
+            "业务密钥状态查询 ACL 拒绝",
+            {tbox::fw::log::Field("method_id", tbox::fw::log::FieldValue::makeInt(
+                 static_cast<int>(ipc::MethodId::GET_BUSINESS_KEY_STATUS))),
+             tbox::fw::log::Field("peer_valid", tbox::fw::log::FieldValue::makeInt(caller.valid))});
+        return {static_cast<int32_t>(ErrorCode::ACL_DENIED), nlohmann::json({
+                    {"success", false}}).dump()};
+    }
+
+    std::string domain;
+    std::vector<std::string> purposes;
+    try {
+        auto j = nlohmann::json::parse(params);
+        domain = j.value("business_domain", std::string(kBusinessDomainV2c));
+        if (j.contains("purposes") && j["purposes"].is_array()) {
+            for (auto& p : j["purposes"]) purposes.push_back(p.get<std::string>());
+        }
+    } catch (const nlohmann::json::exception&) {
+        return {FW_SERIALIZATION_FAILED, nlohmann::json({{"success", false}}).dump()};
+    }
+    if (purposes.empty()) {
+        purposes = {kBusinessPurposeUplinkAead, kBusinessPurposeDownlinkAead};
+    }
+
+    BusinessKeyStatusSet set;
+    ErrorCode rc = business_key_service_->getStatus(domain, purposes, set);
+    nlohmann::json resp;
+    if (rc == ErrorCode::SUCCESS) {
+        nlohmann::json items = nlohmann::json::array();
+        for (const auto& s : set.items) items.push_back(business_key_status_to_json(s));
+        resp["items"] = items;
+    } else {
+        resp["success"] = false;
+    }
+    return {static_cast<int32_t>(rc), resp.dump()};
+}
+
+std::pair<int32_t, std::string> SecIpcDispatcher::handle_import_wrapped_business_keys(
+        std::string_view params, int client_fd) {
+    if (!business_key_service_) {
+        nlohmann::json resp;
+        resp["success"] = false;
+        return {static_cast<int32_t>(ErrorCode::NOT_IMPLEMENTED), resp.dump()};
+    }
+    PeerIdentity caller = resolvePeer(client_fd);
+    if (!caller.valid || caller.service_name != business_key_peer_service_) {
+        SecLogAdapter::ipc().warn(
+            "sec.ipc.acl_denied",
+            "业务密钥导入 ACL 拒绝",
+            {tbox::fw::log::Field("method_id", tbox::fw::log::FieldValue::makeInt(
+                 static_cast<int>(ipc::MethodId::IMPORT_WRAPPED_BUSINESS_KEYS))),
+             tbox::fw::log::Field("peer_valid", tbox::fw::log::FieldValue::makeInt(caller.valid))});
+        return {static_cast<int32_t>(ErrorCode::ACL_DENIED), nlohmann::json({
+                    {"success", false}}).dump()};
+    }
+
+    std::string request_id, domain;
+    std::vector<WrappedKeyItem> items;
+    try {
+        auto j = nlohmann::json::parse(params);
+        request_id = j.value("request_id", "");
+        domain = j.value("business_domain", std::string(kBusinessDomainV2c));
+        if (j.contains("items") && j["items"].is_array()) {
+            for (auto& ji : j["items"]) {
+                WrappedKeyItem item;
+                item.purpose = ji.value("purpose", "");
+                item.key_id = ji.value("key_id", "");
+                item.business_key_version = ji.value("business_key_version", 0ULL);
+                item.algorithm = ji.value("algorithm", "");
+                auto wk = b64_decode(ji.value("wrapped_key", ""));
+                item.wrapped_key.assign(wk.data(), wk.size());
+                std::fill(wk.begin(), wk.end(), 0);
+                auto prm = b64_decode(ji.value("parameters", ""));
+                item.parameters.assign(prm.data(), prm.size());
+                std::fill(prm.begin(), prm.end(), 0);
+                item.valid_from_ms = ji.value("valid_from_ms", 0LL);
+                item.valid_to_ms = ji.value("valid_to_ms", 0LL);
+                items.push_back(std::move(item));
+            }
+        }
+    } catch (const nlohmann::json::exception&) {
+        return {FW_SERIALIZATION_FAILED, nlohmann::json({{"success", false}}).dump()};
+    }
+
+    ImportResult result;
+    ErrorCode rc = business_key_service_->import(request_id, domain, items, result);
+    // 调用方 buffer 已移交，立即清零
+    for (auto& it : items) {
+        it.wrapped_key.clear();
+        it.parameters.clear();
+    }
+    nlohmann::json resp = import_result_to_json(result);
+    if (rc != ErrorCode::SUCCESS) resp["success"] = false;
+    return {static_cast<int32_t>(rc), resp.dump()};
+}
+
+std::pair<int32_t, std::string> SecIpcDispatcher::handle_get_business_key_import_result(
+        std::string_view params, int client_fd) {
+    if (!business_key_service_) {
+        nlohmann::json resp;
+        resp["success"] = false;
+        return {static_cast<int32_t>(ErrorCode::NOT_IMPLEMENTED), resp.dump()};
+    }
+    PeerIdentity caller = resolvePeer(client_fd);
+    if (!caller.valid || caller.service_name != business_key_peer_service_) {
+        return {static_cast<int32_t>(ErrorCode::ACL_DENIED), nlohmann::json({
+                    {"success", false}}).dump()};
+    }
+
+    std::string request_id;
+    try {
+        auto j = nlohmann::json::parse(params);
+        request_id = j.value("request_id", "");
+    } catch (const nlohmann::json::exception&) {
+        return {FW_SERIALIZATION_FAILED, nlohmann::json({{"success", false}}).dump()};
+    }
+
+    ImportResult result;
+    ErrorCode rc = business_key_service_->getImportResult(request_id, result);
+    nlohmann::json resp = import_result_to_json(result);
+    if (rc != ErrorCode::SUCCESS) resp["success"] = false;
+    return {static_cast<int32_t>(rc), resp.dump()};
 }
 
 } // namespace sec

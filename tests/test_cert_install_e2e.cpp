@@ -653,7 +653,9 @@ TEST_F(CertInstallE2ETest, NewErrorCodes_StringMapping) {
     EXPECT_EQ(error_code_to_string(ErrorCode::TLS_KEY_MISMATCH), "TLS_KEY_MISMATCH");
     EXPECT_EQ(error_code_to_string(ErrorCode::TLS_CERT_EXPIRED), "TLS_CERT_EXPIRED");
     EXPECT_EQ(error_code_to_string(ErrorCode::TLS_CA_INVALID), "TLS_CA_INVALID");
-    // ACL_DENIED 让位 1020 -> 1021
+    // ACL_DENIED 让位 1020 -> 1021 后，CR-019 又把 1021..1026 让给业务密钥错误，ACL 顺延到 1027
     EXPECT_EQ(static_cast<uint32_t>(ErrorCode::TLS_CA_INVALID), 1020u);
-    EXPECT_EQ(static_cast<uint32_t>(ErrorCode::ACL_DENIED), 1021u);
+    EXPECT_EQ(static_cast<uint32_t>(ErrorCode::BUSINESS_KEY_UNSUPPORTED), 1021u);
+    EXPECT_EQ(static_cast<uint32_t>(ErrorCode::BUSINESS_KEY_PARTIAL_ROLLBACK), 1026u);
+    EXPECT_EQ(static_cast<uint32_t>(ErrorCode::ACL_DENIED), 1027u);
 }

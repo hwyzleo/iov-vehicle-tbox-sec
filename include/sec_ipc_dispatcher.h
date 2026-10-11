@@ -12,6 +12,7 @@ namespace sec {
 
 class SecService;
 class TlsCredentialProvider;
+class BusinessKeyProvisioningService;
 class PeerCredentialResolver;
 struct PeerIdentity;
 
@@ -34,6 +35,13 @@ public:
     void setTlsCredentialProvider(TlsCredentialProvider* provider);
     void setPeerCredentialResolver(std::shared_ptr<PeerCredentialResolver> resolver);
 
+    /// 注入 V2C 业务密钥开通服务（TBOX-SEC-DSN-CR-019）；未注入时相关 method 返回 NOT_IMPLEMENTED
+    void setBusinessKeyService(BusinessKeyProvisioningService* service);
+    /// 授权的业务密钥调用方 systemd unit（默认 tbox-tsp.service）
+    void setBusinessKeyPeerService(const std::string& peer_service) {
+        business_key_peer_service_ = peer_service;
+    }
+
     /// 注入订阅注册回调（由 SecService 接线到 framework-ipc Server::add_subscription）
     void setAddSubscriptionCallback(std::function<bool(int, uint32_t)> cb);
 
@@ -49,6 +57,8 @@ public:
 private:
     SecService* service_;
     TlsCredentialProvider* tls_provider_ = nullptr;
+    BusinessKeyProvisioningService* business_key_service_ = nullptr;
+    std::string business_key_peer_service_ = "tbox-tsp.service";
     std::shared_ptr<PeerCredentialResolver> peer_resolver_;
     std::function<bool(int, uint32_t)> add_subscription_fn_;
 
@@ -74,6 +84,11 @@ private:
     std::pair<int32_t, std::string> handle_get_tls_credential_state(std::string_view params);
     std::pair<int32_t, std::string> handle_sign_tls(std::string_view params, int client_fd);
     std::pair<int32_t, std::string> handle_subscribe_tls_credential_changed(std::string_view params, int client_fd);
+
+    // V2C 业务密钥开通 handlers (TBOX-SEC-DSN-CR-019)
+    std::pair<int32_t, std::string> handle_get_business_key_status(std::string_view params, int client_fd);
+    std::pair<int32_t, std::string> handle_import_wrapped_business_keys(std::string_view params, int client_fd);
+    std::pair<int32_t, std::string> handle_get_business_key_import_result(std::string_view params, int client_fd);
 };
 
 } // namespace sec

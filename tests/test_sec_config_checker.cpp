@@ -528,3 +528,53 @@ sec:
     EXPECT_EQ(r.exit_code, 1) << r.output;
     EXPECT_NE(r.output.find("allowed_values"), std::string::npos) << r.output;
 }
+
+// TBOX-SEC-DSN-CR-019：业务密钥开通配置（治理项，非秘密）
+TEST(SecConfigCheckerTest, ProductionAcceptsDisabledBusinessKeyProvisioning) {
+    std::string cfg = R"yaml(
+key_provisioning:
+  mode: "hsm"
+sec:
+  business_key_provisioning:
+    enabled: false
+    allowed_domains: [V2C_COMM]
+    required_purposes: [UPLINK_AEAD, DOWNLINK_AEAD]
+    allowed_wrapping_suites: [ECIES-ECDH-ES-A256GCM-v1]
+    max_items: 2
+    max_wrapped_key_bytes: 4096
+    request_timeout_ms: 10000
+    peer_service: tbox-tsp.service
+)yaml";
+    auto path = writeTempConfig("bkp_production.yaml", cfg);
+    auto r = runChecker(path, "production");
+    EXPECT_EQ(r.exit_code, 0) << r.output;
+}
+
+TEST(SecConfigCheckerTest, TestAcceptsEnabledBusinessKeyProvisioning) {
+    std::string cfg = R"yaml(
+key_provisioning:
+  mode: "soft_file"
+sec:
+  business_key_provisioning:
+    enabled: true
+    max_items: 2
+)yaml";
+    auto path = writeTempConfig("bkp_test.yaml", cfg);
+    auto r = runChecker(path, "test");
+    EXPECT_EQ(r.exit_code, 0) << r.output;
+}
+
+TEST(SecConfigCheckerTest, BusinessKeyProvisioningUnknownFieldWarns) {
+    std::string cfg = R"yaml(
+key_provisioning:
+  mode: "hsm"
+sec:
+  business_key_provisioning:
+    enabled: false
+    bogus_field: 1
+)yaml";
+    auto path = writeTempConfig("bkp_unknown.yaml", cfg);
+    auto r = runChecker(path, "production");
+    EXPECT_EQ(r.exit_code, 0) << r.output;
+    EXPECT_NE(r.output.find("schema.unknown_field"), std::string::npos) << r.output;
+}

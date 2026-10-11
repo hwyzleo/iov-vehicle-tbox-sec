@@ -48,6 +48,22 @@ sec:
       enabled: true
       require_provisioned: true
     rollback_tolerance_ms: 2000
+  # V2C 业务密钥开通（TBOX-SEC-DSN-CR-019）。量产默认关闭；仅当可信 HSM/eSE
+  # provider、设备解封装身份、secure journal 与安全元数据全部就绪时由 platform
+  # overlay 显式打开。字段均为治理项，不含密钥/版本/算法实例值。
+  business_key_provisioning:
+    enabled: false
+    allowed_domains:
+      - V2C_COMM
+    required_purposes:
+      - UPLINK_AEAD
+      - DOWNLINK_AEAD
+    allowed_wrapping_suites:
+      - ECIES-ECDH-ES-A256GCM-v1
+    max_items: 2
+    max_wrapped_key_bytes: 4096
+    request_timeout_ms: 10000
+    peer_service: tbox-tsp.service
   # Seed-Key 共享密钥由 provisioning 注入（sec.seed_key.shared_secret，32 hex 字符）。
   # 本模板不含该键；缺失时 verify_key fail-closed（TBOX-SEC-DSN-CR-003 / US-002）。
   # MQTT TLS Credential Provider（TBOX-SEC-DSN-CR-010 / CR-014）

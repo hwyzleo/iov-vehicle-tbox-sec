@@ -9,6 +9,7 @@
 #include <openssl/sha.h>
 #include <openssl/rand.h>
 #include <openssl/pem.h>
+#include <openssl/hmac.h>
 
 #include <nlohmann/json.hpp>
 
@@ -26,6 +27,43 @@ namespace fs = std::filesystem;
 static constexpr int AES_GCM_IV_SIZE = 12;
 static constexpr int AES_GCM_TAG_SIZE = 16;
 static constexpr int ENCRYPTION_KEY_SIZE = 32;
+
+// HKDF-SHA256（Extract + Expand），避免依赖 OpenSSL 版本化的 HKDF API。
+static void hkdf_sha256(const std::vector<uint8_t>& ikm,
+                        const std::vector<uint8_t>& salt,
+                        const std::vector<uint8_t>& info,
+                        uint8_t* out, size_t out_len) {
+    uint8_t prk[SHA256_DIGEST_LENGTH];
+    {
+        unsigned int prk_len = 0;
+        const uint8_t zeros[SHA256_DIGEST_LENGTH] = {0};
+        const uint8_t* salt_ptr = salt.empty() ? zeros : salt.data();
+        size_t salt_len = salt.empty() ? SHA256_DIGEST_LENGTH : salt.size();
+        HMAC(EVP_sha256(), salt_ptr, static_cast<int>(salt_len),
+             ikm.data(), ikm.size(), prk, &prk_len);
+    }
+
+    std::vector<uint8_t> t;
+    size_t pos = 0;
+    uint8_t counter = 1;
+    while (pos < out_len) {
+        std::vector<uint8_t> data;
+        data.reserve(t.size() + info.size() + 1);
+        data.insert(data.end(), t.begin(), t.end());
+        data.insert(data.end(), info.begin(), info.end());
+        data.push_back(counter);
+        unsigned int n = 0;
+        uint8_t block[SHA256_DIGEST_LENGTH];
+        HMAC(EVP_sha256(), prk, SHA256_DIGEST_LENGTH,
+             data.data(), data.size(), block, &n);
+        size_t take = std::min<size_t>(n, out_len - pos);
+        std::memcpy(out + pos, block, take);
+        pos += take;
+        t.assign(block, block + n);
+        ++counter;
+    }
+    OPENSSL_cleanse(prk, sizeof(prk));
+}
 
 SoftFileHsm::SoftFileHsm(hwyz::store::Store store,
                          const std::string& encryption_algo,
@@ -206,6 +244,108 @@ ErrorCode SoftFileHsm::sign_digest(const std::string& key_id,
     }
     signature.resize(sig_len);
     EC_KEY_free(ec);
+    return ErrorCode::SUCCESS;
+}
+
+ErrorCode SoftFileHsm::unwrap_ecdh_es(const std::string& recipient_key_id,
+                                       const std::vector<uint8_t>& ephemeral_public_key,
+                                       const std::vector<uint8_t>& iv,
+                                       const std::vector<uint8_t>& ciphertext_and_tag,
+                                       const std::vector<uint8_t>& aad,
+                                       std::vector<uint8_t>& plaintext) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!is_valid_key_id(recipient_key_id)) return ErrorCode::INVALID_PARAMETER;
+    if (ephemeral_public_key.empty() || iv.size() != AES_GCM_IV_SIZE ||
+        ciphertext_and_tag.size() < AES_GCM_TAG_SIZE) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
+    auto it = keys_.find(recipient_key_id);
+    if (it == keys_.end()) {
+        KeyData kd;
+        auto rc = load_key_from_store(recipient_key_id, kd);
+        if (rc != ErrorCode::SUCCESS) return rc;
+        keys_[recipient_key_id] = std::move(kd);
+        it = keys_.find(recipient_key_id);
+    }
+
+    const EC_GROUP* group = nullptr;
+    EC_KEY* ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (!ec) return ErrorCode::WRAPPED_KEY_INVALID;
+    group = EC_KEY_get0_group(ec);
+
+    EC_POINT* pub_pt = EC_POINT_new(group);
+    if (!pub_pt || EC_POINT_oct2point(group, pub_pt, it->second.pub.data(),
+                                      it->second.pub.size(), nullptr) != 1) {
+        if (pub_pt) EC_POINT_free(pub_pt);
+        EC_KEY_free(ec);
+        return ErrorCode::WRAPPED_KEY_INVALID;
+    }
+    EC_KEY_set_public_key(ec, pub_pt);
+    EC_POINT_free(pub_pt);
+
+    BIGNUM* priv_bn = BN_bin2bn(it->second.priv.data(),
+                                static_cast<int>(it->second.priv.size()), nullptr);
+    if (!priv_bn) { EC_KEY_free(ec); return ErrorCode::WRAPPED_KEY_INVALID; }
+    EC_KEY_set_private_key(ec, priv_bn);
+    BN_free(priv_bn);
+
+    EC_POINT* eph_pt = EC_POINT_new(group);
+    if (!eph_pt || EC_POINT_oct2point(group, eph_pt, ephemeral_public_key.data(),
+                                      ephemeral_public_key.size(), nullptr) != 1) {
+        if (eph_pt) EC_POINT_free(eph_pt);
+        EC_KEY_free(ec);
+        return ErrorCode::WRAPPED_KEY_INVALID;
+    }
+
+    std::vector<uint8_t> shared(ENCRYPTION_KEY_SIZE);
+    int shared_len = ECDH_compute_key(shared.data(), shared.size(), eph_pt, ec, nullptr);
+    EC_POINT_free(eph_pt);
+    EC_KEY_free(ec);
+    if (shared_len <= 0) {
+        secure_zero(shared);
+        return ErrorCode::WRAPPED_KEY_INVALID;
+    }
+    shared.resize(static_cast<size_t>(shared_len));
+
+    // KEK = HKDF-SHA256(ikm=shared, salt="", info=aad, L=32)
+    uint8_t kek[ENCRYPTION_KEY_SIZE];
+    std::vector<uint8_t> info = aad;
+    hkdf_sha256(shared, {}, info, kek, sizeof(kek));
+    secure_zero(shared);
+    OPENSSL_cleanse(info.data(), info.size());
+
+    const uint8_t* tag = ciphertext_and_tag.data() + ciphertext_and_tag.size() - AES_GCM_TAG_SIZE;
+    const uint8_t* ct = ciphertext_and_tag.data();
+    int ct_len = static_cast<int>(ciphertext_and_tag.size() - AES_GCM_TAG_SIZE);
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) { OPENSSL_cleanse(kek, sizeof(kek)); return ErrorCode::INTERNAL_ERROR; }
+
+    bool ok = true;
+    int out_len = 0;
+    int total = 0;
+    plaintext.assign(static_cast<size_t>(ct_len), 0);
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1) ok = false;
+    if (ok && EVP_DecryptInit_ex(ctx, nullptr, nullptr, kek, iv.data()) != 1) ok = false;
+    if (ok && !aad.empty() &&
+        EVP_DecryptUpdate(ctx, nullptr, &out_len, aad.data(), static_cast<int>(aad.size())) != 1) ok = false;
+    if (ok && ct_len > 0 &&
+        EVP_DecryptUpdate(ctx, plaintext.data(), &out_len, ct, ct_len) != 1) ok = false;
+    total = out_len;
+    if (ok && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, AES_GCM_TAG_SIZE,
+                                  const_cast<uint8_t*>(tag)) != 1) ok = false;
+    if (ok && EVP_DecryptFinal_ex(ctx, plaintext.data() + total, &out_len) != 1) ok = false;
+    total += out_len;
+    EVP_CIPHER_CTX_free(ctx);
+    OPENSSL_cleanse(kek, sizeof(kek));
+
+    if (!ok) {
+        secure_zero(plaintext);
+        return ErrorCode::WRAPPED_KEY_INVALID;
+    }
+    plaintext.resize(static_cast<size_t>(total));
     return ErrorCode::SUCCESS;
 }
 

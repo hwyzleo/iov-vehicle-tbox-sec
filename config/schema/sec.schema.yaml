@@ -80,6 +80,49 @@ sec:
         required: false
         default: 2000
         range: [0, 60000]
+  business_key_provisioning:
+    type: map
+    required: false
+    description: >
+      TBOX-SEC-DSN-CR-019：V2C 业务密钥开通治理项（非秘密）。量产默认 enabled=false；
+      仅当可信 HSM/eSE provider、设备解封装身份、secure journal 与安全元数据全部就绪时
+      由 platform overlay 显式打开。不含密钥/版本/算法实例值。
+    item_schema:
+      enabled:
+        type: bool
+        required: false
+        default: false
+      allowed_domains:
+        type: string_list
+        required: false
+        default: [V2C_COMM]
+      required_purposes:
+        type: string_list
+        required: false
+        default: [UPLINK_AEAD, DOWNLINK_AEAD]
+      allowed_wrapping_suites:
+        type: string_list
+        required: false
+        default: [ECIES-ECDH-ES-A256GCM-v1]
+      max_items:
+        type: int
+        required: false
+        default: 2
+        range: [1, 16]
+      max_wrapped_key_bytes:
+        type: int
+        required: false
+        default: 4096
+        range: [64, 65536]
+      request_timeout_ms:
+        type: int
+        required: false
+        default: 10000
+        range: [1, 600000]
+      peer_service:
+        type: string
+        required: false
+        default: "tbox-tsp.service"
   tls:
     dev_peer_service:
       type: string

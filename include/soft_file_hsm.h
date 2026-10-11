@@ -32,6 +32,13 @@ public:
                           const std::vector<uint8_t>& digest,
                           std::vector<uint8_t>& signature) override;
 
+    ErrorCode unwrap_ecdh_es(const std::string& recipient_key_id,
+                             const std::vector<uint8_t>& ephemeral_public_key,
+                             const std::vector<uint8_t>& iv,
+                             const std::vector<uint8_t>& ciphertext_and_tag,
+                             const std::vector<uint8_t>& aad,
+                             std::vector<uint8_t>& plaintext) override;
+
     ErrorCode verify(const std::string& key_id,
                      const std::vector<uint8_t>& data,
                      const std::vector<uint8_t>& signature,

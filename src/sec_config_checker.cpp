@@ -66,7 +66,8 @@ const std::set<std::string> kAllowedTopLevel = {
     "environment"
 };
 
-const std::set<std::string> kSecKeys = {"ipc", "tls", "trusted_time"};
+const std::set<std::string> kSecKeys = {"ipc", "tls", "trusted_time",
+                                       "business_key_provisioning"};
 const std::set<std::string> kSecIpcKeys = {"socket_path"};
 const std::set<std::string> kSecTlsKeys = {"dev_peer_service", "profiles"};
 const std::set<std::string> kSecTrustedTimeKeys = {
@@ -76,6 +77,11 @@ const std::set<std::string> kTrustedTimePlatformKeys = {
     "enabled", "max_freshness_ms", "max_uncertainty_ms"
 };
 const std::set<std::string> kTrustedTimeRtcKeys = {"enabled", "require_provisioned"};
+// TBOX-SEC-DSN-CR-019: V2C 业务密钥开通治理项（非秘密）
+const std::set<std::string> kBusinessKeyProvKeys = {
+    "enabled", "allowed_domains", "required_purposes",
+    "allowed_wrapping_suites", "max_items", "max_wrapped_key_bytes",
+    "request_timeout_ms", "peer_service"};
 const std::set<std::string> kTlsProfileKeys = {
     "credential_id", "key_usage", "allowed_signature_algorithms",
     "peer_service", "notify_on_change", "ref_ttl_sec",
@@ -358,6 +364,27 @@ private:
         if (trusted_time) {
             checkTrustedTime(trusted_time);
         }
+
+        YAML::Node bkp = sec["business_key_provisioning"];
+        if (bkp) {
+            checkBusinessKeyProvisioning(bkp);
+        }
+    }
+
+    // TBOX-SEC-DSN-CR-019 §12.7：业务密钥开通配置校验。
+    // 仅治理项，不含密钥/版本/算法实例值；production 默认关闭且不得内联秘密。
+    void checkBusinessKeyProvisioning(const YAML::Node& bkp) {
+        if (!bkp.IsMap()) return;
+        checkUnknownFields(bkp, kBusinessKeyProvKeys, "sec.business_key_provisioning");
+        if (bkp["enabled"] && !bkp["enabled"].IsScalar()) {
+            error("schema.type", "sec.business_key_provisioning.enabled",
+                  "must be a boolean");
+        }
+        checkIntField(bkp, "sec.business_key_provisioning.max_items", 1, 16);
+        checkIntField(bkp, "sec.business_key_provisioning.max_wrapped_key_bytes",
+                      64, 65536);
+        checkIntField(bkp, "sec.business_key_provisioning.request_timeout_ms",
+                      1, 600000);
     }
 
     // TBOX-SEC-DSN-CR-017 §5：可信时间配置校验。

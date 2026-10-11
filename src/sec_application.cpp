@@ -188,6 +188,12 @@ bool SecApplication::initialize() {
     if (auto* tls_provider = security_service_->tls_credential_provider()) {
         dispatcher_->setTlsCredentialProvider(tls_provider);
     }
+    // 注入 V2C 业务密钥开通服务（TBOX-SEC-DSN-CR-019）
+    if (auto* bk = security_service_->business_key_provisioning()) {
+        dispatcher_->setBusinessKeyService(bk);
+        dispatcher_->setBusinessKeyPeerService(
+            cfg->getString("sec.business_key_provisioning.peer_service", "tbox-tsp.service"));
+    }
     dispatcher_->setPeerCredentialResolver(peer_resolver_);
     init_stage_ = InitStage::DispatcherReady;
 

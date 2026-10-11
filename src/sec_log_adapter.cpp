@@ -39,4 +39,8 @@ tbox::fw::log::Logger SecLogAdapter::ipc() {
     return tbox::fw::log::Logger::get("ipc");
 }
 
+tbox::fw::log::Logger SecLogAdapter::business_key() {
+    return tbox::fw::log::Logger::get("business_key");
+}
+
 } // namespace tbox::sec

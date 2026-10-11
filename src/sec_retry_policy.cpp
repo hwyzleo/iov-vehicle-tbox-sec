@@ -46,6 +46,14 @@ SecRetryPolicy::Category SecRetryPolicy::categorize(uint32_t method_id) {
         case ipc::MethodId::SUBSCRIBE_TLS_CREDENTIAL_CHANGED:
             return Category::kOneShot;
 
+        // V2C 业务密钥（TBOX-SEC-DSN-CR-019）：状态/结果查询只读可重试；
+        // 导入为写入型，禁止自动重放（不确定结果按 requestId 查询）
+        case ipc::MethodId::GET_BUSINESS_KEY_STATUS:
+        case ipc::MethodId::GET_BUSINESS_KEY_IMPORT_RESULT:
+            return Category::kReadOnly;
+        case ipc::MethodId::IMPORT_WRAPPED_BUSINESS_KEYS:
+            return Category::kWrite;
+
         default:
             return Category::kOneShot;  // 未知方法保守处理
     }

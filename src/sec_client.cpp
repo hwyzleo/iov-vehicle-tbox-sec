@@ -397,5 +397,138 @@ TlsCredentialSubscription SecClient::subscribe_tls_credential_changed(
     return TlsCredentialSubscription(sub_impl);
 }
 
+// ============================================================
+// V2C 业务密钥开通（TBOX-SEC-DSN-CR-019）
+// ============================================================
+
+namespace {
+
+void business_key_status_from_json(const nlohmann::json& j, BusinessKeyStatus& s) {
+    s.business_domain = j.value("business_domain", "");
+    s.purpose = j.value("purpose", "");
+    s.business_key_version = j.value("business_key_version", 0ULL);
+    s.state = string_to_business_key_state(j.value("state", "UNKNOWN"));
+    s.key_id_digest = j.value("key_id_digest", "");
+    s.algorithm = j.value("algorithm", "");
+    s.valid_from_ms = j.value("valid_from_ms", 0LL);
+    s.valid_to_ms = j.value("valid_to_ms", 0LL);
+}
+
+void import_result_from_json(const nlohmann::json& j, ImportResult& out,
+                             const std::function<std::vector<uint8_t>(const std::string&)>& dec) {
+    out.request_id = j.value("request_id", "");
+    out.business_domain = j.value("business_domain", "");
+    out.state = string_to_business_key_import_state(j.value("state", "UNKNOWN"));
+    out.items.clear();
+    if (j.contains("items") && j["items"].is_array()) {
+        for (const auto& ji : j["items"]) {
+            BusinessKeyStatus s;
+            business_key_status_from_json(ji, s);
+            out.items.push_back(std::move(s));
+        }
+    }
+    out.committed_at_ms = j.value("committed_at_ms", 0LL);
+    out.provider_version_digest = j.value("provider_version_digest", "");
+    if (j.contains("import_proof")) {
+        auto proof = dec(j.value("import_proof", ""));
+        out.import_proof.assign(proof.data(), proof.size());
+        std::fill(proof.begin(), proof.end(), 0);
+    }
+    out.proof_algorithm = j.value("proof_algorithm", "");
+}
+
+} // namespace
+
+ErrorCode SecClient::get_business_key_status(const std::string& business_domain,
+                                             const std::vector<std::string>& purposes,
+                                             BusinessKeyStatusSet& out) {
+    nlohmann::json params;
+    params["business_domain"] = business_domain;
+    params["purposes"] = purposes;
+    auto [ok, status, response_json] = impl_->send_request(
+        static_cast<uint32_t>(ipc::MethodId::GET_BUSINESS_KEY_STATUS), params.dump());
+    if (!ok) return ErrorCode::CONNECTION_FAILED;
+    out.items.clear();
+    if (status == 0) {
+        try {
+            auto j = nlohmann::json::parse(response_json);
+            if (j.contains("items") && j["items"].is_array()) {
+                for (const auto& ji : j["items"]) {
+                    BusinessKeyStatus s;
+                    business_key_status_from_json(ji, s);
+                    out.items.push_back(std::move(s));
+                }
+            }
+        } catch (const std::exception&) {
+            return ErrorCode::INTERNAL_ERROR;
+        }
+    }
+    return static_cast<ErrorCode>(status);
+}
+
+ErrorCode SecClient::import_wrapped_business_keys(const std::string& request_id,
+                                                  const std::string& business_domain,
+                                                  const std::vector<WrappedKeyItem>& items,
+                                                  ImportResult& out) {
+    nlohmann::json params;
+    params["request_id"] = request_id;
+    params["business_domain"] = business_domain;
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& item : items) {
+        nlohmann::json e;
+        e["purpose"] = item.purpose;
+        e["key_id"] = item.key_id;
+        e["business_key_version"] = item.business_key_version;
+        e["algorithm"] = item.algorithm;
+        e["wrapped_key"] = impl_->b64_encode(std::vector<uint8_t>(
+            item.wrapped_key.data(), item.wrapped_key.data() + item.wrapped_key.size()));
+        e["parameters"] = impl_->b64_encode(std::vector<uint8_t>(
+            item.parameters.data(), item.parameters.data() + item.parameters.size()));
+        e["valid_from_ms"] = item.valid_from_ms;
+        e["valid_to_ms"] = item.valid_to_ms;
+        arr.push_back(e);
+    }
+    params["items"] = arr;
+
+    auto [ok, status, response_json] = impl_->send_request(
+        static_cast<uint32_t>(ipc::MethodId::IMPORT_WRAPPED_BUSINESS_KEYS), params.dump());
+    if (!ok) return ErrorCode::CONNECTION_FAILED;
+    out = ImportResult{};
+    out.request_id = request_id;
+    if (status == 0 || status == static_cast<int32_t>(ErrorCode::BUSINESS_KEY_IMPORT_UNKNOWN)) {
+        try {
+            auto j = nlohmann::json::parse(response_json);
+            import_result_from_json(j, out, [&](const std::string& s) {
+                return impl_->b64_decode(s);
+            });
+        } catch (const std::exception&) {
+            return ErrorCode::INTERNAL_ERROR;
+        }
+    }
+    return static_cast<ErrorCode>(status);
+}
+
+ErrorCode SecClient::get_business_key_import_result(const std::string& request_id,
+                                                    ImportResult& out) {
+    nlohmann::json params;
+    params["request_id"] = request_id;
+    auto [ok, status, response_json] = impl_->send_request(
+        static_cast<uint32_t>(ipc::MethodId::GET_BUSINESS_KEY_IMPORT_RESULT), params.dump());
+    if (!ok) return ErrorCode::CONNECTION_FAILED;
+    out = ImportResult{};
+    out.request_id = request_id;
+    if (status == 0) {
+        try {
+            auto j = nlohmann::json::parse(response_json);
+            import_result_from_json(j, out, [&](const std::string& s) {
+                return impl_->b64_decode(s);
+            });
+        } catch (const std::exception&) {
+            return ErrorCode::INTERNAL_ERROR;
+        }
+    }
+    return static_cast<ErrorCode>(status);
+}
+
 } // namespace sec
 } // namespace tbox

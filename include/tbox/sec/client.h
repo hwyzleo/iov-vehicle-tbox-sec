@@ -7,6 +7,7 @@
 #include <functional>
 #include "tbox/sec/types.h"
 #include "tbox/sec/errors.h"
+#include "tbox/sec/business_key.h"
 
 namespace tbox {
 namespace sec {
@@ -85,6 +86,20 @@ public:
     TlsCredentialSubscription subscribe_tls_credential_changed(
         const std::string& profile,
         std::function<void(const TlsCredentialChangedEvent&)> callback);
+
+    // ---- V2C 业务密钥开通（TBOX-SEC-DSN-CR-019）----
+    /// 查询 V2C 业务密钥件内状态（只读，可重试）
+    ErrorCode get_business_key_status(const std::string& business_domain,
+                                      const std::vector<std::string>& purposes,
+                                      BusinessKeyStatusSet& out);
+    /// 导入 Wrapped Key 批次（写入型；禁止自动重放，超时按 unknown outcome 处理）
+    ErrorCode import_wrapped_business_keys(const std::string& request_id,
+                                           const std::string& business_domain,
+                                           const std::vector<WrappedKeyItem>& items,
+                                           ImportResult& out);
+    /// 按 requestId 查询导入结果（只读，可重试）
+    ErrorCode get_business_key_import_result(const std::string& request_id,
+                                             ImportResult& out);
 
 private:
     class Impl;

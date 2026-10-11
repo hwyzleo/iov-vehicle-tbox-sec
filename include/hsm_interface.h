@@ -51,6 +51,28 @@ public:
         return ErrorCode::NOT_IMPLEMENTED;
     }
 
+    /// ECIES / ECDH-ES + AES-256-GCM 解封装（TBOX-SEC-DSN-CR-019 §4）。
+    ///
+    /// 使用 recipient_key_id 对应的 EC 私钥与 ephemeral_public_key 执行 ECDH，
+    /// 经 HKDF-SHA256（info = aad）派生 KEK，再以 AES-256-GCM 解密
+    /// ciphertext_and_tag（tag 16B 追加于密文后）。明文仅短暂存在于 HSM 内部，
+    /// 由调用方立即使用并清零。
+    /// 默认返回 NOT_IMPLEMENTED（硬件 HSM provider 由设备集成实现）。
+    virtual ErrorCode unwrap_ecdh_es(const std::string& recipient_key_id,
+                                     const std::vector<uint8_t>& ephemeral_public_key,
+                                     const std::vector<uint8_t>& iv,
+                                     const std::vector<uint8_t>& ciphertext_and_tag,
+                                     const std::vector<uint8_t>& aad,
+                                     std::vector<uint8_t>& plaintext) {
+        (void)recipient_key_id;
+        (void)ephemeral_public_key;
+        (void)iv;
+        (void)ciphertext_and_tag;
+        (void)aad;
+        (void)plaintext;
+        return ErrorCode::NOT_IMPLEMENTED;
+    }
+
     virtual ErrorCode verify(const std::string& key_id,
                             const std::vector<uint8_t>& data,
                             const std::vector<uint8_t>& signature,

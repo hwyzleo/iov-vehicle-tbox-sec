@@ -21,6 +21,8 @@ public:
     static tbox::fw::log::Logger seed_key();
     static tbox::fw::log::Logger tls_credential();
     static tbox::fw::log::Logger ipc();
+    /// TBOX-SEC-DSN-CR-019：V2C 业务密钥开通模块 Logger
+    static tbox::fw::log::Logger business_key();
 
 private:
     static bool s_initialized;

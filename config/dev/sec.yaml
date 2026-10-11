@@ -58,6 +58,21 @@ sec:
   # 有效期。仅限非生产环境；生产模板固定 provider=composite（fail-closed）。
   trusted_time:
     provider: "fake"
+  # V2C 业务密钥开通（TBOX-SEC-DSN-CR-019）：dev/test 显式启用，使用 SoftFile
+  # provider（ECDH-ES + AES-256-GCM）闭环。仅限非生产环境。
+  business_key_provisioning:
+    enabled: true
+    allowed_domains:
+      - V2C_COMM
+    required_purposes:
+      - UPLINK_AEAD
+      - DOWNLINK_AEAD
+    allowed_wrapping_suites:
+      - ECIES-ECDH-ES-A256GCM-v1
+    max_items: 2
+    max_wrapped_key_bytes: 4096
+    request_timeout_ms: 10000
+    peer_service: tbox-tsp.service
   # Seed-Key 共享密钥（AES-128，32 hex 字符）。开发/测试显式提供；
   # 出厂默认模板不含此键，缺失时 verify_key fail-closed。
   seed_key:

@@ -52,6 +52,12 @@ std::string error_code_to_string(ErrorCode code) {
         case ErrorCode::TLS_KEY_MISMATCH: return "TLS_KEY_MISMATCH";
         case ErrorCode::TLS_CERT_EXPIRED: return "TLS_CERT_EXPIRED";
         case ErrorCode::TLS_CA_INVALID: return "TLS_CA_INVALID";
+        case ErrorCode::BUSINESS_KEY_UNSUPPORTED: return "BUSINESS_KEY_UNSUPPORTED";
+        case ErrorCode::BUSINESS_KEY_CONFLICT: return "BUSINESS_KEY_CONFLICT";
+        case ErrorCode::WRAPPED_KEY_INVALID: return "WRAPPED_KEY_INVALID";
+        case ErrorCode::BUSINESS_KEY_IMPORT_UNKNOWN: return "BUSINESS_KEY_IMPORT_UNKNOWN";
+        case ErrorCode::BUSINESS_KEY_NOT_READY: return "BUSINESS_KEY_NOT_READY";
+        case ErrorCode::BUSINESS_KEY_PARTIAL_ROLLBACK: return "BUSINESS_KEY_PARTIAL_ROLLBACK";
         case ErrorCode::ACL_DENIED: return "ACL_DENIED";
         case ErrorCode::CONFIG_ERROR: return "CONFIG_ERROR";
         case ErrorCode::INTERNAL_ERROR: return "INTERNAL_ERROR";
@@ -107,6 +113,12 @@ std::string error_code_to_description(ErrorCode code) {
         case ErrorCode::TLS_KEY_MISMATCH: return "TLS client certificate public key does not match HSM private key";
         case ErrorCode::TLS_CERT_EXPIRED: return "TLS client certificate expired or not yet valid";
         case ErrorCode::TLS_CA_INVALID: return "Broker trust CA invalid (not a CA / unusable)";
+        case ErrorCode::BUSINESS_KEY_UNSUPPORTED: return "Business key domain/purpose/algorithm/wrapping suite unsupported";
+        case ErrorCode::BUSINESS_KEY_CONFLICT: return "Business key request digest or version conflict";
+        case ErrorCode::WRAPPED_KEY_INVALID: return "Wrapped key binding/AAD/integrity validation failed";
+        case ErrorCode::BUSINESS_KEY_IMPORT_UNKNOWN: return "Business key import outcome unknown; query by requestId";
+        case ErrorCode::BUSINESS_KEY_NOT_READY: return "Business key HSM/identity/journal/metadata not ready";
+        case ErrorCode::BUSINESS_KEY_PARTIAL_ROLLBACK: return "Business key batch not committed; staging state requires recovery";
         case ErrorCode::ACL_DENIED: return "Caller not authorized for this profile";
         case ErrorCode::CONFIG_ERROR: return "Configuration error";
         case ErrorCode::INTERNAL_ERROR: return "Internal error";

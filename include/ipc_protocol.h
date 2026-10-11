@@ -32,6 +32,11 @@ enum class MethodId : uint32_t {
     GET_TLS_CREDENTIAL_STATE = 15,            ///< 查询凭据状态摘要
     SIGN_TLS = 16,                            ///< 远程 TLS 签名（禁止自动重放）
     SUBSCRIBE_TLS_CREDENTIAL_CHANGED = 17,    ///< 订阅凭据变更事件
+
+    // V2C 业务密钥开通 (TBOX-SEC-DSN-CR-019)
+    GET_BUSINESS_KEY_STATUS = 18,             ///< 查询 V2C 业务密钥件内状态
+    IMPORT_WRAPPED_BUSINESS_KEYS = 19,        ///< 导入 Wrapped Key 批次（原子激活，禁止自动重放）
+    GET_BUSINESS_KEY_IMPORT_RESULT = 20,      ///< 按 requestId 查询导入结果
 };
 
 /// SEC IPC 事件类型（与 framework-ipc EventHeader.event_type 一致）。

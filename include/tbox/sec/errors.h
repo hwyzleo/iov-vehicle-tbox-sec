@@ -70,8 +70,16 @@ enum class ErrorCode : uint32_t {
     TLS_CERT_EXPIRED = 1019,                  ///< SEC-1019: TLS 客户端证书已过期 (CERT_EXPIRED)
     TLS_CA_INVALID = 1020,                    ///< SEC-1020: Broker 信任 CA 无效 (CA_INVALID)
 
-    // ACL errors（CR-014 让位 1020 给 SEC-1020=CA_INVALID，ACL 改到 1021）
-    ACL_DENIED = 1021,                        ///< 调用方未授权访问该 profile
+    // V2C 业务密钥错误码 (SEC-1021..1026, TBOX-SEC-DSN-CR-019 §12.7)
+    BUSINESS_KEY_UNSUPPORTED = 1021,      ///< SEC-1021: 业务域/用途/算法/封装套件不支持
+    BUSINESS_KEY_CONFLICT = 1022,         ///< SEC-1022: requestId 摘要冲突或版本冲突
+    WRAPPED_KEY_INVALID = 1023,           ///< SEC-1023: Wrapped Key 绑定/AAD/完整性校验失败
+    BUSINESS_KEY_IMPORT_UNKNOWN = 1024,   ///< SEC-1024: 结果未知，必须按 requestId 查询
+    BUSINESS_KEY_NOT_READY = 1025,        ///< SEC-1025: HSM/eSE、解封装身份、journal 或元数据未就绪
+    BUSINESS_KEY_PARTIAL_ROLLBACK = 1026, ///< SEC-1026: 批次未提交且存在需恢复的 staging 状态
+
+    // ACL errors（CR-019 让位 1021..1026 给业务密钥错误，ACL 顺延到 1027）
+    ACL_DENIED = 1027,                        ///< 调用方未授权访问该 profile
 
     // Configuration errors
     CONFIG_ERROR = 1100,

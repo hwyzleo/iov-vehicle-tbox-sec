@@ -18,6 +18,7 @@
 #include "error_codes.h"
 #include "diag_service_interface.h"
 #include "prov_service_interface.h"
+#include "business_key_provider.h"
 #include "config.h"
 #include "store.h"
 #include "ipc_types.h"
@@ -27,6 +28,7 @@ namespace sec {
 
 class TlsCredentialProvider;
 class CertificateStore;
+class BusinessKeyProvisioningService;
 
 } // namespace sec
 } // namespace tbox
@@ -244,6 +246,14 @@ public:
     // TLS Credential Provider 访问（供 SecApplication 装配 dispatcher 注入）
     TlsCredentialProvider* tls_credential_provider();
 
+    // V2C 业务密钥开通（TBOX-SEC-DSN-CR-019）
+    // 供 SecApplication 装配 dispatcher 注入；未启用时返回 nullptr。
+    BusinessKeyProvisioningService* business_key_provisioning();
+    /// 测试/集成注入当前设备解封装身份（须在 initialize() 前调用）。
+    void set_business_key_binding_provider(BusinessKeyDeviceBindingProvider provider) {
+        business_key_binding_override_ = std::move(provider);
+    }
+
     // TBOX-SEC-DSN-CR-011: 注入事件发布回调（由 SecApplication 接线到 framework-ipc
     // Server::push_event），解耦 TLS 凭据变更通知与 IPC Server 所有权。
     // 在 SecService::initialize 之后、IPC Server 启动之前设置；未设置时变更事件静默丢弃。
@@ -269,6 +279,9 @@ private:
     std::shared_ptr<ProvServiceInterface> prov_service_;
     std::optional<hwyz::store::Store> store_;
     std::unique_ptr<TlsCredentialProvider> tls_provider_;
+    /// TBOX-SEC-DSN-CR-019: V2C 业务密钥开通服务（enabled 时创建）
+    std::unique_ptr<BusinessKeyProvisioningService> business_key_service_;
+    BusinessKeyDeviceBindingProvider business_key_binding_override_;
     /// TBOX-SEC-DSN-CR-014: 跨键原子证书存储（generation + manifest + CURRENT 指针）
     std::unique_ptr<CertificateStore> cert_store_;
     /// TBOX-SEC-DSN-CR-018: 严格证书链解析器 + canonical PEM 规范化器 + 链限制
@@ -298,6 +311,9 @@ private:
     // TLS Credential Provider 初始化（加载 mqtt profile 配置与材料）
     void initializeTlsCredentialProvider();
     void loadTlsProfileConfig();
+
+    // TBOX-SEC-DSN-CR-019: 业务密钥 provider/ledger/service 装配与启动恢复
+    void initializeBusinessKeyProvisioning();
 
     // TBOX-SEC-DSN-CR-014: CA Material Loader
     // 读取 sec.tls.profiles.mqtt.root_ca_source（BUILD 安装的信任根），校验 CA

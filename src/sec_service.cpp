@@ -26,6 +26,10 @@
 #include "certificate_store.h"
 #include "peer_credential.h"
 #include "ipc_protocol.h"
+#include "soft_file_business_key_provider.h"
+#include "hsm_business_key_provider.h"
+#include "secure_metadata_ledger.h"
+#include "business_key_provisioning.h"
 
 namespace tbox {
 namespace sec {
@@ -161,6 +165,9 @@ ErrorCode SecService::initialize() {
     // 初始化 TLS Credential Provider（TBOX-SEC-DSN-CR-010）
     initializeTlsCredentialProvider();
 
+    // TBOX-SEC-DSN-CR-019: V2C 业务密钥开通（enabled 时装配 provider/ledger/service）
+    initializeBusinessKeyProvisioning();
+
     initialized_ = true;
     return ErrorCode::SUCCESS;
 }
@@ -170,6 +177,9 @@ ErrorCode SecService::initialize() {
 
 void SecService::beginShutdown() {
     shutting_down_.store(true, std::memory_order_relaxed);
+    if (business_key_service_) {
+        business_key_service_->beginShutdown();
+    }
     SecLogAdapter::service().info(
         "sec.service.shutdown_begin",
         "SEC service entering shutdown, rejecting new security operations");
@@ -1682,6 +1692,125 @@ ErrorCode SecService::ensure_tls_material_ready(const std::string& profile) {
         return ErrorCode::TLS_CREDENTIAL_NOT_READY;
     }
     return tls_provider_->loadMaterials(profile);
+}
+
+// ============================================================
+// V2C 业务密钥开通（TBOX-SEC-DSN-CR-019）
+// ============================================================
+
+BusinessKeyProvisioningService* SecService::business_key_provisioning() {
+    return business_key_service_.get();
+}
+
+void SecService::initializeBusinessKeyProvisioning() {
+    // 默认关闭；未配置或显式 disabled 时不装配（保持 NOT_READY）。
+    if (!config_.config_snapshot) return;
+    auto snap = config_.config_snapshot;
+    const bool enabled = snap->getBool("sec.business_key_provisioning.enabled", false);
+    if (!enabled) {
+        SecLogAdapter::business_key().info(
+            "sec.business_key.disabled",
+            "业务密钥开通未启用（默认关闭，量产需显式打开）");
+        return;
+    }
+
+    BusinessKeyProvisioningConfig bcfg;
+    bcfg.enabled = true;
+    bcfg.is_production = config_.get_is_production();
+    bcfg.max_items = snap->getInt("sec.business_key_provisioning.max_items", 2);
+    bcfg.max_wrapped_key_bytes = snap->getInt(
+        "sec.business_key_provisioning.max_wrapped_key_bytes", 4096);
+    bcfg.request_timeout_ms = snap->getInt(
+        "sec.business_key_provisioning.request_timeout_ms", 10000);
+    auto domains = snap->getStringList("sec.business_key_provisioning.allowed_domains");
+    if (!domains.empty()) bcfg.allowed_domains = domains;
+    auto purposes = snap->getStringList("sec.business_key_provisioning.required_purposes");
+    if (!purposes.empty()) bcfg.required_purposes = purposes;
+    auto suites = snap->getStringList("sec.business_key_provisioning.allowed_wrapping_suites");
+    if (!suites.empty()) bcfg.allowed_wrapping_suites = suites;
+    for (auto& s : bcfg.allowed_domains) {
+        s.erase(0, s.find_first_not_of(" \t\r\n"));
+        s.erase(s.find_last_not_of(" \t\r\n") + 1);
+    }
+    for (auto& s : bcfg.required_purposes) {
+        s.erase(0, s.find_first_not_of(" \t\r\n"));
+        s.erase(s.find_last_not_of(" \t\r\n") + 1);
+    }
+    for (auto& s : bcfg.allowed_wrapping_suites) {
+        s.erase(0, s.find_first_not_of(" \t\r\n"));
+        s.erase(s.find_last_not_of(" \t\r\n") + 1);
+    }
+
+    // 设备解封装身份：默认从当前设备证书 + HSM key_id 解析；测试可 override。
+    BusinessKeyDeviceBindingProvider binding =
+        business_key_binding_override_ ? business_key_binding_override_
+        : [this]() -> BusinessKeyDeviceBinding {
+              BusinessKeyDeviceBinding b;
+              if (ecu_uid_.empty() || !key_engine_ || !key_engine_->hsm()) return b;
+              std::string key_id = ecu_uid_ + "+" + ecu_uid_;
+              std::vector<uint8_t> pub;
+              if (key_engine_->hsm()->export_public_key(key_id, pub) != ErrorCode::SUCCESS) {
+                  return b;
+              }
+              if (!cert_store_ || cert_store_->currentDeviceCertChain().empty()) {
+                  return b;
+              }
+              b.ready = true;
+              b.device_identity = ecu_uid_;
+              b.device_key_id = key_id;
+              b.device_public_key = std::move(pub);
+              return b;
+          };
+
+    // provider 选择：production 使用硬件 provider（能力未就绪那么 NOT_READY）；
+    // 非生产显式启用使用 SoftFile provider（仅测试/开发闭环）。
+    std::unique_ptr<BusinessKeyProvider> provider;
+    std::string store_root = config_.get_store_root();
+    if (!bcfg.is_production) {
+        BusinessKeyProviderConfig pcfg;
+        pcfg.store_root = store_root + "/business_keys";
+        pcfg.kek_path = store_root + "/business_keys/.business_key_kek";
+        pcfg.allowed_algorithms = {"AES-256-GCM", "AES-128-GCM"};
+        pcfg.allowed_wrapping_suites = bcfg.allowed_wrapping_suites;
+        pcfg.max_wrapped_key_bytes = bcfg.max_wrapped_key_bytes;
+        provider = std::make_unique<SoftFileBusinessKeyProvider>(
+            key_engine_ ? key_engine_->hsm() : nullptr, std::move(pcfg), binding);
+    } else {
+        provider = std::make_unique<HsmBusinessKeyProvider>();
+    }
+
+    // ledger store（非权威元数据）；使用同一 store root、独立 service 命名空间。
+    std::unique_ptr<SecureMetadataLedger> ledger;
+    try {
+        ledger = std::make_unique<SecureMetadataLedger>(
+            hwyz::store::Store::open("sec", store_root));
+    } catch (const std::exception& e) {
+        SecLogAdapter::business_key().error(
+            "sec.business_key.ledger_open_failed",
+            "业务密钥 ledger store 打开失败",
+            {tbox::fw::log::Field("reason",
+                tbox::fw::log::FieldValue::makeString(e.what()))});
+        return;
+    }
+
+    business_key_service_ = std::make_unique<BusinessKeyProvisioningService>(
+        std::move(bcfg), std::move(provider), trusted_time_provider_,
+        std::move(ledger), binding);
+    ErrorCode rc = business_key_service_->initialize();
+    if (rc != ErrorCode::SUCCESS) {
+        SecLogAdapter::business_key().error(
+            "sec.business_key.init_failed",
+            "业务密钥开通服务初始化失败",
+            {tbox::fw::log::Field("error_code",
+                tbox::fw::log::FieldValue::makeString(error_code_to_string(rc)))});
+        business_key_service_.reset();
+        return;
+    }
+    SecLogAdapter::business_key().info(
+        "sec.business_key.initialized",
+        "业务密钥开通服务已装配",
+        {tbox::fw::log::Field("ready",
+            tbox::fw::log::FieldValue::makeInt(business_key_service_->isReady() ? 1 : 0))});
 }
 
 } // namespace sec

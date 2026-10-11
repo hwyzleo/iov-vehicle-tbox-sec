@@ -85,6 +85,10 @@ set(LIB_SOURCES
     src/peer_credential.cpp
     src/ipc_prov_service.cpp
     src/sec_application.cpp
+    src/business_key_types.cpp
+    src/soft_file_business_key_provider.cpp
+    src/secure_metadata_ledger.cpp
+    src/business_key_provisioning.cpp
 )
 
 add_library(TboxSecLib STATIC ${LIB_SOURCES})
@@ -113,6 +117,7 @@ set(CLIENT_SOURCES
     src/sec_client.cpp
     src/sec_retry_policy.cpp
     src/error_codes.cpp
+    src/business_key_types.cpp
 )
 
 add_library(tbox_sec_client STATIC ${CLIENT_SOURCES})
@@ -272,6 +277,9 @@ if(GTest_FOUND)
         tests/test_certificate_chain_parser.cpp
         tests/test_sec_application.cpp
         tests/test_sec_config_checker.cpp
+        tests/test_business_key_provisioning.cpp
+        tests/test_business_key_ipc_handlers.cpp
+        tests/test_business_key_integration.cpp
     )
     add_executable(TboxSecTests ${TEST_SOURCES})
     target_link_libraries(TboxSecTests PRIVATE TboxSecLib tbox_sec_client GTest::GTest GTest::gmock GTest::Main)
