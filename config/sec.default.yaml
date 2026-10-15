@@ -52,7 +52,7 @@ sec:
   # provider、设备解封装身份、secure journal 与安全元数据全部就绪时由 platform
   # overlay 显式打开。字段均为治理项，不含密钥/版本/算法实例值。
   business_key_provisioning:
-    enabled: false
+    enabled: true
     allowed_domains:
       - V2C_COMM
     required_purposes:
