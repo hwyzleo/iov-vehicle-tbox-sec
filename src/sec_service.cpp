@@ -28,6 +28,7 @@
 #include "ipc_protocol.h"
 #include "soft_file_business_key_provider.h"
 #include "hsm_business_key_provider.h"
+#include "device_key_agreement.h"
 #include "secure_metadata_ledger.h"
 #include "business_key_provisioning.h"
 
@@ -1728,6 +1729,11 @@ void SecService::initializeBusinessKeyProvisioning() {
     if (!purposes.empty()) bcfg.required_purposes = purposes;
     auto suites = snap->getStringList("sec.business_key_provisioning.allowed_wrapping_suites");
     if (!suites.empty()) bcfg.allowed_wrapping_suites = suites;
+    auto algos = snap->getStringList("sec.business_key_provisioning.allowed_algorithms");
+    if (!algos.empty()) bcfg.allowed_algorithms = algos;
+    auto formats =
+        snap->getStringList("sec.business_key_provisioning.allowed_envelope_formats");
+    if (!formats.empty()) bcfg.allowed_envelope_formats = formats;
     for (auto& s : bcfg.allowed_domains) {
         s.erase(0, s.find_first_not_of(" \t\r\n"));
         s.erase(s.find_last_not_of(" \t\r\n") + 1);
@@ -1737,6 +1743,14 @@ void SecService::initializeBusinessKeyProvisioning() {
         s.erase(s.find_last_not_of(" \t\r\n") + 1);
     }
     for (auto& s : bcfg.allowed_wrapping_suites) {
+        s.erase(0, s.find_first_not_of(" \t\r\n"));
+        s.erase(s.find_last_not_of(" \t\r\n") + 1);
+    }
+    for (auto& s : bcfg.allowed_algorithms) {
+        s.erase(0, s.find_first_not_of(" \t\r\n"));
+        s.erase(s.find_last_not_of(" \t\r\n") + 1);
+    }
+    for (auto& s : bcfg.allowed_envelope_formats) {
         s.erase(0, s.find_first_not_of(" \t\r\n"));
         s.erase(s.find_last_not_of(" \t\r\n") + 1);
     }
@@ -1759,6 +1773,12 @@ void SecService::initializeBusinessKeyProvisioning() {
               b.device_identity = ecu_uid_;
               b.device_key_id = key_id;
               b.device_public_key = std::move(pub);
+              DeviceKeyAgreementAdapter adapter(cert_store_.get(), key_engine_->hsm(), key_id);
+              auto cap = adapter.probe();
+              b.active_cert_p256 = cap.p256;
+              b.active_cert_key_agreement = cap.key_agreement;
+              b.private_key_can_derive = cap.private_key_can_derive;
+              b.active_cert_digest = cap.certificate_digest;
               return b;
           };
 
@@ -1770,7 +1790,7 @@ void SecService::initializeBusinessKeyProvisioning() {
         BusinessKeyProviderConfig pcfg;
         pcfg.store_root = store_root + "/business_keys";
         pcfg.kek_path = store_root + "/business_keys/.business_key_kek";
-        pcfg.allowed_algorithms = {"AES-256-GCM", "AES-128-GCM"};
+        pcfg.allowed_algorithms = {"AES-256"};
         pcfg.allowed_wrapping_suites = bcfg.allowed_wrapping_suites;
         pcfg.max_wrapped_key_bytes = bcfg.max_wrapped_key_bytes;
         provider = std::make_unique<SoftFileBusinessKeyProvider>(

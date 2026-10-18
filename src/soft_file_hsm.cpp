@@ -349,6 +349,121 @@ ErrorCode SoftFileHsm::unwrap_ecdh_es(const std::string& recipient_key_id,
     return ErrorCode::SUCCESS;
 }
 
+ErrorCode SoftFileHsm::unwrap_ecdh_es_v1(
+    const std::string& recipient_key_id,
+    const std::vector<uint8_t>& server_ephemeral_public_key,
+    const std::vector<uint8_t>& hkdf_salt,
+    const std::vector<uint8_t>& hkdf_info,
+    const std::vector<uint8_t>& nonce,
+    const std::vector<uint8_t>& ciphertext,
+    const std::vector<uint8_t>& authentication_tag,
+    const std::vector<uint8_t>& aad,
+    std::vector<uint8_t>& plaintext) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!is_valid_key_id(recipient_key_id)) return ErrorCode::INVALID_PARAMETER;
+    if (server_ephemeral_public_key.size() != 65 ||
+        nonce.size() != AES_GCM_IV_SIZE ||
+        authentication_tag.size() != AES_GCM_TAG_SIZE ||
+        hkdf_salt.size() != 32) {
+        return ErrorCode::WRAPPED_KEY_INVALID;
+    }
+
+    auto it = keys_.find(recipient_key_id);
+    if (it == keys_.end()) {
+        KeyData kd;
+        auto rc = load_key_from_store(recipient_key_id, kd);
+        if (rc != ErrorCode::SUCCESS) return rc;
+        keys_[recipient_key_id] = std::move(kd);
+        it = keys_.find(recipient_key_id);
+    }
+
+    const EC_GROUP* group = nullptr;
+    EC_KEY* ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (!ec) return ErrorCode::WRAPPED_KEY_INVALID;
+    group = EC_KEY_get0_group(ec);
+
+    EC_POINT* pub_pt = EC_POINT_new(group);
+    if (!pub_pt || EC_POINT_oct2point(group, pub_pt, it->second.pub.data(),
+                                      it->second.pub.size(), nullptr) != 1) {
+        if (pub_pt) EC_POINT_free(pub_pt);
+        EC_KEY_free(ec);
+        return ErrorCode::WRAPPED_KEY_INVALID;
+    }
+    EC_KEY_set_public_key(ec, pub_pt);
+    EC_POINT_free(pub_pt);
+
+    BIGNUM* priv_bn = BN_bin2bn(it->second.priv.data(),
+                                static_cast<int>(it->second.priv.size()), nullptr);
+    if (!priv_bn) { EC_KEY_free(ec); return ErrorCode::WRAPPED_KEY_INVALID; }
+    EC_KEY_set_private_key(ec, priv_bn);
+    BN_free(priv_bn);
+
+    EC_POINT* eph_pt = EC_POINT_new(group);
+    if (!eph_pt || EC_POINT_oct2point(group, eph_pt, server_ephemeral_public_key.data(),
+                                      server_ephemeral_public_key.size(), nullptr) != 1 ||
+        EC_POINT_is_at_infinity(group, eph_pt) ||
+        EC_POINT_is_on_curve(group, eph_pt, nullptr) != 1) {
+        if (eph_pt) EC_POINT_free(eph_pt);
+        EC_KEY_free(ec);
+        return ErrorCode::WRAPPED_KEY_INVALID;
+    }
+
+    std::vector<uint8_t> shared(ENCRYPTION_KEY_SIZE);
+    int shared_len = ECDH_compute_key(shared.data(), shared.size(), eph_pt, ec, nullptr);
+    EC_POINT_free(eph_pt);
+    EC_KEY_free(ec);
+    if (shared_len <= 0) {
+        secure_zero(shared);
+        return ErrorCode::WRAPPED_KEY_INVALID;
+    }
+    shared.resize(static_cast<size_t>(shared_len));
+
+    // KEK = HKDF-SHA256(ikm = Z, salt = hkdf_salt, info = hkdf_info, L = 32)
+    uint8_t kek[ENCRYPTION_KEY_SIZE];
+    hkdf_sha256(shared, hkdf_salt, hkdf_info, kek, sizeof(kek));
+    secure_zero(shared);
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) { OPENSSL_cleanse(kek, sizeof(kek)); return ErrorCode::INTERNAL_ERROR; }
+
+    bool ok = true;
+    int out_len = 0, total = 0;
+    plaintext.assign(ciphertext.size(), 0);
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1) ok = false;
+    if (ok && EVP_DecryptInit_ex(ctx, nullptr, nullptr, kek, nonce.data()) != 1) ok = false;
+    if (ok && !aad.empty() &&
+        EVP_DecryptUpdate(ctx, nullptr, &out_len, aad.data(), static_cast<int>(aad.size())) != 1)
+        ok = false;
+    if (ok && !ciphertext.empty() &&
+        EVP_DecryptUpdate(ctx, plaintext.data(), &out_len, ciphertext.data(),
+                          static_cast<int>(ciphertext.size())) != 1)
+        ok = false;
+    total = out_len;
+    if (ok && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, AES_GCM_TAG_SIZE,
+                                  const_cast<uint8_t*>(authentication_tag.data())) != 1)
+        ok = false;
+    if (ok && EVP_DecryptFinal_ex(ctx, plaintext.data() + total, &out_len) != 1) ok = false;
+    total += out_len;
+    EVP_CIPHER_CTX_free(ctx);
+    OPENSSL_cleanse(kek, sizeof(kek));
+
+    if (!ok) {
+        secure_zero(plaintext);
+        return ErrorCode::WRAPPED_KEY_INVALID;
+    }
+    plaintext.resize(static_cast<size_t>(total));
+    return ErrorCode::SUCCESS;
+}
+
+bool SoftFileHsm::supports_ecdh_derive(const std::string& key_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!is_valid_key_id(key_id)) return false;
+    if (keys_.find(key_id) != keys_.end()) return true;
+    KeyData kd;
+    return load_key_from_store(key_id, kd) == ErrorCode::SUCCESS;
+}
+
 ErrorCode SoftFileHsm::verify(const std::string& key_id,
                               const std::vector<uint8_t>& data,
                               const std::vector<uint8_t>& signature,

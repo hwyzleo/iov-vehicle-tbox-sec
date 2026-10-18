@@ -80,7 +80,8 @@ const std::set<std::string> kTrustedTimeRtcKeys = {"enabled", "require_provision
 // TBOX-SEC-DSN-CR-019: V2C 业务密钥开通治理项（非秘密）
 const std::set<std::string> kBusinessKeyProvKeys = {
     "enabled", "allowed_domains", "required_purposes",
-    "allowed_wrapping_suites", "max_items", "max_wrapped_key_bytes",
+    "allowed_envelope_formats", "allowed_wrapping_suites", "allowed_algorithms",
+    "max_items", "max_wrapped_key_bytes",
     "request_timeout_ms", "peer_service"};
 const std::set<std::string> kTlsProfileKeys = {
     "credential_id", "key_usage", "allowed_signature_algorithms",

@@ -1,0 +1,62 @@
+// =============================================================================
+// TBOX-SEC 受控副本：security.keyprov.v1 key provisioning（SEC 消费子集）
+//
+// 锁版元信息（TBOX-SEC-DSN-CR-020 §14 / PAR-PROTO-DSN-CR-007）：
+//   PAR-PROTO release : PAR-PROTO-DSN-CR-007 (2026-10-18)
+//   source            : security/keyprov/v1/key_provisioning.proto
+//   generator         : protoc (libprotoc) 35.1
+//   descriptor sha256 : 由 test_keyprov_proto_lock.cpp 计算并断言（见该文件常量）
+//
+// 约束：
+//   - 本文件是 PAR-PROTO 已发布定义的受控同步副本，禁止本地重编号已发布字段；
+//   - TBOX-SEC 只解析 EcdhEsP256EnvelopeParametersV1（确定性子消息）与相关枚举；
+//   - 禁止手写字段 1~12 的 Protobuf wire codec，必须使用本文件生成的代码。
+//
+// 待交叉确认（open item，见 specs/v2c-ecdh-es-keyprov/design.md §13）：
+//   KeyPurpose / WrappingSuite 的具体数值来自 PAR-PROTO CR-006，本仓尚未取得
+//   CR-006 原文，暂按 1 基自然序冻结，待 PAR-PROTO 原文对齐后修正并更新锁版。
+// =============================================================================
+
+syntax = "proto3";
+
+package security.keyprov.v1;
+
+option java_multiple_files = true;
+option java_package = "net.hwyz.iov.security.keyprov.v1";
+
+// 信封格式（PAR-PROTO-DSN-CR-007 §3）。
+enum KeyEnvelopeFormat {
+  KEY_ENVELOPE_FORMAT_UNSPECIFIED = 0;
+  KEY_ENVELOPE_FORMAT_ECDH_ES_P256_V1 = 1;
+}
+
+// 封装套件（CR-006 定义；数值待 PAR-PROTO 原文对齐）。
+enum WrappingSuite {
+  WRAPPING_SUITE_UNSPECIFIED = 0;
+  WRAPPING_SUITE_ECDH_ES_P256_HKDF_SHA256_AES256GCM = 1;
+}
+
+// 业务密钥用途（CR-006 定义；数值待 PAR-PROTO 原文对齐）。
+enum KeyPurpose {
+  KEY_PURPOSE_UNSPECIFIED = 0;
+  KEY_PURPOSE_UPLINK_AEAD = 1;
+  KEY_PURPOSE_DOWNLINK_AEAD = 2;
+}
+
+// ECDH-ES P-256 v1 信封参数（PAR-PROTO-DSN-CR-007 §3；字段号/类型已冻结）。
+//
+// `parameters` wire type 保持 bytes，内容为本消息的 deterministic serialization。
+message EcdhEsP256EnvelopeParametersV1 {
+  uint32 format_version = 1;                 // MUST equal 1
+  bytes server_ephemeral_public_key = 2;     // P-256 SEC1 uncompressed, 65 bytes
+  bytes hkdf_salt = 3;                       // 32 bytes
+  string hkdf_context_version = 4;           // "v1"
+  bytes nonce = 5;                           // AES-GCM nonce, 12 bytes
+  bytes authentication_tag = 6;              // 16 bytes
+  bytes canonical_aad = 7;                   // FW-SEC EnvelopeAadV1 canonical bytes
+  bytes aad_digest = 8;                      // SHA-256(canonical_aad), 32 bytes
+  uint64 root_key_version = 9;
+  string derivation_version = 10;
+  bytes recipient_certificate_digest = 11;   // SHA-256 policy digest, 32 bytes
+  string operation_id = 12;
+}

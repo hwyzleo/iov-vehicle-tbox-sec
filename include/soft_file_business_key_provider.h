@@ -3,7 +3,7 @@
 //
 // SoftFile V2C 业务密钥 provider（TBOX-SEC-DSN-CR-019 §4/§5/§7/§8）。
 //
-// 仅允许显式非生产 profile 使用：提供件内 unwrap（ECDH-ES + AES-256-GCM）、
+// 仅允许显式非生产 profile 使用：提供件内 unwrap（ECDH-ES P-256 v1 + AES-256-GCM）、
 // staging/commit 双槽批次事务、掉电安全 journal、持钥证明。密钥明文在主机内存
 // 中只短暂存在并立即清零；at-rest 密钥材料以 KEK 派生的 AEAD 加密后持久化。
 //
@@ -14,6 +14,7 @@
 #include "business_key_provider.h"
 #include "hsm_interface.h"
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <string>
@@ -47,12 +48,16 @@ public:
     ErrorCode initialize() override;
     bool isReady() const override;
     std::string providerVersionDigest() const override;
+    BusinessKeyProviderCapability capability() const override;
 
     ErrorCode unwrapToStaging(const std::string& domain,
                               const WrappedKeyItem& item,
-                              const std::vector<uint8_t>& aad,
+                              const EcdhEsP256EnvelopeParameters& params,
+                              const std::vector<uint8_t>& canonical_aad,
+                              const std::vector<uint8_t>& hkdf_info,
                               const BusinessKeyDeviceBinding& binding,
-                              uint64_t generation) override;
+                              uint64_t generation,
+                              std::array<uint8_t, 3>& actual_kcv) override;
 
     ErrorCode verifyStaging(const std::string& domain,
                             const std::string& purpose) override;
@@ -69,7 +74,9 @@ public:
                             const std::string& purpose,
                             uint64_t business_key_version,
                             const std::string& request_id,
-                            const std::string& key_id_digest,
+                            const std::string& key_id,
+                            const std::vector<uint8_t>& envelope_digest,
+                            const std::vector<uint8_t>& key_check_value,
                             std::vector<uint8_t>& proof,
                             std::string& algorithm) override;
 
@@ -78,17 +85,6 @@ public:
     ErrorCode saveJournal(const BusinessKeyJournalEntry& entry) override;
     std::vector<BusinessKeyJournalEntry> listJournal() override;
     bool hasPendingStaging() const override;
-
-    /// 测试支持：使用给定设备公钥执行 ECDH-ES + AES-256-GCM 封装。
-    /// 返回 wrapped_key（ct||tag）、parameters（JSON：suite/eph/iv/aad_digest）。
-    static ErrorCode wrapForTest(const std::vector<uint8_t>& device_public_key,
-                                 const std::string& suite,
-                                 const std::vector<uint8_t>& aad,
-                                 const std::vector<uint8_t>& business_key,
-                                 std::vector<uint8_t>& wrapped_key_out,
-                                 std::string& parameters_json_out);
-
-    static constexpr const char* kSuiteEciesEcdhEsA256Gcm = "ECIES-ECDH-ES-A256GCM-v1";
 
 private:
     class Impl;

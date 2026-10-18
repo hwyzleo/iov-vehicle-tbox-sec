@@ -102,5 +102,51 @@ BusinessKeyImportState string_to_business_key_import_state(const std::string& s)
     return BusinessKeyImportState::UNKNOWN;
 }
 
+std::string key_envelope_format_to_string(KeyEnvelopeFormat f) {
+    switch (f) {
+        case KeyEnvelopeFormat::UNSPECIFIED: return "UNSPECIFIED";
+        case KeyEnvelopeFormat::ECDH_ES_P256_V1: return kKeyEnvelopeFormatEcdhEsP256V1;
+    }
+    return "UNSPECIFIED";
+}
+
+KeyEnvelopeFormat string_to_key_envelope_format(const std::string& s) {
+    if (s == kKeyEnvelopeFormatEcdhEsP256V1) return KeyEnvelopeFormat::ECDH_ES_P256_V1;
+    return KeyEnvelopeFormat::UNSPECIFIED;
+}
+
+std::string business_key_import_phase_to_string(BusinessKeyImportPhase p) {
+    switch (p) {
+        case BusinessKeyImportPhase::NEW: return "NEW";
+        case BusinessKeyImportPhase::VALIDATED: return "VALIDATED";
+        case BusinessKeyImportPhase::PROCESSING: return "PROCESSING";
+        case BusinessKeyImportPhase::UPLINK_STAGED: return "UPLINK_STAGED";
+        case BusinessKeyImportPhase::BOTH_STAGED: return "BOTH_STAGED";
+        case BusinessKeyImportPhase::COMMITTING: return "COMMITTING";
+        case BusinessKeyImportPhase::SUCCEEDED: return "SUCCEEDED";
+        case BusinessKeyImportPhase::ROLLING_BACK: return "ROLLING_BACK";
+        case BusinessKeyImportPhase::FAILED: return "FAILED";
+        case BusinessKeyImportPhase::OUTCOME_UNKNOWN: return "OUTCOME_UNKNOWN";
+        case BusinessKeyImportPhase::RECOVERING: return "RECOVERING";
+        case BusinessKeyImportPhase::UNKNOWN: return "UNKNOWN";
+    }
+    return "UNKNOWN";
+}
+
+BusinessKeyImportPhase string_to_business_key_import_phase(const std::string& s) {
+    if (s == "NEW") return BusinessKeyImportPhase::NEW;
+    if (s == "VALIDATED") return BusinessKeyImportPhase::VALIDATED;
+    if (s == "PROCESSING") return BusinessKeyImportPhase::PROCESSING;
+    if (s == "UPLINK_STAGED") return BusinessKeyImportPhase::UPLINK_STAGED;
+    if (s == "BOTH_STAGED") return BusinessKeyImportPhase::BOTH_STAGED;
+    if (s == "COMMITTING") return BusinessKeyImportPhase::COMMITTING;
+    if (s == "SUCCEEDED") return BusinessKeyImportPhase::SUCCEEDED;
+    if (s == "ROLLING_BACK") return BusinessKeyImportPhase::ROLLING_BACK;
+    if (s == "FAILED") return BusinessKeyImportPhase::FAILED;
+    if (s == "OUTCOME_UNKNOWN") return BusinessKeyImportPhase::OUTCOME_UNKNOWN;
+    if (s == "RECOVERING") return BusinessKeyImportPhase::RECOVERING;
+    return BusinessKeyImportPhase::UNKNOWN;
+}
+
 } // namespace sec
 } // namespace tbox

@@ -39,6 +39,18 @@ public:
                              const std::vector<uint8_t>& aad,
                              std::vector<uint8_t>& plaintext) override;
 
+    ErrorCode unwrap_ecdh_es_v1(const std::string& recipient_key_id,
+                                 const std::vector<uint8_t>& server_ephemeral_public_key,
+                                 const std::vector<uint8_t>& hkdf_salt,
+                                 const std::vector<uint8_t>& hkdf_info,
+                                 const std::vector<uint8_t>& nonce,
+                                 const std::vector<uint8_t>& ciphertext,
+                                 const std::vector<uint8_t>& authentication_tag,
+                                 const std::vector<uint8_t>& aad,
+                                 std::vector<uint8_t>& plaintext) override;
+
+    bool supports_ecdh_derive(const std::string& key_id) override;
+
     ErrorCode verify(const std::string& key_id,
                      const std::vector<uint8_t>& data,
                      const std::vector<uint8_t>& signature,

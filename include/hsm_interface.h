@@ -53,6 +53,9 @@ public:
 
     /// ECIES / ECDH-ES + AES-256-GCM 解封装（TBOX-SEC-DSN-CR-019 §4）。
     ///
+    /// @deprecated TBOX-SEC-DSN-CR-020：以 `unwrap_ecdh_es_v1` 取代（salt/info 与
+    /// tag 语义更严格）。数值/接口保留以兼容旧调用点。
+    ///
     /// 使用 recipient_key_id 对应的 EC 私钥与 ephemeral_public_key 执行 ECDH，
     /// 经 HKDF-SHA256（info = aad）派生 KEK，再以 AES-256-GCM 解密
     /// ciphertext_and_tag（tag 16B 追加于密文后）。明文仅短暂存在于 HSM 内部，
@@ -71,6 +74,42 @@ public:
         (void)aad;
         (void)plaintext;
         return ErrorCode::NOT_IMPLEMENTED;
+    }
+
+    /// ECDH-ES P-256 v1 解封原语（TBOX-SEC-DSN-CR-020 §8）。
+    ///
+    ///   Z     = ECDH(recipient_key_id, server_ephemeral_public_key)
+    ///   KEK   = HKDF-SHA256(ikm = Z, salt = hkdf_salt, info = hkdf_info, L = 32)
+    ///   plain = AES-256-GCM-Decrypt(KEK, nonce, ciphertext, authentication_tag, AAD)
+    ///
+    /// ciphertext 与 authentication_tag 分离；明文仅短暂存在于 HSM 内部，
+    /// 由调用方立即使用并清零。默认返回 NOT_IMPLEMENTED（真实 HSM 由设备集成实现）。
+    virtual ErrorCode unwrap_ecdh_es_v1(const std::string& recipient_key_id,
+                                        const std::vector<uint8_t>& server_ephemeral_public_key,
+                                        const std::vector<uint8_t>& hkdf_salt,
+                                        const std::vector<uint8_t>& hkdf_info,
+                                        const std::vector<uint8_t>& nonce,
+                                        const std::vector<uint8_t>& ciphertext,
+                                        const std::vector<uint8_t>& authentication_tag,
+                                        const std::vector<uint8_t>& aad,
+                                        std::vector<uint8_t>& plaintext) {
+        (void)recipient_key_id;
+        (void)server_ephemeral_public_key;
+        (void)hkdf_salt;
+        (void)hkdf_info;
+        (void)nonce;
+        (void)ciphertext;
+        (void)authentication_tag;
+        (void)aad;
+        (void)plaintext;
+        return ErrorCode::NOT_IMPLEMENTED;
+    }
+
+    /// 指定私钥是否具备 P-256 ECDH derive 能力（US-016 / readiness）。
+    /// 默认 false（fail-closed）；真实 HSM 由设备集成实现。
+    virtual bool supports_ecdh_derive(const std::string& key_id) {
+        (void)key_id;
+        return false;
     }
 
     virtual ErrorCode verify(const std::string& key_id,

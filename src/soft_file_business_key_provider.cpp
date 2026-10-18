@@ -1,18 +1,20 @@
 //
-// SoftFile V2C 业务密钥 provider 实现（TBOX-SEC-DSN-CR-019）。
+// SoftFile V2C 业务密钥 provider 实现（TBOX-SEC-DSN-CR-019；CR-020 §7/§8/§11）。
 //
 #include "soft_file_business_key_provider.h"
+
+#include "business_key_envelope.h"
+#include "canonical_encoding.h"
 #include "sec_log_adapter.h"
 #include "store.h"
 
+#include <openssl/crypto.h>
 #include <openssl/ec.h>
 #include <openssl/evp.h>
-#include <openssl/obj_mac.h>
-#include <openssl/bn.h>
-#include <openssl/sha.h>
-#include <openssl/rand.h>
 #include <openssl/hmac.h>
-#include <openssl/crypto.h>
+#include <openssl/obj_mac.h>
+#include <openssl/rand.h>
+#include <openssl/sha.h>
 
 #include <nlohmann/json.hpp>
 
@@ -78,33 +80,25 @@ void zero(std::vector<uint8_t>& v) {
     v.clear();
 }
 
-std::vector<uint8_t> sha256(const std::vector<uint8_t>& data) {
-    std::vector<uint8_t> d(SHA256_DIGEST_LENGTH);
-    SHA256(data.data(), data.size(), d.data());
-    return d;
-}
-
 std::vector<uint8_t> hmac_sha256(const std::vector<uint8_t>& key,
                                  const std::vector<uint8_t>& msg) {
     std::vector<uint8_t> mac(SHA256_DIGEST_LENGTH);
     unsigned int n = 0;
-    HMAC(EVP_sha256(), key.data(), static_cast<int>(key.size()),
-         msg.data(), msg.size(), mac.data(), &n);
+    HMAC(EVP_sha256(), key.data(), static_cast<int>(key.size()), msg.data(), msg.size(),
+         mac.data(), &n);
     mac.resize(n);
     return mac;
 }
 
-void hkdf_sha256(const std::vector<uint8_t>& ikm,
-                 const std::vector<uint8_t>& salt,
-                 const std::vector<uint8_t>& info,
-                 uint8_t* out, size_t out_len) {
+void hkdf_sha256(const std::vector<uint8_t>& ikm, const std::vector<uint8_t>& salt,
+                 const std::vector<uint8_t>& info, uint8_t* out, size_t out_len) {
     uint8_t prk[SHA256_DIGEST_LENGTH];
     unsigned int prk_len = 0;
     const uint8_t zeros[SHA256_DIGEST_LENGTH] = {0};
     const uint8_t* salt_ptr = salt.empty() ? zeros : salt.data();
     size_t salt_len = salt.empty() ? SHA256_DIGEST_LENGTH : salt.size();
-    HMAC(EVP_sha256(), salt_ptr, static_cast<int>(salt_len),
-         ikm.data(), ikm.size(), prk, &prk_len);
+    HMAC(EVP_sha256(), salt_ptr, static_cast<int>(salt_len), ikm.data(), ikm.size(), prk,
+         &prk_len);
 
     std::vector<uint8_t> t;
     size_t pos = 0;
@@ -126,10 +120,9 @@ void hkdf_sha256(const std::vector<uint8_t>& ikm,
     OPENSSL_cleanse(prk, sizeof(prk));
 }
 
-bool aes_gcm_encrypt(const std::vector<uint8_t>& key,
-                     const std::vector<uint8_t>& aad,
-                     const std::vector<uint8_t>& plain,
-                     std::vector<uint8_t>& out_iv_ct_tag) {
+// AES-256-GCM：仅用于 at-rest slot 加密（IV 前置、tag 后置）。
+bool aes_gcm_encrypt(const std::vector<uint8_t>& key, const std::vector<uint8_t>& aad,
+                     const std::vector<uint8_t>& plain, std::vector<uint8_t>& out_iv_ct_tag) {
     std::vector<uint8_t> iv(kAesGcmIv);
     if (RAND_bytes(iv.data(), kAesGcmIv) != 1) return false;
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
@@ -143,13 +136,15 @@ bool aes_gcm_encrypt(const std::vector<uint8_t>& key,
         EVP_EncryptUpdate(ctx, nullptr, &out_len, aad.data(), static_cast<int>(aad.size())) != 1)
         ok = false;
     if (ok && !plain.empty() &&
-        EVP_EncryptUpdate(ctx, ct.data(), &out_len, plain.data(), static_cast<int>(plain.size())) != 1)
+        EVP_EncryptUpdate(ctx, ct.data(), &out_len, plain.data(), static_cast<int>(plain.size())) !=
+            1)
         ok = false;
     total = out_len;
     if (ok && EVP_EncryptFinal_ex(ctx, ct.data() + total, &out_len) != 1) ok = false;
     total += out_len;
     std::vector<uint8_t> tag(kAesGcmTag);
-    if (ok && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, kAesGcmTag, tag.data()) != 1) ok = false;
+    if (ok && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, kAesGcmTag, tag.data()) != 1)
+        ok = false;
     EVP_CIPHER_CTX_free(ctx);
     if (!ok) return false;
     out_iv_ct_tag.clear();
@@ -159,10 +154,8 @@ bool aes_gcm_encrypt(const std::vector<uint8_t>& key,
     return true;
 }
 
-bool aes_gcm_decrypt(const std::vector<uint8_t>& key,
-                     const std::vector<uint8_t>& aad,
-                     const std::vector<uint8_t>& iv_ct_tag,
-                     std::vector<uint8_t>& plain) {
+bool aes_gcm_decrypt(const std::vector<uint8_t>& key, const std::vector<uint8_t>& aad,
+                     const std::vector<uint8_t>& iv_ct_tag, std::vector<uint8_t>& plain) {
     if (iv_ct_tag.size() < kAesGcmIv + kAesGcmTag) return false;
     const uint8_t* iv = iv_ct_tag.data();
     const uint8_t* ct = iv_ct_tag.data() + kAesGcmIv;
@@ -178,11 +171,12 @@ bool aes_gcm_decrypt(const std::vector<uint8_t>& key,
     if (ok && !aad.empty() &&
         EVP_DecryptUpdate(ctx, nullptr, &out_len, aad.data(), static_cast<int>(aad.size())) != 1)
         ok = false;
-    if (ok && ct_len > 0 &&
-        EVP_DecryptUpdate(ctx, plain.data(), &out_len, ct, ct_len) != 1) ok = false;
+    if (ok && ct_len > 0 && EVP_DecryptUpdate(ctx, plain.data(), &out_len, ct, ct_len) != 1)
+        ok = false;
     total = out_len;
     if (ok && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, kAesGcmTag,
-                                  const_cast<uint8_t*>(tag)) != 1) ok = false;
+                                  const_cast<uint8_t*>(tag)) != 1)
+        ok = false;
     if (ok && EVP_DecryptFinal_ex(ctx, plain.data() + total, &out_len) != 1) ok = false;
     total += out_len;
     EVP_CIPHER_CTX_free(ctx);
@@ -195,6 +189,7 @@ bool aes_gcm_decrypt(const std::vector<uint8_t>& key,
 }
 
 size_t algorithm_key_size(const std::string& alg) {
+    if (alg == kDefaultKeyAlgorithm) return 32;
     if (alg == "AES-256-GCM") return 32;
     if (alg == "AES-128-GCM") return 16;
     return 0;
@@ -247,12 +242,9 @@ public:
 
     std::string slot_aad(const std::string& domain, const std::string& purpose,
                          const Slot& s) const {
-        std::string a = "openiov|slot|" + domain + "|" + purpose + "|" +
-                        std::to_string(s.version) + "|" + std::to_string(s.generation);
-        return a;
+        return "openiov|slot|" + domain + "|" + purpose + "|" + std::to_string(s.version) + "|" +
+               std::to_string(s.generation);
     }
-
-    std::vector<uint8_t> mac_key_bytes() const { return mac_key; }
 
     std::string compute_commit_marker() const {
         std::string canon = "commit|" + std::to_string(generation);
@@ -261,15 +253,14 @@ public:
         std::sort(purposes.begin(), purposes.end());
         for (auto& p : purposes) {
             const Slot& s = active.at(p);
-            canon += "|" + p + ":" + std::to_string(s.version) + ":" + s.key_id_digest +
-                     ":" + s.algorithm + ":" + std::to_string(s.generation);
+            canon += "|" + p + ":" + std::to_string(s.version) + ":" + s.key_id_digest + ":" +
+                     s.algorithm + ":" + std::to_string(s.generation);
         }
         std::vector<uint8_t> msg(canon.begin(), canon.end());
         return to_hex(hmac_sha256(mac_key, msg));
     }
 
-    json slot_to_json(const std::string& domain, const std::string& purpose,
-                      const Slot& s) const {
+    json slot_to_json(const Slot& s) const {
         json j;
         j["present"] = s.present;
         j["version"] = s.version;
@@ -282,10 +273,7 @@ public:
         return j;
     }
 
-    Slot slot_from_json(const std::string& domain, const std::string& purpose,
-                        const json& j) const {
-        (void)domain;
-        (void)purpose;
+    Slot slot_from_json(const json& j) const {
         Slot s;
         s.present = j.value("present", false);
         s.version = j.value("version", 0ULL);
@@ -302,12 +290,14 @@ public:
         json j;
         j["request_id_digest"] = e.request_id_digest;
         j["request_digest"] = e.request_digest;
-        j["state"] = business_key_import_state_to_string(e.state);
+        j["phase"] = business_key_import_phase_to_string(e.phase);
         j["generation"] = e.generation;
         j["created_at_ms"] = e.created_at_ms;
         j["committed_at_ms"] = e.committed_at_ms;
         j["provider_version_digest"] = e.provider_version_digest;
         j["last_error"] = e.last_error;
+        j["proof_algorithm"] = e.proof_algorithm;
+        j["import_proof"] = to_hex(e.import_proof);
         json items = json::array();
         for (auto& it : e.items) {
             json si;
@@ -319,6 +309,10 @@ public:
             si["algorithm"] = it.algorithm;
             si["valid_from_ms"] = it.valid_from_ms;
             si["valid_to_ms"] = it.valid_to_ms;
+            si["envelope_format"] = key_envelope_format_to_string(it.envelope_format);
+            si["envelope_digest"] = to_hex(it.envelope_digest);
+            si["key_check_value"] = to_hex(it.key_check_value.data(), it.key_check_value.size());
+            si["key_check_value_present"] = it.key_check_value_present;
             items.push_back(si);
         }
         j["items"] = items;
@@ -329,12 +323,14 @@ public:
         BusinessKeyJournalEntry e;
         e.request_id_digest = j.value("request_id_digest", "");
         e.request_digest = j.value("request_digest", "");
-        e.state = string_to_business_key_import_state(j.value("state", "UNKNOWN"));
+        e.phase = string_to_business_key_import_phase(j.value("phase", "UNKNOWN"));
         e.generation = j.value("generation", 0ULL);
         e.created_at_ms = j.value("created_at_ms", 0LL);
         e.committed_at_ms = j.value("committed_at_ms", 0LL);
         e.provider_version_digest = j.value("provider_version_digest", "");
         e.last_error = j.value("last_error", "");
+        e.proof_algorithm = j.value("proof_algorithm", "");
+        from_hex(j.value("import_proof", ""), e.import_proof);
         if (j.contains("items") && j["items"].is_array()) {
             for (auto& si : j["items"]) {
                 BusinessKeyStatus s;
@@ -346,6 +342,14 @@ public:
                 s.algorithm = si.value("algorithm", "");
                 s.valid_from_ms = si.value("valid_from_ms", 0LL);
                 s.valid_to_ms = si.value("valid_to_ms", 0LL);
+                s.envelope_format =
+                    string_to_key_envelope_format(si.value("envelope_format", "UNSPECIFIED"));
+                from_hex(si.value("envelope_digest", ""), s.envelope_digest);
+                std::vector<uint8_t> kcv;
+                if (from_hex(si.value("key_check_value", ""), kcv) && kcv.size() == 3) {
+                    s.key_check_value = {kcv[0], kcv[1], kcv[2]};
+                }
+                s.key_check_value_present = si.value("key_check_value_present", false);
                 e.items.push_back(std::move(s));
             }
         }
@@ -370,12 +374,10 @@ public:
             staging.clear();
             journal.clear();
             if (state.contains("active")) {
-                for (auto& [p, v] : state["active"].items())
-                    active[p] = slot_from_json("", p, v);
+                for (auto& [p, v] : state["active"].items()) active[p] = slot_from_json(v);
             }
             if (state.contains("staging")) {
-                for (auto& [p, v] : state["staging"].items())
-                    staging[p] = slot_from_json("", p, v);
+                for (auto& [p, v] : state["staging"].items()) staging[p] = slot_from_json(v);
             }
             if (state.contains("journal")) {
                 for (auto& [rid, v] : state["journal"].items()) {
@@ -400,10 +402,10 @@ public:
             state["commit_marker"] = commit_marker;
             state["staging_generation"] = staging_generation;
             json act = json::object();
-            for (auto& [p, s] : active) act[p] = slot_to_json("", p, s);
+            for (auto& [p, s] : active) act[p] = slot_to_json(s);
             state["active"] = act;
             json stg = json::object();
-            for (auto& [p, s] : staging) stg[p] = slot_to_json("", p, s);
+            for (auto& [p, s] : staging) stg[p] = slot_to_json(s);
             state["staging"] = stg;
             json jr = json::object();
             for (auto& [rid, js] : journal) {
@@ -432,8 +434,7 @@ public:
         if (!ofs.is_open()) return ErrorCode::STORAGE_WRITE_FAILED;
         ofs.write(reinterpret_cast<const char*>(kek.data()), kKekSize);
         ofs.close();
-        fs::permissions(cfg.kek_path,
-                        fs::perms::owner_read | fs::perms::owner_write,
+        fs::permissions(cfg.kek_path, fs::perms::owner_read | fs::perms::owner_write,
                         fs::perm_options::replace);
         return ErrorCode::SUCCESS;
     }
@@ -453,8 +454,8 @@ public:
     void derive_mac_key() {
         std::string info = "openiov|keyprov|mac|v1";
         mac_key.resize(SHA256_DIGEST_LENGTH);
-        hkdf_sha256(kek, {}, std::vector<uint8_t>(info.begin(), info.end()),
-                    mac_key.data(), mac_key.size());
+        hkdf_sha256(kek, {}, std::vector<uint8_t>(info.begin(), info.end()), mac_key.data(),
+                    mac_key.size());
     }
 
     ErrorCode encrypt_slot_key(const std::string& domain, const std::string& purpose,
@@ -527,7 +528,6 @@ ErrorCode SoftFileBusinessKeyProvider::initialize() {
     rc = impl_->load_state();
     if (rc != ErrorCode::SUCCESS) return rc;
 
-    // 校验 commit marker（防篡改）；不一致则视为 INVALID，不允许静默信任。
     if (!impl_->active.empty()) {
         std::string expected = impl_->compute_commit_marker();
         if (impl_->commit_marker != expected) {
@@ -551,15 +551,30 @@ std::string SoftFileBusinessKeyProvider::providerVersionDigest() const {
     return impl_->cfg.provider_version;
 }
 
+BusinessKeyProviderCapability SoftFileBusinessKeyProvider::capability() const {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    BusinessKeyProviderCapability cap;
+    const bool h = impl_->hsm != nullptr;
+    cap.p256_ecdh = h;
+    cap.hkdf_sha256 = h;
+    cap.aes256_gcm_decrypt_to_slot = h;
+    cap.atomic_dual_slot_commit = true;
+    cap.secure_journal_ready = impl_->ready && impl_->store && impl_->store->isReady();
+    cap.proof_key_ready = impl_->ready;
+    return cap;
+}
+
 // ============================================================
 // Unwrap / staging / commit
 // ============================================================
 
 ErrorCode SoftFileBusinessKeyProvider::unwrapToStaging(
     const std::string& domain, const WrappedKeyItem& item,
-    const std::vector<uint8_t>& aad, const BusinessKeyDeviceBinding& binding,
-    uint64_t generation) {
+    const EcdhEsP256EnvelopeParameters& params, const std::vector<uint8_t>& canonical_aad,
+    const std::vector<uint8_t>& hkdf_info, const BusinessKeyDeviceBinding& binding,
+    uint64_t generation, std::array<uint8_t, 3>& actual_kcv) {
     std::lock_guard<std::mutex> lock(impl_->mtx);
+    actual_kcv = {};
     if (!impl_->ready || !impl_->hsm) return ErrorCode::BUSINESS_KEY_NOT_READY;
     if (!binding.ready || binding.device_key_id.empty()) return ErrorCode::BUSINESS_KEY_NOT_READY;
     if (item.wrapped_key.empty()) return ErrorCode::WRAPPED_KEY_INVALID;
@@ -567,40 +582,20 @@ ErrorCode SoftFileBusinessKeyProvider::unwrapToStaging(
         return ErrorCode::WRAPPED_KEY_INVALID;
     if (!contains(impl_->cfg.allowed_algorithms, item.algorithm))
         return ErrorCode::BUSINESS_KEY_UNSUPPORTED;
+    if (!contains(impl_->cfg.allowed_wrapping_suites, item.wrapping_suite))
+        return ErrorCode::BUSINESS_KEY_UNSUPPORTED;
+    if (item.wrapping_suite != kWrappingSuiteEcdhEsP256)
+        return ErrorCode::BUSINESS_KEY_UNSUPPORTED;
     size_t key_size = algorithm_key_size(item.algorithm);
     if (key_size == 0) return ErrorCode::BUSINESS_KEY_UNSUPPORTED;
 
-    // 解析 parameters
-    json params;
-    try {
-        params = json::parse(std::string(reinterpret_cast<const char*>(item.parameters.data()),
-                                         item.parameters.size()));
-    } catch (const std::exception&) {
-        return ErrorCode::WRAPPED_KEY_INVALID;
-    }
-    std::string suite = params.value("suite", "");
-    if (!contains(impl_->cfg.allowed_wrapping_suites, suite))
-        return ErrorCode::BUSINESS_KEY_UNSUPPORTED;
-    if (suite != kSuiteEciesEcdhEsA256Gcm) return ErrorCode::BUSINESS_KEY_UNSUPPORTED;
-
-    std::vector<uint8_t> eph, iv, aad_digest;
-    if (!from_hex(params.value("ephemeral_public_key", ""), eph) ||
-        !from_hex(params.value("iv", ""), iv) ||
-        !from_hex(params.value("aad_digest", ""), aad_digest)) {
-        return ErrorCode::WRAPPED_KEY_INVALID;
-    }
-    // AAD 绑定校验：调用方传入的 AAD 必须与封装时承诺一致（由 SEC 计算）。
-    std::vector<uint8_t> expect = sha256(aad);
-    if (aad_digest.size() != expect.size() ||
-        CRYPTO_memcmp(aad_digest.data(), expect.data(), expect.size()) != 0) {
-        return ErrorCode::WRAPPED_KEY_INVALID;
-    }
-
-    std::vector<uint8_t> wrapped(item.wrapped_key.data(),
-                                 item.wrapped_key.data() + item.wrapped_key.size());
+    std::vector<uint8_t> ciphertext(item.wrapped_key.data(),
+                                    item.wrapped_key.data() + item.wrapped_key.size());
     std::vector<uint8_t> plain;
-    ErrorCode rc = impl_->hsm->unwrap_ecdh_es(binding.device_key_id, eph, iv, wrapped, aad, plain);
-    zero(wrapped);
+    ErrorCode rc = impl_->hsm->unwrap_ecdh_es_v1(
+        binding.device_key_id, params.server_ephemeral_public_key, params.hkdf_salt, hkdf_info,
+        params.nonce, ciphertext, params.authentication_tag, canonical_aad, plain);
+    zero(ciphertext);
     if (rc != ErrorCode::SUCCESS) {
         zero(plain);
         return rc == ErrorCode::NOT_IMPLEMENTED ? ErrorCode::BUSINESS_KEY_NOT_READY
@@ -611,11 +606,21 @@ ErrorCode SoftFileBusinessKeyProvider::unwrapToStaging(
         return ErrorCode::WRAPPED_KEY_INVALID;
     }
 
+    // KCV 校验（常量时间）；不一致即拒绝，不落 staging。
+    std::array<uint8_t, 3> kcv = canonical::computeKcv(plain);
+    if (item.key_check_value_present) {
+        if (!canonical::constantTimeEqual(kcv.data(), item.key_check_value.data(), 3)) {
+            zero(plain);
+            return ErrorCode::WRAPPED_KEY_INVALID;
+        }
+    }
+    actual_kcv = kcv;
+
     Impl::Slot s;
     s.present = true;
     s.version = item.business_key_version;
     std::vector<uint8_t> kid(item.key_id.begin(), item.key_id.end());
-    s.key_id_digest = to_hex(sha256(kid));
+    s.key_id_digest = canonical::toHex(canonical::sha256(kid));
     s.algorithm = item.algorithm;
     s.valid_from_ms = item.valid_from_ms;
     s.valid_to_ms = item.valid_to_ms;
@@ -651,10 +656,10 @@ ErrorCode SoftFileBusinessKeyProvider::commitBatch(const std::string& domain,
     std::lock_guard<std::mutex> lock(impl_->mtx);
     if (!impl_->ready) return ErrorCode::BUSINESS_KEY_NOT_READY;
 
-    // 双用途必须完整 staging，否则不得形成单用途 ACTIVE。
     for (const auto& p : impl_->required_purposes()) {
         auto it = impl_->staging.find(p);
-        if (it == impl_->staging.end() || !it->second.present || it->second.generation != generation) {
+        if (it == impl_->staging.end() || !it->second.present ||
+            it->second.generation != generation) {
             return ErrorCode::BUSINESS_KEY_PARTIAL_ROLLBACK;
         }
     }
@@ -662,7 +667,6 @@ ErrorCode SoftFileBusinessKeyProvider::commitBatch(const std::string& domain,
         return ErrorCode::BUSINESS_KEY_CONFLICT;
     }
 
-    // 原子切换：先构造新 active 集合，再一次性替换并写 commit marker。
     std::map<std::string, Impl::Slot> new_active = impl_->active;
     for (const auto& p : impl_->required_purposes()) {
         new_active[p] = impl_->staging.at(p);
@@ -704,8 +708,8 @@ ErrorCode SoftFileBusinessKeyProvider::rollbackStaging(const std::string& domain
 // ============================================================
 
 ErrorCode SoftFileBusinessKeyProvider::querySlot(const std::string& domain,
-                                                const std::string& purpose,
-                                                BusinessKeySlotInfo& out) {
+                                                 const std::string& purpose,
+                                                 BusinessKeySlotInfo& out) {
     std::lock_guard<std::mutex> lock(impl_->mtx);
     out = BusinessKeySlotInfo{};
     if (!impl_->ready) return ErrorCode::BUSINESS_KEY_NOT_READY;
@@ -722,7 +726,6 @@ ErrorCode SoftFileBusinessKeyProvider::querySlot(const std::string& domain,
     out.valid_from_ms = s.valid_from_ms;
     out.valid_to_ms = s.valid_to_ms;
     out.active_generation = s.generation;
-    // 交叉校验可解密性，作为 slot 一致性证据。
     std::vector<uint8_t> plain;
     ErrorCode rc = impl_->decrypt_slot_key(domain, purpose, s, plain);
     zero(plain);
@@ -732,7 +735,8 @@ ErrorCode SoftFileBusinessKeyProvider::querySlot(const std::string& domain,
 
 ErrorCode SoftFileBusinessKeyProvider::generateProof(
     const std::string& domain, const std::string& purpose, uint64_t business_key_version,
-    const std::string& request_id, const std::string& key_id_digest,
+    const std::string& request_id, const std::string& key_id,
+    const std::vector<uint8_t>& envelope_digest, const std::vector<uint8_t>& key_check_value,
     std::vector<uint8_t>& proof, std::string& algorithm) {
     std::lock_guard<std::mutex> lock(impl_->mtx);
     if (!impl_->ready) return ErrorCode::BUSINESS_KEY_NOT_READY;
@@ -742,14 +746,26 @@ ErrorCode SoftFileBusinessKeyProvider::generateProof(
     const auto& s = it->second;
     if (s.version != business_key_version) return ErrorCode::BUSINESS_KEY_CONFLICT;
 
+    uint64_t purpose_val = 0;
+    if (!purposeEnumValue(purpose, purpose_val)) return ErrorCode::BUSINESS_KEY_UNSUPPORTED;
+
     std::vector<uint8_t> key;
     ErrorCode rc = impl_->decrypt_slot_key(domain, purpose, s, key);
     if (rc != ErrorCode::SUCCESS) return rc;
 
-    std::string ctx = std::string("openiov|keyprov-ack|v1|") + request_id + "|" + domain + "|" +
-                      purpose + "|" + std::to_string(business_key_version) + "|" + key_id_digest;
-    proof = hmac_sha256(key, std::vector<uint8_t>(ctx.begin(), ctx.end()));
+    canonical::ProofInput pi;
+    pi.request_id = request_id;
+    pi.business_domain = domain;
+    pi.purpose = purpose_val;
+    pi.key_id = key_id;
+    pi.business_key_version = business_key_version;
+    pi.envelope_digest = envelope_digest;
+    pi.key_check_value = key_check_value;
+    std::vector<uint8_t> proof_input = canonical::buildProofInput(pi);
+
+    proof = hmac_sha256(key, proof_input);
     zero(key);
+    OPENSSL_cleanse(proof_input.data(), proof_input.size());
     algorithm = "HMAC-SHA256";
     return ErrorCode::SUCCESS;
 }
@@ -763,14 +779,12 @@ bool SoftFileBusinessKeyProvider::loadJournal(const std::string& request_id_dige
     std::lock_guard<std::mutex> lock(impl_->mtx);
     auto it = impl_->journal.find(request_id_digest);
     if (it == impl_->journal.end()) return false;
-    // 防篡改校验：MAC 不匹配视为损坏，返回 false（调用方按 UNKNOWN 处理）。
     if (it->second.mac_hex != impl_->journal_mac(it->second.entry)) {
         SecLogAdapter::business_key().error(
-            "sec.business_key.journal_tamper",
-            "导入 journal 条目 MAC 校验失败，按 UNKNOWN 处理");
+            "sec.business_key.journal_tamper", "导入 journal 条目 MAC 校验失败，按 UNKNOWN 处理");
         out = BusinessKeyJournalEntry{};
         out.request_id_digest = request_id_digest;
-        out.state = BusinessKeyImportState::UNKNOWN;
+        out.phase = BusinessKeyImportPhase::UNKNOWN;
         return true;
     }
     out = it->second.entry;
@@ -796,7 +810,7 @@ std::vector<BusinessKeyJournalEntry> SoftFileBusinessKeyProvider::listJournal() 
         } else {
             BusinessKeyJournalEntry e;
             e.request_id_digest = rid;
-            e.state = BusinessKeyImportState::UNKNOWN;
+            e.phase = BusinessKeyImportPhase::UNKNOWN;
             out.push_back(e);
         }
     }
@@ -806,83 +820,6 @@ std::vector<BusinessKeyJournalEntry> SoftFileBusinessKeyProvider::listJournal() 
 bool SoftFileBusinessKeyProvider::hasPendingStaging() const {
     std::lock_guard<std::mutex> lock(impl_->mtx);
     return !impl_->staging.empty();
-}
-
-// ============================================================
-// Test support: ECDH-ES + AES-256-GCM wrap
-// ============================================================
-
-ErrorCode SoftFileBusinessKeyProvider::wrapForTest(
-    const std::vector<uint8_t>& device_public_key, const std::string& suite,
-    const std::vector<uint8_t>& aad, const std::vector<uint8_t>& business_key,
-    std::vector<uint8_t>& wrapped_key_out, std::string& parameters_json_out) {
-    if (suite != kSuiteEciesEcdhEsA256Gcm) return ErrorCode::BUSINESS_KEY_UNSUPPORTED;
-
-    const EC_GROUP* group = nullptr;
-    EC_KEY* dev = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
-    if (!dev) return ErrorCode::INTERNAL_ERROR;
-    group = EC_KEY_get0_group(dev);
-    EC_POINT* dev_pt = EC_POINT_new(group);
-    if (!dev_pt || EC_POINT_oct2point(group, dev_pt, device_public_key.data(),
-                                      device_public_key.size(), nullptr) != 1) {
-        if (dev_pt) EC_POINT_free(dev_pt);
-        EC_KEY_free(dev);
-        return ErrorCode::INVALID_PARAMETER;
-    }
-    EC_KEY_set_public_key(dev, dev_pt);
-    EC_POINT_free(dev_pt);
-
-    EC_KEY* eph = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
-    if (!eph || !EC_KEY_generate_key(eph)) {
-        if (eph) EC_KEY_free(eph);
-        EC_KEY_free(dev);
-        return ErrorCode::INTERNAL_ERROR;
-    }
-    std::vector<uint8_t> eph_pub(65);
-    size_t eph_len = EC_POINT_point2oct(group, EC_KEY_get0_public_key(eph),
-                                        POINT_CONVERSION_UNCOMPRESSED, eph_pub.data(),
-                                        eph_pub.size(), nullptr);
-    if (eph_len == 0) {
-        EC_KEY_free(eph);
-        EC_KEY_free(dev);
-        return ErrorCode::INTERNAL_ERROR;
-    }
-    eph_pub.resize(eph_len);
-
-    std::vector<uint8_t> shared(32);
-    int shared_len = ECDH_compute_key(shared.data(), shared.size(),
-                                      EC_KEY_get0_public_key(dev), eph, nullptr);
-    if (shared_len <= 0) {
-        EC_KEY_free(eph);
-        EC_KEY_free(dev);
-        return ErrorCode::INTERNAL_ERROR;
-    }
-    shared.resize(static_cast<size_t>(shared_len));
-
-    uint8_t kek[kKekSize];
-    hkdf_sha256(shared, {}, std::vector<uint8_t>(aad.begin(), aad.end()), kek, sizeof(kek));
-    zero(shared);
-
-    std::vector<uint8_t> iv_ct_tag;
-    bool ok = aes_gcm_encrypt(std::vector<uint8_t>(kek, kek + sizeof(kek)), aad, business_key,
-                              iv_ct_tag);
-    OPENSSL_cleanse(kek, sizeof(kek));
-    EC_KEY_free(eph);
-    EC_KEY_free(dev);
-    if (!ok) return ErrorCode::INTERNAL_ERROR;
-
-    if (iv_ct_tag.size() < kAesGcmIv) return ErrorCode::INTERNAL_ERROR;
-    std::vector<uint8_t> iv(iv_ct_tag.begin(), iv_ct_tag.begin() + kAesGcmIv);
-    wrapped_key_out.assign(iv_ct_tag.begin() + kAesGcmIv, iv_ct_tag.end());
-
-    std::vector<uint8_t> digest = sha256(aad);
-    json params;
-    params["suite"] = suite;
-    params["ephemeral_public_key"] = to_hex(eph_pub);
-    params["iv"] = to_hex(iv);
-    params["aad_digest"] = to_hex(digest);
-    parameters_json_out = params.dump();
-    return ErrorCode::SUCCESS;
 }
 
 } // namespace sec

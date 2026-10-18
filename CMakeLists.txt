@@ -60,6 +60,52 @@ find_package(yaml-cpp CONFIG REQUIRED)
 # --- GTest（仅 HOST 单元测试；BUILD 目标构建不提供） ---
 find_package(GTest QUIET)
 
+# --- Protobuf（TBOX-SEC-DSN-CR-020 §14：受控 .proto + 生成代码解析参数）---
+# 受控副本位于 proto/security/keyprov/v1/key_provisioning.proto；
+# 生成代码 + DescriptorSet 锁版校验由 test_keyprov_proto_lock.cpp 断言。
+find_package(Protobuf REQUIRED)
+
+# 生成器版本 guard：pin 与 proto 头注释一致的 libprotoc 版本。
+set(SEC_PROTOC_PINNED_VERSION "35.1" CACHE STRING "Pinned protoc generator version")
+if(Protobuf_PROTOC_EXECUTABLE)
+    execute_process(
+        COMMAND "${Protobuf_PROTOC_EXECUTABLE}" --version
+        OUTPUT_VARIABLE SEC_PROTOC_ACTUAL_VERSION
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(NOT SEC_PROTOC_ACTUAL_VERSION MATCHES "${SEC_PROTOC_PINNED_VERSION}")
+        message(WARNING "protoc '${SEC_PROTOC_ACTUAL_VERSION}' != pinned libprotoc ${SEC_PROTOC_PINNED_VERSION}; "
+                        "DescriptorSet lock test may report a mismatch")
+    endif()
+endif()
+
+set(SEC_PROTO_FILES
+    proto/security/keyprov/v1/key_provisioning.proto
+)
+add_library(sec_keyprov_proto STATIC ${SEC_PROTO_FILES})
+protobuf_generate(TARGET sec_keyprov_proto LANGUAGE cpp)
+target_link_libraries(sec_keyprov_proto PUBLIC protobuf::libprotobuf)
+target_include_directories(sec_keyprov_proto PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+)
+
+# libprotobuf >= 5 生成的代码引用 Abseil log 内部符号。系统 protobuf 若链接的是
+# 独立 Abseil 安装（Homebrew/conda 场景），需显式补齐 absl 组件；BUILD 目标镜像
+# 的 protobuf 自带依赖时该分支为空操作。conan 打包为后续项（见 design.md §13）。
+find_package(absl CONFIG QUIET)
+if(absl_FOUND)
+    foreach(_absl_dep absl::log_internal_check_op absl::log_internal_message
+                       absl::log_internal_nullguard absl::log_internal_conditions
+                       absl::log_internal_voidify absl::log_internal_strip
+                       absl::log_internal_globals absl::log_internal_log_impl
+                       absl::log_severity)
+        if(TARGET ${_absl_dep})
+            target_link_libraries(sec_keyprov_proto PUBLIC ${_absl_dep})
+        endif()
+    endforeach()
+endif()
+
 # ===========================================================================
 # Daemon library (TboxSecLib) — 内部库，不安装
 # ===========================================================================
@@ -86,6 +132,10 @@ set(LIB_SOURCES
     src/ipc_prov_service.cpp
     src/sec_application.cpp
     src/business_key_types.cpp
+    src/canonical_encoding.cpp
+    src/business_key_envelope.cpp
+    src/device_key_agreement.cpp
+    src/keyprov_envelope_builder.cpp
     src/soft_file_business_key_provider.cpp
     src/secure_metadata_ledger.cpp
     src/business_key_provisioning.cpp
@@ -108,6 +158,7 @@ target_link_libraries(TboxSecLib
         nlohmann_json::nlohmann_json
         OpenSSL::SSL
         OpenSSL::Crypto
+        sec_keyprov_proto
 )
 
 # ===========================================================================
@@ -277,6 +328,9 @@ if(GTest_FOUND)
         tests/test_certificate_chain_parser.cpp
         tests/test_sec_application.cpp
         tests/test_sec_config_checker.cpp
+        tests/test_business_key_canonical_encoding.cpp
+        tests/test_business_key_envelope_validator.cpp
+        tests/test_keyprov_proto_lock.cpp
         tests/test_business_key_provisioning.cpp
         tests/test_business_key_ipc_handlers.cpp
         tests/test_business_key_integration.cpp
@@ -285,7 +339,8 @@ if(GTest_FOUND)
     target_link_libraries(TboxSecTests PRIVATE TboxSecLib tbox_sec_client GTest::GTest GTest::gmock GTest::Main)
     # TBOX-SEC-DSN-CR-013: 传入 checker 二进制绝对路径供子进程测试
     target_compile_definitions(TboxSecTests PRIVATE
-        SEC_CONFIG_CHECKER_BIN="${CMAKE_CURRENT_BINARY_DIR}/sec_config_checker")
+        SEC_CONFIG_CHECKER_BIN="${CMAKE_CURRENT_BINARY_DIR}/sec_config_checker"
+        SEC_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     add_test(NAME TboxSecTests COMMAND TboxSecTests)
 endif()
 

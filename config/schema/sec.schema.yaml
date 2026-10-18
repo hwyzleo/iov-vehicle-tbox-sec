@@ -100,10 +100,18 @@ sec:
         type: string_list
         required: false
         default: [UPLINK_AEAD, DOWNLINK_AEAD]
+      allowed_envelope_formats:
+        type: string_list
+        required: false
+        default: [ECDH_ES_P256_V1]
       allowed_wrapping_suites:
         type: string_list
         required: false
-        default: [ECIES-ECDH-ES-A256GCM-v1]
+        default: [ECDH_ES_P256_HKDF_SHA256_AES256GCM]
+      allowed_algorithms:
+        type: string_list
+        required: false
+        default: [AES-256]
       max_items:
         type: int
         required: false

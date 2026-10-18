@@ -539,6 +539,15 @@ nlohmann::json business_key_status_to_json(const BusinessKeyStatus& s) {
     j["algorithm"] = s.algorithm;
     j["valid_from_ms"] = s.valid_from_ms;
     j["valid_to_ms"] = s.valid_to_ms;
+    // TBOX-SEC-DSN-CR-020 §7/US-020：非敏感 ACK 绑定字段
+    j["envelope_format"] = key_envelope_format_to_string(s.envelope_format);
+    if (!s.envelope_digest.empty()) {
+        j["envelope_digest"] = b64_encode(s.envelope_digest);
+    }
+    if (s.key_check_value_present) {
+        j["key_check_value"] = b64_encode(std::vector<uint8_t>(s.key_check_value.begin(),
+                                                               s.key_check_value.end()));
+    }
     return j;
 }
 
@@ -649,6 +658,16 @@ std::pair<int32_t, std::string> SecIpcDispatcher::handle_import_wrapped_business
                 std::fill(prm.begin(), prm.end(), 0);
                 item.valid_from_ms = ji.value("valid_from_ms", 0LL);
                 item.valid_to_ms = ji.value("valid_to_ms", 0LL);
+                item.wrapping_suite = ji.value("wrapping_suite", "");
+                item.envelope_format =
+                    string_to_key_envelope_format(ji.value("envelope_format", "UNSPECIFIED"));
+                auto ed = b64_decode(ji.value("envelope_digest", ""));
+                item.envelope_digest.assign(ed.begin(), ed.end());
+                auto kcv = b64_decode(ji.value("key_check_value", ""));
+                if (kcv.size() == 3) {
+                    item.key_check_value = {kcv[0], kcv[1], kcv[2]};
+                    item.key_check_value_present = true;
+                }
                 items.push_back(std::move(item));
             }
         }

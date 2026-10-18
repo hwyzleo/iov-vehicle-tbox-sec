@@ -58,6 +58,7 @@ std::string error_code_to_string(ErrorCode code) {
         case ErrorCode::BUSINESS_KEY_IMPORT_UNKNOWN: return "BUSINESS_KEY_IMPORT_UNKNOWN";
         case ErrorCode::BUSINESS_KEY_NOT_READY: return "BUSINESS_KEY_NOT_READY";
         case ErrorCode::BUSINESS_KEY_PARTIAL_ROLLBACK: return "BUSINESS_KEY_PARTIAL_ROLLBACK";
+        case ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN: return "BUSINESS_KEY_OUTCOME_UNKNOWN";
         case ErrorCode::ACL_DENIED: return "ACL_DENIED";
         case ErrorCode::CONFIG_ERROR: return "CONFIG_ERROR";
         case ErrorCode::INTERNAL_ERROR: return "INTERNAL_ERROR";
@@ -119,6 +120,7 @@ std::string error_code_to_description(ErrorCode code) {
         case ErrorCode::BUSINESS_KEY_IMPORT_UNKNOWN: return "Business key import outcome unknown; query by requestId";
         case ErrorCode::BUSINESS_KEY_NOT_READY: return "Business key HSM/identity/journal/metadata not ready";
         case ErrorCode::BUSINESS_KEY_PARTIAL_ROLLBACK: return "Business key batch not committed; staging state requires recovery";
+        case ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN: return "Business key secure call outcome unknown; reconcile by requestId";
         case ErrorCode::ACL_DENIED: return "Caller not authorized for this profile";
         case ErrorCode::CONFIG_ERROR: return "Configuration error";
         case ErrorCode::INTERNAL_ERROR: return "Internal error";

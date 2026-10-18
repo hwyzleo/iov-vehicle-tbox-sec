@@ -77,6 +77,7 @@ enum class ErrorCode : uint32_t {
     BUSINESS_KEY_IMPORT_UNKNOWN = 1024,   ///< SEC-1024: 结果未知，必须按 requestId 查询
     BUSINESS_KEY_NOT_READY = 1025,        ///< SEC-1025: HSM/eSE、解封装身份、journal 或元数据未就绪
     BUSINESS_KEY_PARTIAL_ROLLBACK = 1026, ///< SEC-1026: 批次未提交且存在需恢复的 staging 状态
+    BUSINESS_KEY_OUTCOME_UNKNOWN = 1028,  ///< SEC-1028: 安全调用结果未知，需按 requestId 对账
 
     // ACL errors（CR-019 让位 1021..1026 给业务密钥错误，ACL 顺延到 1027）
     ACL_DENIED = 1027,                        ///< 调用方未授权访问该 profile

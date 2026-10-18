@@ -1,20 +1,20 @@
 //
-// V2C 业务密钥开通单元测试（TBOX-SEC-DSN-CR-019）。
+// V2C 业务密钥开通单元测试（TBOX-SEC-DSN-CR-019；CR-020 §5/§8/§9/§11）。
 //
 #include <gtest/gtest.h>
 
 #include "business_key_provisioning.h"
 #include "business_key_provider.h"
-#include "soft_file_business_key_provider.h"
+#include "canonical_encoding.h"
+#include "keyprov_envelope_builder.h"
 #include "secure_metadata_ledger.h"
+#include "soft_file_business_key_provider.h"
 #include "soft_file_hsm.h"
-#include "trusted_time.h"
 #include "store.h"
-#include "sec_log_adapter.h"
 #include "tbox/sec/business_key.h"
+#include "trusted_time.h"
 
 #include <openssl/rand.h>
-#include <openssl/sha.h>
 
 #include <chrono>
 #include <filesystem>
@@ -57,27 +57,85 @@ std::vector<uint8_t> random_key(size_t n = 32) {
     return k;
 }
 
-std::string sha256_hex_for_test(const std::string& s) {
-    std::vector<uint8_t> d(SHA256_DIGEST_LENGTH);
-    SHA256(reinterpret_cast<const uint8_t*>(s.data()), s.size(), d.data());
-    static const char* digits = "0123456789abcdef";
-    std::string out;
-    for (uint8_t b : d) {
-        out.push_back(digits[b >> 4]);
-        out.push_back(digits[b & 0x0f]);
+const std::string kDeviceKeyId = "ecu1+ecu1";
+const std::string kDeviceIdentity = "ecu1";
+
+/// 统计安全原语调用的 HSM 装饰器（用于认证 US-016「0 次硬件调用」）。
+class CountingHsm : public SoftFileHsm {
+public:
+    CountingHsm(hwyz::store::Store store, const std::string& alg, const std::string& kek)
+        : SoftFileHsm(std::move(store), alg, kek) {}
+    ErrorCode unwrap_ecdh_es_v1(const std::string& key_id,
+                                const std::vector<uint8_t>& eph,
+                                const std::vector<uint8_t>& salt,
+                                const std::vector<uint8_t>& info,
+                                const std::vector<uint8_t>& nonce,
+                                const std::vector<uint8_t>& ct,
+                                const std::vector<uint8_t>& tag,
+                                const std::vector<uint8_t>& aad,
+                                std::vector<uint8_t>& plain) override {
+        ++unwrap_calls;
+        return SoftFileHsm::unwrap_ecdh_es_v1(key_id, eph, salt, info, nonce, ct, tag, aad,
+                                              plain);
     }
-    return out;
-}
+    int unwrap_calls = 0;
+};
+
+/// commit 阶段恒返回未知错误的 provider（用于 OUTCOME_UNKNOWN 对账路径）。
+class FailingCommitProvider : public BusinessKeyProvider {
+public:
+    explicit FailingCommitProvider(std::unique_ptr<BusinessKeyProvider> inner)
+        : inner_(std::move(inner)) {}
+    ErrorCode initialize() override { return inner_->initialize(); }
+    bool isReady() const override { return inner_->isReady(); }
+    std::string providerVersionDigest() const override { return inner_->providerVersionDigest(); }
+    BusinessKeyProviderCapability capability() const override { return inner_->capability(); }
+    ErrorCode unwrapToStaging(const std::string& d, const WrappedKeyItem& i,
+                              const EcdhEsP256EnvelopeParameters& p,
+                              const std::vector<uint8_t>& aad, const std::vector<uint8_t>& info,
+                              const BusinessKeyDeviceBinding& b, uint64_t g,
+                              std::array<uint8_t, 3>& kcv) override {
+        return inner_->unwrapToStaging(d, i, p, aad, info, b, g, kcv);
+    }
+    ErrorCode verifyStaging(const std::string& d, const std::string& p) override {
+        return inner_->verifyStaging(d, p);
+    }
+    ErrorCode commitBatch(const std::string&, uint64_t) override {
+        return ErrorCode::INTERNAL_ERROR;
+    }
+    ErrorCode rollbackStaging(const std::string& d, uint64_t g) override {
+        return inner_->rollbackStaging(d, g);
+    }
+    ErrorCode querySlot(const std::string& d, const std::string& p,
+                        BusinessKeySlotInfo& o) override {
+        return inner_->querySlot(d, p, o);
+    }
+    ErrorCode generateProof(const std::string& d, const std::string& p, uint64_t v,
+                            const std::string& r, const std::string& k,
+                            const std::vector<uint8_t>& ed, const std::vector<uint8_t>& kcv,
+                            std::vector<uint8_t>& proof, std::string& alg) override {
+        return inner_->generateProof(d, p, v, r, k, ed, kcv, proof, alg);
+    }
+    bool loadJournal(const std::string& r, BusinessKeyJournalEntry& o) override {
+        return inner_->loadJournal(r, o);
+    }
+    ErrorCode saveJournal(const BusinessKeyJournalEntry& e) override {
+        return inner_->saveJournal(e);
+    }
+    std::vector<BusinessKeyJournalEntry> listJournal() override { return inner_->listJournal(); }
+    bool hasPendingStaging() const override { return inner_->hasPendingStaging(); }
+
+private:
+    std::unique_ptr<BusinessKeyProvider> inner_;
+};
 
 class BusinessKeyTest : public ::testing::Test {
 protected:
     void SetUp() override {
         dir_ = unique_dir();
-        store_ = std::make_unique<hwyz::store::Store>(
-            hwyz::store::Store::open("sec", dir_));
-        hsm_ = std::make_unique<SoftFileHsm>(
-            hwyz::store::Store::open("sec_hsm", dir_), "aes-256-gcm",
-            dir_ + "/.hsm_kek");
+        store_ = std::make_unique<hwyz::store::Store>(hwyz::store::Store::open("sec", dir_));
+        hsm_ = std::make_unique<SoftFileHsm>(hwyz::store::Store::open("sec_hsm", dir_),
+                                             "aes-256-gcm", dir_ + "/.hsm_kek");
         ASSERT_EQ(hsm_->initialize(), ErrorCode::SUCCESS);
         KeyPair kp;
         ASSERT_EQ(hsm_->generate_key_pair(kDeviceKeyId, "ecdsa-p256", kp), ErrorCode::SUCCESS);
@@ -87,6 +145,10 @@ protected:
         binding_.device_identity = kDeviceIdentity;
         binding_.device_key_id = kDeviceKeyId;
         binding_.device_public_key = device_pub_;
+        binding_.active_cert_p256 = true;
+        binding_.active_cert_key_agreement = true;
+        binding_.private_key_can_derive = true;
+        binding_.active_cert_digest = std::vector<uint8_t>(32, 0xBB);
     }
 
     void TearDown() override {
@@ -97,56 +159,87 @@ protected:
         fs::remove_all(dir_, ec);
     }
 
-    void make_provider(bool enabled = true) {
+    BusinessKeyProviderConfig provider_config() {
         BusinessKeyProviderConfig pcfg;
         pcfg.store_root = dir_ + "/bk";
         pcfg.kek_path = dir_ + "/bk/.kek";
-        pcfg.allowed_algorithms = {"AES-256-GCM"};
-        pcfg.allowed_wrapping_suites = {
-            SoftFileBusinessKeyProvider::kSuiteEciesEcdhEsA256Gcm};
-        auto provider = std::make_unique<SoftFileBusinessKeyProvider>(
-            hsm_.get(), std::move(pcfg),
-            [this]() { return binding_; });
-        provider_ = provider.get();
+        pcfg.allowed_algorithms = {kDefaultKeyAlgorithm};
+        pcfg.allowed_wrapping_suites = {kWrappingSuiteEcdhEsP256};
+        return pcfg;
+    }
 
-        auto ledger = std::make_unique<SecureMetadataLedger>(
-            hwyz::store::Store::open("sec", dir_));
-
+    BusinessKeyProvisioningConfig service_config(bool enabled = true) {
         BusinessKeyProvisioningConfig cfg;
         cfg.enabled = enabled;
         cfg.is_production = false;
-        cfg.allowed_wrapping_suites = {
-            SoftFileBusinessKeyProvider::kSuiteEciesEcdhEsA256Gcm};
-        cfg.allowed_algorithms = {"AES-256-GCM"};
-        service_ = std::make_unique<BusinessKeyProvisioningService>(
-            std::move(cfg), std::move(provider), fake_time(), std::move(ledger),
+        cfg.allowed_algorithms = {kDefaultKeyAlgorithm};
+        cfg.allowed_wrapping_suites = {kWrappingSuiteEcdhEsP256};
+        cfg.allowed_envelope_formats = {kKeyEnvelopeFormatEcdhEsP256V1};
+        return cfg;
+    }
+
+    std::unique_ptr<BusinessKeyProvisioningService> build_service(
+        HsmInterface* hsm, std::unique_ptr<BusinessKeyProvider> provider,
+        bool enabled = true) {
+        (void)hsm;
+        auto ledger = std::make_unique<SecureMetadataLedger>(
+            hwyz::store::Store::open("sec", dir_));
+        return std::make_unique<BusinessKeyProvisioningService>(
+            service_config(enabled), std::move(provider), fake_time(), std::move(ledger),
             [this]() { return binding_; });
+    }
+
+    void make_provider(bool enabled = true) {
+        auto provider = std::make_unique<SoftFileBusinessKeyProvider>(
+            hsm_.get(), provider_config(), [this]() { return binding_; });
+        provider_ = provider.get();
+        service_ = build_service(hsm_.get(), std::move(provider), enabled);
         ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
+    }
+
+    std::vector<uint8_t> build_envelope(const std::string& request_id,
+                                        const std::string& purpose, const std::string& key_id,
+                                        uint64_t version, const std::vector<uint8_t>& key,
+                                        const std::string& operation_id,
+                                        KeyprovEnvelopeOutput& out) {
+        KeyprovEnvelopeInput in;
+        in.device_public_key = device_pub_;
+        in.request_id = request_id;
+        in.business_domain = kBusinessDomainV2c;
+        in.purpose = purpose;
+        in.key_id = key_id;
+        in.business_key_version = version;
+        in.business_key = key;
+        in.root_key_version = 1;
+        in.derivation_version = "v1";
+        in.operation_id = operation_id;
+        in.recipient_certificate_digest = binding_.active_cert_digest;
+        in.wrapping_suite = kWrappingSuiteEcdhEsP256;
+        in.key_algorithm = kDefaultKeyAlgorithm;
+        EXPECT_EQ(buildEcdhEsP256EnvelopeV1(in, out), ErrorCode::SUCCESS);
+        return out.wrapped_key;
     }
 
     WrappedKeyItem make_item(const std::string& request_id, const std::string& purpose,
                              const std::string& key_id, uint64_t version,
-                             const std::vector<uint8_t>& key,
-                             int64_t from_ms = 0, int64_t to_ms = 0,
-                             const std::string& algorithm = "AES-256-GCM") {
+                             const std::vector<uint8_t>& key, int64_t from_ms = 0,
+                             int64_t to_ms = 0) {
         if (from_ms == 0) from_ms = now_ms() - 1000;
         if (to_ms == 0) to_ms = now_ms() + 86400000;
-        std::vector<uint8_t> aad = BusinessKeyProvisioningService::buildAad(
-            request_id, kBusinessDomainV2c, purpose, version, kDeviceIdentity);
-        std::vector<uint8_t> wrapped;
-        std::string params;
-        EXPECT_EQ(SoftFileBusinessKeyProvider::wrapForTest(
-                      device_pub_,
-                      SoftFileBusinessKeyProvider::kSuiteEciesEcdhEsA256Gcm, aad, key,
-                      wrapped, params),
-                  ErrorCode::SUCCESS);
+        KeyprovEnvelopeOutput out;
+        build_envelope(request_id, purpose, key_id, version, key, "op-" + purpose, out);
         WrappedKeyItem item;
         item.purpose = purpose;
         item.key_id = key_id;
         item.business_key_version = version;
-        item.algorithm = algorithm;
-        item.wrapped_key.assign(wrapped);
-        item.parameters.assign(std::vector<uint8_t>(params.begin(), params.end()));
+        item.algorithm = kDefaultKeyAlgorithm;
+        item.wrapping_suite = kWrappingSuiteEcdhEsP256;
+        item.envelope_format = KeyEnvelopeFormat::ECDH_ES_P256_V1;
+        item.wrapped_key.assign(out.wrapped_key);
+        item.parameters.assign(out.parameters);
+        item.envelope_digest = out.envelope_digest;
+        item.key_check_value = out.key_check_value;
+        item.key_check_value_present = true;
         item.valid_from_ms = from_ms;
         item.valid_to_ms = to_ms;
         return item;
@@ -155,16 +248,11 @@ protected:
     std::vector<WrappedKeyItem> make_batch(const std::string& request_id, uint64_t version) {
         std::vector<WrappedKeyItem> items;
         items.push_back(make_item(request_id, kBusinessPurposeUplinkAead,
-                                  "kid-up-" + std::to_string(version), version,
-                                  random_key()));
+                                  "kid-up-" + std::to_string(version), version, random_key()));
         items.push_back(make_item(request_id, kBusinessPurposeDownlinkAead,
-                                  "kid-down-" + std::to_string(version), version,
-                                  random_key()));
+                                  "kid-down-" + std::to_string(version), version, random_key()));
         return items;
     }
-
-    const std::string kDeviceKeyId = "ecu1+ecu1";
-    const std::string kDeviceIdentity = "ecu1";
 
     std::string dir_;
     std::unique_ptr<hwyz::store::Store> store_;
@@ -186,6 +274,11 @@ TEST_F(BusinessKeyTest, Import_TwoItems_ActiveAndProof) {
     EXPECT_EQ(result.items.size(), 2u);
     EXPECT_FALSE(result.import_proof.empty());
     EXPECT_EQ(result.proof_algorithm, "HMAC-SHA256");
+    for (const auto& it : result.items) {
+        EXPECT_EQ(it.envelope_format, KeyEnvelopeFormat::ECDH_ES_P256_V1);
+        EXPECT_EQ(it.envelope_digest.size(), 32u);
+        EXPECT_TRUE(it.key_check_value_present);
+    }
 
     BusinessKeyStatusSet set;
     ASSERT_EQ(service_->getStatus(kBusinessDomainV2c,
@@ -197,6 +290,9 @@ TEST_F(BusinessKeyTest, Import_TwoItems_ActiveAndProof) {
         EXPECT_EQ(s.state, BusinessKeyState::ACTIVE);
         EXPECT_EQ(s.business_key_version, 1u);
         EXPECT_FALSE(s.key_id_digest.empty());
+        EXPECT_EQ(s.envelope_format, KeyEnvelopeFormat::ECDH_ES_P256_V1);
+        EXPECT_EQ(s.envelope_digest.size(), 32u);
+        EXPECT_TRUE(s.key_check_value_present);
     }
 }
 
@@ -205,11 +301,11 @@ TEST_F(BusinessKeyTest, Import_Idempotent_SameDigest) {
     auto items = make_batch("req-2", 1);
     ImportResult r1;
     ASSERT_EQ(service_->import("req-2", kBusinessDomainV2c, items, r1), ErrorCode::SUCCESS);
-    // 同 requestId + 同摘要：返回原结果，不重复建槽（复用同一 items）
     ImportResult r2;
     ASSERT_EQ(service_->import("req-2", kBusinessDomainV2c, items, r2), ErrorCode::SUCCESS);
     EXPECT_EQ(r2.state, BusinessKeyImportState::COMMITTED);
     EXPECT_EQ(r1.items[0].key_id_digest, r2.items[0].key_id_digest);
+    EXPECT_EQ(r1.import_proof.bytes(), r2.import_proof.bytes());
 }
 
 TEST_F(BusinessKeyTest, Import_Conflict_DifferentDigest) {
@@ -217,7 +313,6 @@ TEST_F(BusinessKeyTest, Import_Conflict_DifferentDigest) {
     auto items = make_batch("req-3", 1);
     ImportResult r1;
     ASSERT_EQ(service_->import("req-3", kBusinessDomainV2c, items, r1), ErrorCode::SUCCESS);
-    // 同 requestId 不同摘要 -> CONFLICT
     auto items2 = make_batch("req-3", 2);
     ImportResult r2;
     EXPECT_EQ(service_->import("req-3", kBusinessDomainV2c, items2, r2),
@@ -260,8 +355,7 @@ TEST_F(BusinessKeyTest, Import_UnsupportedDomain) {
     make_provider();
     auto items = make_batch("req-8", 1);
     ImportResult r;
-    EXPECT_EQ(service_->import("req-8", "OTHER", items, r),
-              ErrorCode::BUSINESS_KEY_UNSUPPORTED);
+    EXPECT_EQ(service_->import("req-8", "OTHER", items, r), ErrorCode::BUSINESS_KEY_UNSUPPORTED);
 }
 
 TEST_F(BusinessKeyTest, Import_Expired_Invalid) {
@@ -276,28 +370,28 @@ TEST_F(BusinessKeyTest, Import_Expired_Invalid) {
               ErrorCode::WRAPPED_KEY_INVALID);
 }
 
-TEST_F(BusinessKeyTest, Import_BadAad_Invalid) {
+TEST_F(BusinessKeyTest, Import_KcvMismatch_Invalid) {
     make_provider();
-    // 用错误 AAD 封装 -> 解封装完整性/AAD 校验失败
-    std::vector<uint8_t> bad_aad = {'x', 'y', 'z'};
-    std::vector<uint8_t> wrapped;
-    std::string params;
-    ASSERT_EQ(SoftFileBusinessKeyProvider::wrapForTest(
-                  device_pub_, SoftFileBusinessKeyProvider::kSuiteEciesEcdhEsA256Gcm,
-                  bad_aad, random_key(), wrapped, params),
-              ErrorCode::SUCCESS);
-    std::vector<WrappedKeyItem> items = make_batch("req-10", 1);
-    items[0].wrapped_key.assign(wrapped);
-    items[0].parameters.assign(std::vector<uint8_t>(params.begin(), params.end()));
+    auto items = make_batch("req-kcv", 1);
+    items[0].key_check_value = {0x00, 0x00, 0x00};
     ImportResult r;
-    EXPECT_EQ(service_->import("req-10", kBusinessDomainV2c, items, r),
+    EXPECT_EQ(service_->import("req-kcv", kBusinessDomainV2c, items, r),
               ErrorCode::WRAPPED_KEY_INVALID);
+}
+
+TEST_F(BusinessKeyTest, Import_CiphertextTamper_Invalid) {
+    make_provider();
+    auto items = make_batch("req-ct", 1);
+    items[0].wrapped_key.data()[0] ^= 0xff;
+    ImportResult r;
+    EXPECT_EQ(service_->import("req-ct", kBusinessDomainV2c, items, r),
+              ErrorCode::WRAPPED_KEY_INVALID);
+    EXPECT_FALSE(provider_->hasPendingStaging());
 }
 
 TEST_F(BusinessKeyTest, Import_SecondItemFailure_NoSinglePurposeActive) {
     make_provider();
     auto items = make_batch("req-11", 1);
-    // 破坏第二个 item（算法不在 allowlist）-> 整体失败，不得形成单用途 ACTIVE
     items[1].algorithm = "AES-512-BOGUS";
     ImportResult r;
     EXPECT_NE(service_->import("req-11", kBusinessDomainV2c, items, r), ErrorCode::SUCCESS);
@@ -332,6 +426,27 @@ TEST_F(BusinessKeyTest, BindingNotReady_NotReady) {
               ErrorCode::BUSINESS_KEY_NOT_READY);
 }
 
+TEST_F(BusinessKeyTest, CertKeyAgreementMissing_NotReady_NoHardwareCalls) {
+    binding_.active_cert_key_agreement = false;
+    auto counting = std::make_unique<CountingHsm>(
+        hwyz::store::Store::open("sec_hsm", dir_), "aes-256-gcm", dir_ + "/.hsm_kek");
+    ASSERT_EQ(counting->initialize(), ErrorCode::SUCCESS);
+    KeyPair kp;
+    ASSERT_EQ(counting->generate_key_pair(kDeviceKeyId, "ecdsa-p256", kp), ErrorCode::SUCCESS);
+    CountingHsm* counter = counting.get();
+
+    auto provider = std::make_unique<SoftFileBusinessKeyProvider>(
+        counting.get(), provider_config(), [this]() { return binding_; });
+    service_ = build_service(counting.get(), std::move(provider));
+    ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
+
+    auto items = make_batch("req-ku", 1);
+    ImportResult r;
+    EXPECT_EQ(service_->import("req-ku", kBusinessDomainV2c, items, r),
+              ErrorCode::BUSINESS_KEY_NOT_READY);
+    EXPECT_EQ(counter->unwrap_calls, 0);
+}
+
 // ---------------- 结果查询 / 恢复 ----------------
 
 TEST_F(BusinessKeyTest, ImportResult_Unknown) {
@@ -343,48 +458,22 @@ TEST_F(BusinessKeyTest, ImportResult_Unknown) {
 
 TEST_F(BusinessKeyTest, Recovery_CommitBeforeReply) {
     make_provider();
-    // 模拟：staging+commit 已完成，但 journal 仍停留在 STAGED（进程在回包前掉电）。
     auto items = make_batch("req-recover", 1);
-    const uint64_t gen = 1;
-    for (const auto& it : items) {
-        std::vector<uint8_t> aad = BusinessKeyProvisioningService::buildAad(
-            "req-recover", kBusinessDomainV2c, it.purpose, it.business_key_version,
-            kDeviceIdentity);
-        ASSERT_EQ(provider_->unwrapToStaging(kBusinessDomainV2c, it, aad, binding_, gen),
-                  ErrorCode::SUCCESS);
-        ASSERT_EQ(provider_->verifyStaging(kBusinessDomainV2c, it.purpose), ErrorCode::SUCCESS);
-    }
-    ASSERT_EQ(provider_->commitBatch(kBusinessDomainV2c, gen), ErrorCode::SUCCESS);
+    ImportResult r0;
+    ASSERT_EQ(service_->import("req-recover", kBusinessDomainV2c, items, r0), ErrorCode::SUCCESS);
 
-    // 写一条 STAGED journal（模拟 commit 后、journal 更新前掉电）
-    auto rid_digest = sha256_hex_for_test("req-recover");
+    // 模拟：commit 已完成但进程在更新 journal 前掉电（journal 停留在 PROCESSING）。
+    const std::string rid = canonical::toHex(canonical::sha256(std::string("req-recover")));
     BusinessKeyJournalEntry e;
-    e.request_id_digest = rid_digest;
-    e.request_digest = "stale-digest";
-    e.state = BusinessKeyImportState::STAGED;
-    e.generation = gen;
+    ASSERT_TRUE(provider_->loadJournal(rid, e));
+    e.phase = BusinessKeyImportPhase::PROCESSING;
     ASSERT_EQ(provider_->saveJournal(e), ErrorCode::SUCCESS);
 
-    // 重建 service（新 provider 读同一 store），启动恢复应识别已 commit 的事务
-    BusinessKeyProviderConfig pcfg;
-    pcfg.store_root = dir_ + "/bk";
-    pcfg.kek_path = dir_ + "/bk/.kek";
-    pcfg.allowed_algorithms = {"AES-256-GCM"};
-    pcfg.allowed_wrapping_suites = {
-        SoftFileBusinessKeyProvider::kSuiteEciesEcdhEsA256Gcm};
+    // 重建 service（新 provider 读同一 store），启动恢复应识别已 commit 的事务。
+    service_.reset();
     auto provider2 = std::make_unique<SoftFileBusinessKeyProvider>(
-        hsm_.get(), std::move(pcfg), [this]() { return binding_; });
-
-    auto ledger2 = std::make_unique<SecureMetadataLedger>(
-        hwyz::store::Store::open("sec", dir_));
-    BusinessKeyProvisioningConfig cfg;
-    cfg.enabled = true;
-    cfg.allowed_wrapping_suites = {
-        SoftFileBusinessKeyProvider::kSuiteEciesEcdhEsA256Gcm};
-    cfg.allowed_algorithms = {"AES-256-GCM"};
-    auto service2 = std::make_unique<BusinessKeyProvisioningService>(
-        std::move(cfg), std::move(provider2), fake_time(), std::move(ledger2),
-        [this]() { return binding_; });
+        hsm_.get(), provider_config(), [this]() { return binding_; });
+    auto service2 = build_service(hsm_.get(), std::move(provider2));
     ASSERT_EQ(service2->initialize(), ErrorCode::SUCCESS);
 
     ImportResult r;
@@ -392,7 +481,25 @@ TEST_F(BusinessKeyTest, Recovery_CommitBeforeReply) {
     EXPECT_EQ(r.state, BusinessKeyImportState::COMMITTED);
 }
 
-// ---------------- SecureBuffer ----------------
+TEST_F(BusinessKeyTest, OutcomeUnknown_WhenCommitAmbiguous) {
+    auto inner = std::make_unique<SoftFileBusinessKeyProvider>(
+        hsm_.get(), provider_config(), [this]() { return binding_; });
+    auto provider = std::make_unique<FailingCommitProvider>(std::move(inner));
+    service_ = build_service(hsm_.get(), std::move(provider));
+    ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
+
+    auto items = make_batch("req-unknown", 1);
+    ImportResult r;
+    EXPECT_EQ(service_->import("req-unknown", kBusinessDomainV2c, items, r),
+              ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN);
+    EXPECT_EQ(r.state, BusinessKeyImportState::UNKNOWN);
+
+    ImportResult q;
+    ASSERT_EQ(service_->getImportResult("req-unknown", q), ErrorCode::SUCCESS);
+    EXPECT_EQ(q.state, BusinessKeyImportState::UNKNOWN);
+}
+
+// ---------------- SecureBuffer / 枚举 ----------------
 
 TEST(SecureBufferTest, MoveAndClear) {
     SecureBuffer b;
@@ -411,8 +518,15 @@ TEST(SecureBufferTest, EnumRoundTrip) {
     EXPECT_EQ(string_to_business_key_state("INVALID"), BusinessKeyState::INVALID);
     EXPECT_EQ(business_key_import_state_to_string(BusinessKeyImportState::COMMITTED),
               "COMMITTED");
-    EXPECT_EQ(string_to_business_key_import_state("STAGED"),
-              BusinessKeyImportState::STAGED);
+    EXPECT_EQ(string_to_business_key_import_state("STAGED"), BusinessKeyImportState::STAGED);
+    EXPECT_EQ(key_envelope_format_to_string(KeyEnvelopeFormat::ECDH_ES_P256_V1),
+              "ECDH_ES_P256_V1");
+    EXPECT_EQ(string_to_key_envelope_format("ECDH_ES_P256_V1"),
+              KeyEnvelopeFormat::ECDH_ES_P256_V1);
+    EXPECT_EQ(business_key_import_phase_to_string(BusinessKeyImportPhase::OUTCOME_UNKNOWN),
+              "OUTCOME_UNKNOWN");
+    EXPECT_EQ(string_to_business_key_import_phase("BOTH_STAGED"),
+              BusinessKeyImportPhase::BOTH_STAGED);
 }
 
 } // namespace

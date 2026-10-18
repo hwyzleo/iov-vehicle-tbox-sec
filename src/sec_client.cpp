@@ -403,7 +403,9 @@ TlsCredentialSubscription SecClient::subscribe_tls_credential_changed(
 
 namespace {
 
-void business_key_status_from_json(const nlohmann::json& j, BusinessKeyStatus& s) {
+void business_key_status_from_json(
+    const nlohmann::json& j, BusinessKeyStatus& s,
+    const std::function<std::vector<uint8_t>(const std::string&)>& dec) {
     s.business_domain = j.value("business_domain", "");
     s.purpose = j.value("purpose", "");
     s.business_key_version = j.value("business_key_version", 0ULL);
@@ -412,6 +414,17 @@ void business_key_status_from_json(const nlohmann::json& j, BusinessKeyStatus& s
     s.algorithm = j.value("algorithm", "");
     s.valid_from_ms = j.value("valid_from_ms", 0LL);
     s.valid_to_ms = j.value("valid_to_ms", 0LL);
+    s.envelope_format = string_to_key_envelope_format(j.value("envelope_format", "UNSPECIFIED"));
+    if (j.contains("envelope_digest")) {
+        s.envelope_digest = dec(j.value("envelope_digest", ""));
+    }
+    if (j.contains("key_check_value")) {
+        auto kcv = dec(j.value("key_check_value", ""));
+        if (kcv.size() == 3) {
+            s.key_check_value = {kcv[0], kcv[1], kcv[2]};
+            s.key_check_value_present = true;
+        }
+    }
 }
 
 void import_result_from_json(const nlohmann::json& j, ImportResult& out,
@@ -423,7 +436,7 @@ void import_result_from_json(const nlohmann::json& j, ImportResult& out,
     if (j.contains("items") && j["items"].is_array()) {
         for (const auto& ji : j["items"]) {
             BusinessKeyStatus s;
-            business_key_status_from_json(ji, s);
+            business_key_status_from_json(ji, s, dec);
             out.items.push_back(std::move(s));
         }
     }
@@ -455,7 +468,8 @@ ErrorCode SecClient::get_business_key_status(const std::string& business_domain,
             if (j.contains("items") && j["items"].is_array()) {
                 for (const auto& ji : j["items"]) {
                     BusinessKeyStatus s;
-                    business_key_status_from_json(ji, s);
+                    business_key_status_from_json(ji, s,
+                        [this](const std::string& v) { return impl_->b64_decode(v); });
                     out.items.push_back(std::move(s));
                 }
             }
@@ -486,6 +500,15 @@ ErrorCode SecClient::import_wrapped_business_keys(const std::string& request_id,
             item.parameters.data(), item.parameters.data() + item.parameters.size()));
         e["valid_from_ms"] = item.valid_from_ms;
         e["valid_to_ms"] = item.valid_to_ms;
+        e["wrapping_suite"] = item.wrapping_suite;
+        e["envelope_format"] = key_envelope_format_to_string(item.envelope_format);
+        if (!item.envelope_digest.empty()) {
+            e["envelope_digest"] = impl_->b64_encode(item.envelope_digest);
+        }
+        if (item.key_check_value_present) {
+            e["key_check_value"] = impl_->b64_encode(std::vector<uint8_t>(
+                item.key_check_value.begin(), item.key_check_value.end()));
+        }
         arr.push_back(e);
     }
     params["items"] = arr;
@@ -495,7 +518,8 @@ ErrorCode SecClient::import_wrapped_business_keys(const std::string& request_id,
     if (!ok) return ErrorCode::CONNECTION_FAILED;
     out = ImportResult{};
     out.request_id = request_id;
-    if (status == 0 || status == static_cast<int32_t>(ErrorCode::BUSINESS_KEY_IMPORT_UNKNOWN)) {
+    if (status == 0 || status == static_cast<int32_t>(ErrorCode::BUSINESS_KEY_IMPORT_UNKNOWN) ||
+        status == static_cast<int32_t>(ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN)) {
         try {
             auto j = nlohmann::json::parse(response_json);
             import_result_from_json(j, out, [&](const std::string& s) {

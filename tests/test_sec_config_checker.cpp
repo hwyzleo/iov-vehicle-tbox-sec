@@ -539,7 +539,9 @@ sec:
     enabled: false
     allowed_domains: [V2C_COMM]
     required_purposes: [UPLINK_AEAD, DOWNLINK_AEAD]
-    allowed_wrapping_suites: [ECIES-ECDH-ES-A256GCM-v1]
+    allowed_envelope_formats: [ECDH_ES_P256_V1]
+    allowed_wrapping_suites: [ECDH_ES_P256_HKDF_SHA256_AES256GCM]
+    allowed_algorithms: [AES-256]
     max_items: 2
     max_wrapped_key_bytes: 4096
     request_timeout_ms: 10000

@@ -1,7 +1,7 @@
 //
-// V2C 业务密钥开通集成测试（TBOX-SEC-DSN-CR-019）。
-// 真实 framework-ipc Server + tbox::sec_client 全链路：加密 Wrapped Key -> import
-// -> 状态/结果查询；验证调用方从未获得明文密钥、非幂等导入不重放。
+// V2C 业务密钥开通集成测试（TBOX-SEC-DSN-CR-019；CR-020 §4/§7/§US-020）。
+// 真实 framework-ipc Server + tbox::sec_client 全链路：ECDH-ES P-256 v1 信封 ->
+// import -> 状态/结果查询；验证调用方从未获得明文密钥、非幂等导入不重放。
 //
 #include <gtest/gtest.h>
 
@@ -9,6 +9,7 @@
 #include "sec_ipc_dispatcher.h"
 #include "business_key_provisioning.h"
 #include "business_key_provider.h"
+#include "keyprov_envelope_builder.h"
 #include "soft_file_business_key_provider.h"
 #include "soft_file_hsm.h"
 #include "secure_metadata_ledger.h"
@@ -80,13 +81,16 @@ protected:
         binding_.device_identity = kDeviceIdentity;
         binding_.device_key_id = kDeviceKeyId;
         binding_.device_public_key = device_pub_;
+        binding_.active_cert_p256 = true;
+        binding_.active_cert_key_agreement = true;
+        binding_.private_key_can_derive = true;
+        binding_.active_cert_digest = std::vector<uint8_t>(32, 0xBB);
 
         BusinessKeyProviderConfig pcfg;
         pcfg.store_root = test_dir_ + "/bk";
         pcfg.kek_path = test_dir_ + "/bk/.kek";
-        pcfg.allowed_algorithms = {"AES-256-GCM"};
-        pcfg.allowed_wrapping_suites = {
-            SoftFileBusinessKeyProvider::kSuiteEciesEcdhEsA256Gcm};
+        pcfg.allowed_algorithms = {kDefaultKeyAlgorithm};
+        pcfg.allowed_wrapping_suites = {kWrappingSuiteEcdhEsP256};
         auto provider = std::make_unique<SoftFileBusinessKeyProvider>(
             hsm_.get(), std::move(pcfg), [this]() { return binding_; });
 
@@ -98,9 +102,10 @@ protected:
 
         BusinessKeyProvisioningConfig cfg;
         cfg.enabled = true;
-        cfg.allowed_wrapping_suites = {
-            SoftFileBusinessKeyProvider::kSuiteEciesEcdhEsA256Gcm};
-        cfg.allowed_algorithms = {"AES-256-GCM"};
+        cfg.is_production = false;
+        cfg.allowed_algorithms = {kDefaultKeyAlgorithm};
+        cfg.allowed_wrapping_suites = {kWrappingSuiteEcdhEsP256};
+        cfg.allowed_envelope_formats = {kKeyEnvelopeFormatEcdhEsP256V1};
         service_ = std::make_unique<BusinessKeyProvisioningService>(
             std::move(cfg), std::move(provider), std::make_shared<FakeTrustedTimeProvider>(s),
             std::make_unique<SecureMetadataLedger>(hwyz::store::Store::open("sec", test_dir_)),
@@ -134,25 +139,38 @@ protected:
 
     WrappedKeyItem make_item(const std::string& request_id, const std::string& purpose,
                              const std::string& key_id, uint64_t version) {
-        std::vector<uint8_t> aad = BusinessKeyProvisioningService::buildAad(
-            request_id, kBusinessDomainV2c, purpose, version, kDeviceIdentity);
         std::vector<uint8_t> key(32);
         RAND_bytes(key.data(), 32);
-        std::vector<uint8_t> wrapped;
-        std::string params;
-        EXPECT_EQ(SoftFileBusinessKeyProvider::wrapForTest(
-                      device_pub_,
-                      SoftFileBusinessKeyProvider::kSuiteEciesEcdhEsA256Gcm,
-                      aad, key, wrapped, params),
-                  ErrorCode::SUCCESS);
+        KeyprovEnvelopeInput in;
+        in.device_public_key = device_pub_;
+        in.request_id = request_id;
+        in.business_domain = kBusinessDomainV2c;
+        in.purpose = purpose;
+        in.key_id = key_id;
+        in.business_key_version = version;
+        in.business_key = key;
+        in.root_key_version = 1;
+        in.derivation_version = "v1";
+        in.operation_id = "op-" + purpose;
+        in.recipient_certificate_digest = binding_.active_cert_digest;
+        in.wrapping_suite = kWrappingSuiteEcdhEsP256;
+        in.key_algorithm = kDefaultKeyAlgorithm;
+        KeyprovEnvelopeOutput out;
+        EXPECT_EQ(buildEcdhEsP256EnvelopeV1(in, out), ErrorCode::SUCCESS);
         OPENSSL_cleanse(key.data(), key.size());
+
         WrappedKeyItem item;
         item.purpose = purpose;
         item.key_id = key_id;
         item.business_key_version = version;
-        item.algorithm = "AES-256-GCM";
-        item.wrapped_key.assign(wrapped);
-        item.parameters.assign(std::vector<uint8_t>(params.begin(), params.end()));
+        item.algorithm = kDefaultKeyAlgorithm;
+        item.wrapping_suite = kWrappingSuiteEcdhEsP256;
+        item.envelope_format = KeyEnvelopeFormat::ECDH_ES_P256_V1;
+        item.wrapped_key.assign(out.wrapped_key);
+        item.parameters.assign(out.parameters);
+        item.envelope_digest = out.envelope_digest;
+        item.key_check_value = out.key_check_value;
+        item.key_check_value_present = true;
         item.valid_from_ms = now_ms() - 1000;
         item.valid_to_ms = now_ms() + 86400000;
         return item;
@@ -186,6 +204,7 @@ TEST_F(BusinessKeyIntegrationTest, FullRoundTrip_Import_Status_Result) {
     EXPECT_EQ(result.state, BusinessKeyImportState::COMMITTED);
     EXPECT_EQ(result.items.size(), 2u);
     EXPECT_FALSE(result.import_proof.empty());
+    EXPECT_EQ(result.proof_algorithm, "HMAC-SHA256");
 
     BusinessKeyStatusSet status;
     ASSERT_EQ(client.get_business_key_status(
@@ -193,7 +212,13 @@ TEST_F(BusinessKeyIntegrationTest, FullRoundTrip_Import_Status_Result) {
                   {kBusinessPurposeUplinkAead, kBusinessPurposeDownlinkAead}, status),
               ErrorCode::SUCCESS);
     ASSERT_EQ(status.items.size(), 2u);
-    for (const auto& s : status.items) EXPECT_EQ(s.state, BusinessKeyState::ACTIVE);
+    for (const auto& s : status.items) {
+        EXPECT_EQ(s.state, BusinessKeyState::ACTIVE);
+        // ACK 绑定字段经 IPC 全链路回传（§US-020）
+        EXPECT_EQ(s.envelope_format, KeyEnvelopeFormat::ECDH_ES_P256_V1);
+        EXPECT_EQ(s.envelope_digest.size(), 32u);
+        EXPECT_TRUE(s.key_check_value_present);
+    }
 
     ImportResult queried;
     ASSERT_EQ(client.get_business_key_import_result("int-req-1", queried), ErrorCode::SUCCESS);
