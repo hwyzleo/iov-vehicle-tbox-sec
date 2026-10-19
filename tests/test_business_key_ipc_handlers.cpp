@@ -218,6 +218,10 @@ TEST_F(BusinessKeyIpcTest, Import_And_Status_RoundTrip) {
         // 逐 item Import Attestation（64B P1363 low-S）经 IPC 回传。
         EXPECT_FALSE(it.value("import_proof", "").empty());
         EXPECT_EQ(it.value("proof_algorithm", ""), kImportProofAlgorithmP1363);
+        // CR-012 Q3：完整 key_id + 逐 item 证书摘要
+        EXPECT_FALSE(it.value("key_id", "").empty());
+        EXPECT_EQ(it.value("recipient_certificate_digest", ""),
+                  b64(binding_.active_cert_digest));
     }
 
     json sp;
@@ -247,7 +251,44 @@ TEST_F(BusinessKeyIpcTest, Result_Query) {
     auto resp = dispatcher_->dispatch(
         static_cast<uint32_t>(ipc::MethodId::GET_BUSINESS_KEY_IMPORT_RESULT), q.dump(), 0);
     EXPECT_EQ(status_of(resp), 0);
-    EXPECT_EQ(json::parse(resp).value("state", ""), "COMMITTED");
+    auto j = json::parse(resp);
+    EXPECT_EQ(j.value("state", ""), "COMMITTED");
+    // TBOX-TSP-DSN-CR-012 Q3：结果查询返回完整 key_id 与逐 item 证书摘要，
+    // 供 TSP 重启后重建原 ACK（ack.key_id == response.key_id）。
+    ASSERT_TRUE(j.contains("items") && j["items"].is_array());
+    ASSERT_EQ(j["items"].size(), 2u);
+    EXPECT_EQ(j["items"][0].value("key_id", ""), "kid-up");
+    EXPECT_EQ(j["items"][1].value("key_id", ""), "kid-down");
+    for (const auto& it : j["items"]) {
+        EXPECT_EQ(it.value("recipient_certificate_digest", ""),
+                  b64(binding_.active_cert_digest));
+        // 64B → base64 恰为 88 字符（P1363 low-S）
+        EXPECT_EQ(it.value("import_proof", "").size(), 88u);
+    }
+}
+
+TEST_F(BusinessKeyIpcTest, Capability_Query) {
+    auto resp = dispatcher_->dispatch(
+        static_cast<uint32_t>(ipc::MethodId::GET_V2C_KEY_PROVISIONING_CAPABILITY),
+        "{}", 0);
+    EXPECT_EQ(status_of(resp), 0);
+    auto j = json::parse(resp);
+    EXPECT_TRUE(j.value("success", false));
+    EXPECT_EQ(j.value("capability_contract_version", 0u),
+              V2cKeyProvisioningCapability::kContractVersion);
+    // TBOX-TSP-DSN-CR-012 §8：四项显式门禁必须可区分
+    EXPECT_TRUE(j.contains("envelope_v1_import_ready"));
+    EXPECT_TRUE(j.contains("atomic_dual_purpose_commit_ready"));
+    EXPECT_TRUE(j.contains("import_proof_sign_ecdsa_p256_v1_ready"));
+    EXPECT_TRUE(j.contains("secure_journal_replay_ready"));
+}
+
+TEST_F(BusinessKeyIpcTest, Capability_AclDenied_WrongPeer) {
+    peer_->service = "tbox-diag.service";
+    auto resp = dispatcher_->dispatch(
+        static_cast<uint32_t>(ipc::MethodId::GET_V2C_KEY_PROVISIONING_CAPABILITY),
+        "{}", 0);
+    EXPECT_EQ(status_of(resp), static_cast<int32_t>(ErrorCode::ACL_DENIED));
 }
 
 TEST_F(BusinessKeyIpcTest, AclDenied_WrongPeer) {

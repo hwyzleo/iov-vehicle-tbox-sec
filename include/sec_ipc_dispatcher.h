@@ -89,6 +89,8 @@ private:
     std::pair<int32_t, std::string> handle_get_business_key_status(std::string_view params, int client_fd);
     std::pair<int32_t, std::string> handle_import_wrapped_business_keys(std::string_view params, int client_fd);
     std::pair<int32_t, std::string> handle_get_business_key_import_result(std::string_view params, int client_fd);
+    // TBOX-TSP-DSN-CR-012：只读 capability 查询（readiness 门禁）
+    std::pair<int32_t, std::string> handle_get_v2c_key_provisioning_capability(std::string_view params, int client_fd);
 };
 
 } // namespace sec

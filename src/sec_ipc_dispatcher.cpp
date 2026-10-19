@@ -152,6 +152,9 @@ std::string SecIpcDispatcher::dispatch(uint32_t method_id,
             case ipc::MethodId::GET_BUSINESS_KEY_IMPORT_RESULT:
                 result = handle_get_business_key_import_result(params_json, client_fd);
                 break;
+            case ipc::MethodId::GET_V2C_KEY_PROVISIONING_CAPABILITY:
+                result = handle_get_v2c_key_provisioning_capability(params_json, client_fd);
+                break;
             default:
                 SecLogAdapter::ipc().warn(
                     "sec.ipc.unknown_method",
@@ -535,6 +538,8 @@ nlohmann::json business_key_status_to_json(const BusinessKeyStatus& s) {
     j["purpose"] = s.purpose;
     j["business_key_version"] = s.business_key_version;
     j["state"] = business_key_state_to_string(s.state);
+    // CR-012 Q3：原 ACK Operational Metadata（完整 key_id，非秘密）
+    j["key_id"] = s.key_id;
     j["key_id_digest"] = s.key_id_digest;
     j["algorithm"] = s.algorithm;
     j["valid_from_ms"] = s.valid_from_ms;
@@ -555,6 +560,35 @@ nlohmann::json business_key_status_to_json(const BusinessKeyStatus& s) {
     if (!s.proof_algorithm.empty()) {
         j["proof_algorithm"] = s.proof_algorithm;
     }
+    if (!s.recipient_certificate_digest.empty()) {
+        j["recipient_certificate_digest"] = b64_encode(s.recipient_certificate_digest);
+    }
+    return j;
+}
+
+nlohmann::json capability_to_json(const V2cKeyProvisioningCapability& c) {
+    nlohmann::json j;
+    j["capability_contract_version"] = c.capability_contract_version;
+    // TBOX-TSP-DSN-CR-012 §8：显式门禁
+    j["envelope_v1_import_ready"] = c.envelope_v1_import_ready;
+    j["atomic_dual_purpose_commit_ready"] = c.atomic_dual_purpose_commit_ready;
+    j["import_proof_sign_ecdsa_p256_v1_ready"] = c.import_proof_sign_ecdsa_p256_v1_ready;
+    j["secure_journal_replay_ready"] = c.secure_journal_replay_ready;
+    // 详细能力（诊断）
+    j["proto_release_matched"] = c.proto_release_matched;
+    j["envelope_format_v1"] = c.envelope_format_v1;
+    j["p256_ecdh"] = c.p256_ecdh;
+    j["hkdf_sha256"] = c.hkdf_sha256;
+    j["aes256_gcm_decrypt_to_slot"] = c.aes256_gcm_decrypt_to_slot;
+    j["atomic_dual_slot_commit"] = c.atomic_dual_slot_commit;
+    j["active_certificate_key_agreement"] = c.active_certificate_key_agreement;
+    j["active_certificate_digital_signature"] = c.active_certificate_digital_signature;
+    j["active_private_key_can_derive"] = c.active_private_key_can_derive;
+    j["active_private_key_can_sign"] = c.active_private_key_can_sign;
+    j["ecdsa_p256_sha256_p1363"] = c.ecdsa_p256_sha256_p1363;
+    j["secure_journal_ready"] = c.secure_journal_ready;
+    j["trusted_time_ready"] = c.trusted_time_ready;
+    j["all"] = c.all();
     return j;
 }
 
@@ -723,6 +757,31 @@ std::pair<int32_t, std::string> SecIpcDispatcher::handle_get_business_key_import
     nlohmann::json resp = import_result_to_json(result);
     if (rc != ErrorCode::SUCCESS) resp["success"] = false;
     return {static_cast<int32_t>(rc), resp.dump()};
+}
+
+std::pair<int32_t, std::string> SecIpcDispatcher::handle_get_v2c_key_provisioning_capability(
+        std::string_view /*params*/, int client_fd) {
+    if (!business_key_service_) {
+        nlohmann::json resp;
+        resp["success"] = false;
+        return {static_cast<int32_t>(ErrorCode::NOT_IMPLEMENTED), resp.dump()};
+    }
+    PeerIdentity caller = resolvePeer(client_fd);
+    if (!caller.valid || caller.service_name != business_key_peer_service_) {
+        SecLogAdapter::ipc().warn(
+            "sec.ipc.acl_denied",
+            "V2C keyprov capability 查询 ACL 拒绝",
+            {tbox::fw::log::Field("method_id", tbox::fw::log::FieldValue::makeInt(
+                 static_cast<int>(ipc::MethodId::GET_V2C_KEY_PROVISIONING_CAPABILITY))),
+             tbox::fw::log::Field("peer_valid", tbox::fw::log::FieldValue::makeInt(caller.valid))});
+        return {static_cast<int32_t>(ErrorCode::ACL_DENIED),
+                nlohmann::json({{ "success", false }}).dump()};
+    }
+    // 只读能力快照：不触发密码操作，也不因 shutting_down 而返回错误（诊断可用）。
+    V2cKeyProvisioningCapability cap = business_key_service_->capability();
+    nlohmann::json resp = capability_to_json(cap);
+    resp["success"] = true;
+    return {static_cast<int32_t>(ErrorCode::SUCCESS), resp.dump()};
 }
 
 } // namespace sec

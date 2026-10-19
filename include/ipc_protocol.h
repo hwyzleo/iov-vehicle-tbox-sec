@@ -37,6 +37,8 @@ enum class MethodId : uint32_t {
     GET_BUSINESS_KEY_STATUS = 18,             ///< 查询 V2C 业务密钥件内状态
     IMPORT_WRAPPED_BUSINESS_KEYS = 19,        ///< 导入 Wrapped Key 批次（原子激活，禁止自动重放）
     GET_BUSINESS_KEY_IMPORT_RESULT = 20,      ///< 按 requestId 查询导入结果
+    // TBOX-TSP-DSN-CR-012 §8 / Q1：只读 V2C keyprov 能力查询（TSP readiness 门禁）
+    GET_V2C_KEY_PROVISIONING_CAPABILITY = 21, ///< 查询 V2C keyprov capability（只读）
 };
 
 /// SEC IPC 事件类型（与 framework-ipc EventHeader.event_type 一致）。

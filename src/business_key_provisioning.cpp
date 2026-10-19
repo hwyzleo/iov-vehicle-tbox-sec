@@ -131,6 +131,11 @@ public:
         c.atomic_dual_slot_commit = pc.atomic_dual_slot_commit;
         c.ecdsa_p256_sha256_p1363 = pc.ecdsa_p256_sha256_p1363;
         c.secure_journal_ready = pc.secure_journal_ready;
+        // TBOX-TSP-DSN-CR-012 §8：显式门禁别名（语义与详细能力一致）
+        c.envelope_v1_import_ready = c.envelope_format_v1;
+        c.atomic_dual_purpose_commit_ready = c.atomic_dual_slot_commit;
+        c.import_proof_sign_ecdsa_p256_v1_ready = c.ecdsa_p256_sha256_p1363;
+        c.secure_journal_replay_ready = c.secure_journal_ready;
         BusinessKeyDeviceBinding b = probe_binding();
         c.active_certificate_key_agreement =
             b.ready && b.active_cert_p256 && b.active_cert_key_agreement;
@@ -621,6 +626,7 @@ ErrorCode BusinessKeyProvisioningService::import(const std::string& request_id,
         st.purpose = items[i].purpose;
         st.business_key_version = items[i].business_key_version;
         st.state = BusinessKeyState::STAGED;
+        st.key_id = items[i].key_id;  // CR-012 Q3：journal 保存完整 key_id 以重建原 ACK
         st.key_id_digest = canonical::toHex(canonical::sha256(items[i].key_id));
         st.algorithm = items[i].algorithm;
         st.valid_from_ms = items[i].valid_from_ms;
@@ -720,6 +726,8 @@ ErrorCode BusinessKeyProvisioningService::import(const std::string& request_id,
         st.state = BusinessKeyState::ACTIVE;
         st.key_check_value = actual_kcv[i];
         st.key_check_value_present = true;
+        // CR-012 Q3：逐 item 返回绑定证书策略摘要，供 TSP 机械映射 ACK。
+        st.recipient_certificate_digest = entry.binding_certificate_digest;
 
         std::vector<uint8_t> kcv(st.key_check_value.begin(), st.key_check_value.end());
         std::vector<uint8_t> proof;

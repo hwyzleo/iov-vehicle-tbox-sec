@@ -101,6 +101,10 @@ public:
     ErrorCode get_business_key_import_result(const std::string& request_id,
                                              ImportResult& out);
 
+    /// TBOX-TSP-DSN-CR-012 §8 / Q1：只读 V2C keyprov capability 查询。
+    /// 不触发密码操作；供 TSP 在发起 Request 前完成 readiness 门禁。
+    ErrorCode get_v2c_key_provisioning_capability(V2cKeyProvisioningCapability& out);
+
 private:
     class Impl;
     std::unique_ptr<Impl> impl_;

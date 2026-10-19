@@ -125,6 +125,12 @@ struct BusinessKeyStatus {
     // ---- 逐 item Import Attestation（§7.3 / US-020）----
     std::vector<uint8_t> import_proof;         ///< 64B ECDSA P-256 P1363 low-S 原文
     std::string proof_algorithm;               ///< 固定 ECDSA_P256_SHA256_P1363
+    // ---- 原 ACK 重建材料（TBOX-TSP-DSN-CR-012 Q3：journal/result 事实源）----
+    // key_id 为 OperationalMetadata（非秘密），由 SEC journal 在结果查询时原样返回，
+    // 使 TSP 重启后无需第二套事实源即可重建 ack.key_id == response.key_id；
+    // 该字段不进入 ledger（ledger 仍只保存 key_id_digest）。
+    std::string key_id;                              ///< 完整 keyId（非敏感）
+    std::vector<uint8_t> recipient_certificate_digest;  ///< 32B 绑定证书策略摘要（逐 item）
 };
 
 struct BusinessKeyStatusSet {
@@ -169,6 +175,51 @@ struct ImportResult {
     SecureBuffer import_proof;  ///< 兼容/聚合位；首期 proof 逐 item 见 items[].import_proof
     std::string proof_algorithm;
     std::vector<uint8_t> binding_certificate_digest;  ///< ACK 绑定设备证书摘要 SHA-256(leaf DER)
+};
+
+/// V2C 密钥开通能力上报（TBOX-SEC-DSN-CR-020 §11 / US-022；
+/// TBOX-TSP-DSN-CR-012 §8 增量）。
+///
+/// READY = 以下全部合取。任一缺失时仅允许状态查询/诊断，不接受新信封。
+/// PKI 未签发兼容 `keyAgreement` 证书时，代码/测试可发布，但 capability 不上报 v1、
+/// 导入返回 BUSINESS_KEY_NOT_READY。
+///
+/// 本结构位于公开 SDK 头，供 TSP 通过 SecClient 只读查询。
+struct V2cKeyProvisioningCapability {
+    /// capability 契约版本；消费者按整值 allowlist 精确匹配，缺失/未知判 NOT_READY。
+    static constexpr uint32_t kContractVersion = 1;
+    uint32_t capability_contract_version = kContractVersion;
+
+    // ---- TBOX-TSP-DSN-CR-012 §8 显式门禁（TSP 侧 readiness 直接消费）----
+    bool envelope_v1_import_ready = false;              ///< ECDH_ES_P256_V1 导入能力
+    bool atomic_dual_purpose_commit_ready = false;      ///< 双用途原子提交能力
+    bool import_proof_sign_ecdsa_p256_v1_ready = false; ///< 每用途 P1363 Import Attestation 签名能力
+    bool secure_journal_replay_ready = false;           ///< 安全 journal 原 proof 重放能力
+
+    // ---- 详细能力（诊断 / 内部合取）----
+    bool proto_release_matched = false;          ///< PAR-PROTO release/DescriptorSet 锁定已安装
+    bool envelope_format_v1 = false;             ///< 本构建已实现 ECDH_ES_P256_V1
+    bool p256_ecdh = false;                      ///< HSM/eSE 支持 P-256 ECDH
+    bool hkdf_sha256 = false;                    ///< HSM/eSE 支持 HKDF-SHA-256
+    bool aes256_gcm_decrypt_to_slot = false;     ///< 支持 AES-256-GCM decrypt-to-slot
+    bool atomic_dual_slot_commit = false;        ///< 支持双槽原子提交
+    bool active_certificate_key_agreement = false;    ///< ACTIVE 证书 KU 含 keyAgreement
+    bool active_certificate_digital_signature = false;///< ACTIVE 证书 KU 含 digitalSignature
+    bool active_private_key_can_derive = false;  ///< 私钥句柄支持 ECDH derive（不可导出）
+    bool active_private_key_can_sign = false;    ///< 同一私钥句柄支持 ECDSA sign（不可导出）
+    bool ecdsa_p256_sha256_p1363 = false;        ///< HSM/eSE 支持 ECDSA P-256/SHA-256 P1363
+    bool secure_journal_ready = false;           ///< 安全 journal / ledger 可用
+    bool trusted_time_ready = false;             ///< 可信时间可用
+
+    bool all() const {
+        return envelope_v1_import_ready && atomic_dual_purpose_commit_ready &&
+               import_proof_sign_ecdsa_p256_v1_ready && secure_journal_replay_ready &&
+               proto_release_matched && envelope_format_v1 && p256_ecdh && hkdf_sha256 &&
+               aes256_gcm_decrypt_to_slot && atomic_dual_slot_commit &&
+               active_certificate_key_agreement && active_certificate_digital_signature &&
+               active_private_key_can_derive && active_private_key_can_sign &&
+               ecdsa_p256_sha256_p1363 && secure_journal_ready && trusted_time_ready;
+    }
 };
 
 std::string business_key_state_to_string(BusinessKeyState s);

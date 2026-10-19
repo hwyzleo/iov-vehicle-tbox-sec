@@ -410,6 +410,7 @@ void business_key_status_from_json(
     s.purpose = j.value("purpose", "");
     s.business_key_version = j.value("business_key_version", 0ULL);
     s.state = string_to_business_key_state(j.value("state", "UNKNOWN"));
+    s.key_id = j.value("key_id", "");
     s.key_id_digest = j.value("key_id_digest", "");
     s.algorithm = j.value("algorithm", "");
     s.valid_from_ms = j.value("valid_from_ms", 0LL);
@@ -429,6 +430,9 @@ void business_key_status_from_json(
         s.import_proof = dec(j.value("import_proof", ""));
     }
     s.proof_algorithm = j.value("proof_algorithm", "");
+    if (j.contains("recipient_certificate_digest")) {
+        s.recipient_certificate_digest = dec(j.value("recipient_certificate_digest", ""));
+    }
 }
 
 void import_result_from_json(const nlohmann::json& j, ImportResult& out,
@@ -554,6 +558,49 @@ ErrorCode SecClient::get_business_key_import_result(const std::string& request_i
             import_result_from_json(j, out, [&](const std::string& s) {
                 return impl_->b64_decode(s);
             });
+        } catch (const std::exception&) {
+            return ErrorCode::INTERNAL_ERROR;
+        }
+    }
+    return static_cast<ErrorCode>(status);
+}
+
+ErrorCode SecClient::get_v2c_key_provisioning_capability(
+        V2cKeyProvisioningCapability& out) {
+    auto [ok, status, response_json] = impl_->send_request(
+        static_cast<uint32_t>(ipc::MethodId::GET_V2C_KEY_PROVISIONING_CAPABILITY), "{}");
+    if (!ok) return ErrorCode::CONNECTION_FAILED;
+    out = V2cKeyProvisioningCapability{};
+    if (status == 0) {
+        try {
+            auto j = nlohmann::json::parse(response_json);
+            out.capability_contract_version =
+                j.value("capability_contract_version", 0u);
+            out.envelope_v1_import_ready = j.value("envelope_v1_import_ready", false);
+            out.atomic_dual_purpose_commit_ready =
+                j.value("atomic_dual_purpose_commit_ready", false);
+            out.import_proof_sign_ecdsa_p256_v1_ready =
+                j.value("import_proof_sign_ecdsa_p256_v1_ready", false);
+            out.secure_journal_replay_ready =
+                j.value("secure_journal_replay_ready", false);
+            out.proto_release_matched = j.value("proto_release_matched", false);
+            out.envelope_format_v1 = j.value("envelope_format_v1", false);
+            out.p256_ecdh = j.value("p256_ecdh", false);
+            out.hkdf_sha256 = j.value("hkdf_sha256", false);
+            out.aes256_gcm_decrypt_to_slot =
+                j.value("aes256_gcm_decrypt_to_slot", false);
+            out.atomic_dual_slot_commit = j.value("atomic_dual_slot_commit", false);
+            out.active_certificate_key_agreement =
+                j.value("active_certificate_key_agreement", false);
+            out.active_certificate_digital_signature =
+                j.value("active_certificate_digital_signature", false);
+            out.active_private_key_can_derive =
+                j.value("active_private_key_can_derive", false);
+            out.active_private_key_can_sign =
+                j.value("active_private_key_can_sign", false);
+            out.ecdsa_p256_sha256_p1363 = j.value("ecdsa_p256_sha256_p1363", false);
+            out.secure_journal_ready = j.value("secure_journal_ready", false);
+            out.trusted_time_ready = j.value("trusted_time_ready", false);
         } catch (const std::exception&) {
             return ErrorCode::INTERNAL_ERROR;
         }

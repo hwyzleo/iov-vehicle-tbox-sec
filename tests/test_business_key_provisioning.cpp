@@ -628,6 +628,35 @@ TEST_F(BusinessKeyTest, Recovery_CommitBeforeReply) {
     EXPECT_EQ(r.state, BusinessKeyImportState::COMMITTED);
 }
 
+TEST_F(BusinessKeyTest, Recovery_PreservesFullAckMetadataAcrossRestart) {
+    make_provider();
+    auto items = make_batch("req-ackmeta", 1);
+    ImportResult r0;
+    ASSERT_EQ(service_->import("req-ackmeta", kBusinessDomainV2c, items, r0),
+              ErrorCode::SUCCESS);
+    ASSERT_EQ(r0.items.size(), 2u);
+
+    // TBOX-TSP-DSN-CR-012 Q3：journal 必须为重启后的结果查询保留原 ACK 材料。
+    service_.reset();
+    auto provider2 = std::make_unique<SoftFileBusinessKeyProvider>(
+        hsm_.get(), provider_config(), [this]() { return binding_; });
+    auto service2 = build_service(hsm_.get(), std::move(provider2));
+    ASSERT_EQ(service2->initialize(), ErrorCode::SUCCESS);
+
+    ImportResult q;
+    ASSERT_EQ(service2->getImportResult("req-ackmeta", q), ErrorCode::SUCCESS);
+    EXPECT_EQ(q.state, BusinessKeyImportState::COMMITTED);
+    ASSERT_EQ(q.items.size(), 2u);
+    for (size_t i = 0; i < q.items.size(); ++i) {
+        // 完整 key_id（非摘要）与逐 item 绑定证书摘要必须原样恢复。
+        EXPECT_EQ(q.items[i].key_id, items[i].key_id);
+        EXPECT_EQ(q.items[i].recipient_certificate_digest, binding_.active_cert_digest);
+        EXPECT_EQ(q.items[i].import_proof.size(), kImportProofSizeP1363);
+        EXPECT_EQ(q.items[i].import_proof, r0.items[i].import_proof);
+        EXPECT_EQ(q.items[i].proof_algorithm, kImportProofAlgorithmP1363);
+    }
+}
+
 TEST_F(BusinessKeyTest, OutcomeUnknown_WhenCommitAmbiguous) {
     auto inner = std::make_unique<SoftFileBusinessKeyProvider>(
         hsm_.get(), provider_config(), [this]() { return binding_; });

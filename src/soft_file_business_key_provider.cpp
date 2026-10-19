@@ -306,6 +306,8 @@ public:
             si["purpose"] = it.purpose;
             si["business_key_version"] = it.business_key_version;
             si["state"] = business_key_state_to_string(it.state);
+            // CR-012 Q3：journal 保存完整 key_id 与逐 item 证书摘要（OperationalMetadata，非秘密）
+            si["key_id"] = it.key_id;
             si["key_id_digest"] = it.key_id_digest;
             si["algorithm"] = it.algorithm;
             si["valid_from_ms"] = it.valid_from_ms;
@@ -316,6 +318,7 @@ public:
             si["key_check_value_present"] = it.key_check_value_present;
             si["import_proof"] = to_hex(it.import_proof);
             si["proof_algorithm"] = it.proof_algorithm;
+            si["recipient_certificate_digest"] = to_hex(it.recipient_certificate_digest);
             items.push_back(si);
         }
         j["items"] = items;
@@ -342,6 +345,7 @@ public:
                 s.purpose = si.value("purpose", "");
                 s.business_key_version = si.value("business_key_version", 0ULL);
                 s.state = string_to_business_key_state(si.value("state", "UNKNOWN"));
+                s.key_id = si.value("key_id", "");
                 s.key_id_digest = si.value("key_id_digest", "");
                 s.algorithm = si.value("algorithm", "");
                 s.valid_from_ms = si.value("valid_from_ms", 0LL);
@@ -356,6 +360,8 @@ public:
                 s.key_check_value_present = si.value("key_check_value_present", false);
                 from_hex(si.value("import_proof", ""), s.import_proof);
                 s.proof_algorithm = si.value("proof_algorithm", "");
+                from_hex(si.value("recipient_certificate_digest", ""),
+                         s.recipient_certificate_digest);
                 e.items.push_back(std::move(s));
             }
         }
