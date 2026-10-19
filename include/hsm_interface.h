@@ -51,6 +51,28 @@ public:
         return ErrorCode::NOT_IMPLEMENTED;
     }
 
+    /// 设备身份 Import Attestation 签名原语（TBOX-SEC-DSN-CR-020 §7.3 / US-020）。
+    ///
+    /// 对已计算的 32 字节 SHA-256 摘要（不再二次哈希）以 P-256 私钥执行 ECDSA，
+    /// 输出固定 IEEE-P1363 `r(32B BE) || s(32B BE)`，总长恒 64 字节，且 s 采用
+    /// low-S 规范形式（s <= n/2）。
+    ///
+    /// 这是 SEC 的 HSM/eSE Provider 抽象：芯片原生返回 raw r/s 时由 Provider 补齐并
+    /// 归一化；芯片仅返回 DER 时由 Provider Adapter 内部严格解析 DER（拒绝非法/负数/
+    /// 零值/超范围/多余字节/非最短编码）后归一化。DER→P1363 与 low-S 归一化只允许
+    /// 发生在 Provider 内，不得上移到服务/IPC/调用方。
+    ///
+    /// 与 TLS 路径的 `sign_digest`（DER）语义无关，TLS wire 语义保持不变。
+    /// 默认返回 NOT_IMPLEMENTED（真实 HSM 由设备集成实现）。
+    virtual ErrorCode sign_digest_p1363(const std::string& key_id,
+                                        const std::vector<uint8_t>& digest,
+                                        std::vector<uint8_t>& signature) {
+        (void)key_id;
+        (void)digest;
+        (void)signature;
+        return ErrorCode::NOT_IMPLEMENTED;
+    }
+
     /// ECIES / ECDH-ES + AES-256-GCM 解封装（TBOX-SEC-DSN-CR-019 §4）。
     ///
     /// @deprecated TBOX-SEC-DSN-CR-020：以 `unwrap_ecdh_es_v1` 取代（salt/info 与
@@ -108,6 +130,14 @@ public:
     /// 指定私钥是否具备 P-256 ECDH derive 能力（US-016 / readiness）。
     /// 默认 false（fail-closed）；真实 HSM 由设备集成实现。
     virtual bool supports_ecdh_derive(const std::string& key_id) {
+        (void)key_id;
+        return false;
+    }
+
+    /// 指定私钥是否具备 ECDSA P-256/SHA-256 签名能力（US-016/US-022 / readiness）。
+    /// 同一设备身份私钥句柄必须同时支持 sign + derive（US-016）。
+    /// 默认 false（fail-closed）；真实 HSM 由设备集成实现。
+    virtual bool supports_ecdsa_sign(const std::string& key_id) {
         (void)key_id;
         return false;
     }

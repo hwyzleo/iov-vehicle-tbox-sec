@@ -247,6 +247,90 @@ ErrorCode SoftFileHsm::sign_digest(const std::string& key_id,
     return ErrorCode::SUCCESS;
 }
 
+ErrorCode SoftFileHsm::sign_digest_p1363(const std::string& key_id,
+                                         const std::vector<uint8_t>& digest,
+                                         std::vector<uint8_t>& signature) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    signature.clear();
+
+    if (!is_valid_key_id(key_id)) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+    // Import Attestation 固定 SHA-256 摘要（32 字节），不参与算法协商。
+    if (digest.size() != SHA256_DIGEST_LENGTH) {
+        return ErrorCode::INVALID_PARAMETER;
+    }
+
+    auto it = keys_.find(key_id);
+    if (it == keys_.end()) {
+        KeyData kd;
+        auto rc = load_key_from_store(key_id, kd);
+        if (rc != ErrorCode::SUCCESS) return rc;
+        keys_[key_id] = std::move(kd);
+        it = keys_.find(key_id);
+    }
+
+    EC_KEY* ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (!ec) return ErrorCode::HSM_SIGN_FAILED;
+
+    BIGNUM* priv_bn = BN_bin2bn(it->second.priv.data(),
+                                 static_cast<int>(it->second.priv.size()), nullptr);
+    if (!priv_bn) { EC_KEY_free(ec); return ErrorCode::HSM_SIGN_FAILED; }
+    EC_KEY_set_private_key(ec, priv_bn);
+    BN_free(priv_bn);
+
+    // 原生 raw r/s（芯片只返回 DER 时由各自 Provider Adapter 内部转换）。
+    ECDSA_SIG* sig = ECDSA_do_sign(digest.data(), static_cast<int>(digest.size()), ec);
+    if (!sig) { EC_KEY_free(ec); return ErrorCode::HSM_SIGN_FAILED; }
+
+    const BIGNUM* r = nullptr;
+    const BIGNUM* s = nullptr;
+    ECDSA_SIG_get0(sig, &r, &s);
+    const EC_GROUP* group = EC_KEY_get0_group(ec);
+    const BIGNUM* order = group ? EC_GROUP_get0_order(group) : nullptr;
+    if (r == nullptr || s == nullptr || order == nullptr || BN_is_negative(r) ||
+        BN_is_negative(s) || BN_is_zero(r) || BN_is_zero(s) || BN_cmp(r, order) >= 0 ||
+        BN_cmp(s, order) >= 0) {
+        ECDSA_SIG_free(sig);
+        EC_KEY_free(ec);
+        return ErrorCode::HSM_SIGN_FAILED;
+    }
+
+    // low-S 归一化：s' = min(s, n - s)。
+    BIGNUM* s_norm = BN_dup(s);
+    BIGNUM* half = BN_new();
+    if (!s_norm || !half) {
+        BN_free(s_norm);
+        BN_free(half);
+        ECDSA_SIG_free(sig);
+        EC_KEY_free(ec);
+        return ErrorCode::HSM_SIGN_FAILED;
+    }
+    BN_rshift1(half, order);  // floor(n/2)
+    if (BN_cmp(s_norm, half) > 0) {
+        BIGNUM* s_alt = BN_new();
+        BN_sub(s_alt, order, s_norm);
+        BN_free(s_norm);
+        s_norm = s_alt;
+    }
+
+    signature.assign(2 * 32, 0);
+    if (BN_bn2binpad(r, signature.data(), 32) != 32 ||
+        BN_bn2binpad(s_norm, signature.data() + 32, 32) != 32) {
+        BN_free(s_norm);
+        BN_free(half);
+        ECDSA_SIG_free(sig);
+        EC_KEY_free(ec);
+        signature.clear();
+        return ErrorCode::HSM_SIGN_FAILED;
+    }
+    BN_free(s_norm);
+    BN_free(half);
+    ECDSA_SIG_free(sig);
+    EC_KEY_free(ec);
+    return ErrorCode::SUCCESS;
+}
+
 ErrorCode SoftFileHsm::unwrap_ecdh_es(const std::string& recipient_key_id,
                                        const std::vector<uint8_t>& ephemeral_public_key,
                                        const std::vector<uint8_t>& iv,
@@ -457,6 +541,14 @@ ErrorCode SoftFileHsm::unwrap_ecdh_es_v1(
 }
 
 bool SoftFileHsm::supports_ecdh_derive(const std::string& key_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!is_valid_key_id(key_id)) return false;
+    if (keys_.find(key_id) != keys_.end()) return true;
+    KeyData kd;
+    return load_key_from_store(key_id, kd) == ErrorCode::SUCCESS;
+}
+
+bool SoftFileHsm::supports_ecdsa_sign(const std::string& key_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!is_valid_key_id(key_id)) return false;
     if (keys_.find(key_id) != keys_.end()) return true;

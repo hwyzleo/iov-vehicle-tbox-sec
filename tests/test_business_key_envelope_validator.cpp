@@ -86,7 +86,9 @@ EnvelopeContext context_for(const KeyprovEnvelopeInput& in) {
     ctx.active_cert_digest = in.recipient_certificate_digest;
     ctx.active_cert_p256 = true;
     ctx.active_cert_key_agreement = true;
+    ctx.active_cert_digital_signature = true;
     ctx.private_key_can_derive = true;
+    ctx.private_key_can_sign = true;
     return ctx;
 }
 
@@ -269,6 +271,16 @@ TEST(EnvelopeValidator, RejectsWhenCertificateCannotDerive) {
 
     ctx = context_for(in);
     ctx.active_cert_key_agreement = false;
+    EXPECT_EQ(validateEnvelope(item_from_output(in, out), ctx, EnvelopeLimits{}, v),
+              ErrorCode::BUSINESS_KEY_NOT_READY);
+
+    ctx = context_for(in);
+    ctx.active_cert_digital_signature = false;
+    EXPECT_EQ(validateEnvelope(item_from_output(in, out), ctx, EnvelopeLimits{}, v),
+              ErrorCode::BUSINESS_KEY_NOT_READY);
+
+    ctx = context_for(in);
+    ctx.private_key_can_sign = false;
     EXPECT_EQ(validateEnvelope(item_from_output(in, out), ctx, EnvelopeLimits{}, v),
               ErrorCode::BUSINESS_KEY_NOT_READY);
 }

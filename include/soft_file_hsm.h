@@ -32,6 +32,10 @@ public:
                           const std::vector<uint8_t>& digest,
                           std::vector<uint8_t>& signature) override;
 
+    ErrorCode sign_digest_p1363(const std::string& key_id,
+                                const std::vector<uint8_t>& digest,
+                                std::vector<uint8_t>& signature) override;
+
     ErrorCode unwrap_ecdh_es(const std::string& recipient_key_id,
                              const std::vector<uint8_t>& ephemeral_public_key,
                              const std::vector<uint8_t>& iv,
@@ -50,6 +54,8 @@ public:
                                  std::vector<uint8_t>& plaintext) override;
 
     bool supports_ecdh_derive(const std::string& key_id) override;
+
+    bool supports_ecdsa_sign(const std::string& key_id) override;
 
     ErrorCode verify(const std::string& key_id,
                      const std::vector<uint8_t>& data,

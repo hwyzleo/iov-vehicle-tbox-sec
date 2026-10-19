@@ -83,7 +83,9 @@ protected:
         binding_.device_public_key = device_pub_;
         binding_.active_cert_p256 = true;
         binding_.active_cert_key_agreement = true;
+        binding_.active_cert_digital_signature = true;
         binding_.private_key_can_derive = true;
+        binding_.private_key_can_sign = true;
         binding_.active_cert_digest = std::vector<uint8_t>(32, 0xBB);
 
         BusinessKeyProviderConfig pcfg;
@@ -203,8 +205,12 @@ TEST_F(BusinessKeyIntegrationTest, FullRoundTrip_Import_Status_Result) {
               ErrorCode::SUCCESS);
     EXPECT_EQ(result.state, BusinessKeyImportState::COMMITTED);
     EXPECT_EQ(result.items.size(), 2u);
-    EXPECT_FALSE(result.import_proof.empty());
-    EXPECT_EQ(result.proof_algorithm, "HMAC-SHA256");
+    EXPECT_EQ(result.proof_algorithm, kImportProofAlgorithmP1363);
+    EXPECT_EQ(result.binding_certificate_digest, binding_.active_cert_digest);
+    for (const auto& it : result.items) {
+        EXPECT_EQ(it.import_proof.size(), kImportProofSizeP1363);
+        EXPECT_EQ(it.proof_algorithm, kImportProofAlgorithmP1363);
+    }
 
     BusinessKeyStatusSet status;
     ASSERT_EQ(client.get_business_key_status(

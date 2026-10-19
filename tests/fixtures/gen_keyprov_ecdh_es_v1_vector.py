@@ -4,8 +4,10 @@
 用途（TBOX-SEC-DSN-CR-020 §13 / US-017/018/020）：
   * 以固定、非生产 P-256 私钥夹具离线计算 ECDH/HKDF/AES-GCM 与 canonical
     framing（AAD/envelopeDigest/KCV/proofInput）的期望值；
-  * 作为 C++ `buildEcdhEsP256EnvelopeV1` 的跨实现 golden vector 断言源，避免
-    C++ 侧自证。
+  * 以 RFC 6979 确定性 ECDSA（P-256/SHA-256、IEEE-P1363 low-S 64B）计算设备私钥
+    导入证明（import_proof）的 golden 期望值；
+  * 作为 C++ `buildEcdhEsP256EnvelopeV1` / 导入证明校验的跨实现 golden vector
+    断言源，避免 C++ 侧自证。
 
 重要：本脚本手写 `EcdhEsP256EnvelopeParametersV1` 的 deterministic protobuf bytes，
 而非依赖 protoc/Python runtime 版本；字段号/类型与 proto/security/keyprov/v1 冻结定义一致，
@@ -15,11 +17,12 @@
 """
 
 import hashlib
+import hmac
 import json
 import os
 
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import ec, utils
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
@@ -157,6 +160,101 @@ def hkdf_info(recipient_fp: bytes) -> bytes:
     ).encode("utf-8")
 
 
+# ---- P-256 (SEC 2 / FIPS 186-4) 常数 ----
+P256_P = 0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF
+P256_A = P256_P - 3
+P256_B = 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B
+P256_N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+P256_G = (
+    0x6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296,
+    0x4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5,
+)
+
+
+def _point_add(p1, p2):
+    if p1 is None:
+        return p2
+    if p2 is None:
+        return p1
+    x1, y1 = p1
+    x2, y2 = p2
+    if x1 == x2 and (y1 + y2) % P256_P == 0:
+        return None
+    if p1 == p2:
+        lam = (3 * x1 * x1 + P256_A) * pow(2 * y1, -1, P256_P) % P256_P
+    else:
+        lam = (y2 - y1) * pow(x2 - x1, -1, P256_P) % P256_P
+    x3 = (lam * lam - x1 - x2) % P256_P
+    y3 = (lam * (x1 - x3) - y1) % P256_P
+    return (x3, y3)
+
+
+def _point_mul(k: int, point):
+    result = None
+    addend = point
+    while k:
+        if k & 1:
+            result = _point_add(result, addend)
+        addend = _point_add(addend, addend)
+        k >>= 1
+    return result
+
+
+def _rfc6979_candidates(x: int, h1: bytes, hlen: int = 32):
+    """RFC 6979 §3.2 确定性 k 生成器（HMAC-SHA256 DRBG）。"""
+    qlen = P256_N.bit_length()
+
+    def bits2int(b: bytes) -> int:
+        v = int.from_bytes(b, "big")
+        blen = len(b) * 8
+        return v >> (blen - qlen) if blen > qlen else v
+
+    def int2octets(v: int) -> bytes:
+        return v.to_bytes(hlen, "big")
+
+    def bits2octets(b: bytes) -> bytes:
+        z1 = bits2int(b)
+        z2 = z1 - P256_N
+        return int2octets(z2 if z2 >= 0 else z1)
+
+    V = b"\x01" * hlen
+    K = b"\x00" * hlen
+    K = hmac.new(K, V + b"\x00" + int2octets(x) + bits2octets(h1), hashlib.sha256).digest()
+    V = hmac.new(K, V, hashlib.sha256).digest()
+    K = hmac.new(K, V + b"\x01" + int2octets(x) + bits2octets(h1), hashlib.sha256).digest()
+    V = hmac.new(K, V, hashlib.sha256).digest()
+    while True:
+        T = b""
+        while len(T) < (qlen + 7) // 8:
+            V = hmac.new(K, V, hashlib.sha256).digest()
+            T += V
+        k = bits2int(T)
+        if 1 <= k < P256_N:
+            yield k
+        K = hmac.new(K, V + b"\x00", hashlib.sha256).digest()
+        V = hmac.new(K, V, hashlib.sha256).digest()
+
+
+def ecdsa_p1363_low_s(priv_int: int, msg: bytes) -> bytes:
+    """RFC 6979 确定性 ECDSA P-256/SHA-256，输出 IEEE-P1363 low-S 64B。"""
+    digest = hashlib.sha256(msg).digest()
+    z = int.from_bytes(digest, "big")
+    for k in _rfc6979_candidates(priv_int, digest):
+        R = _point_mul(k, P256_G)
+        if R is None:
+            continue
+        r = R[0] % P256_N
+        if r == 0:
+            continue
+        s = (pow(k, -1, P256_N) * (z + r * priv_int)) % P256_N
+        if s == 0:
+            continue
+        if s > P256_N // 2:
+            s = P256_N - s
+        return r.to_bytes(32, "big") + s.to_bytes(32, "big")
+    raise AssertionError("unreachable")
+
+
 def main():
     device_priv = ec.derive_private_key(int.from_bytes(DEVICE_PRIV, "big"),
                                         ec.SECP256R1())
@@ -200,6 +298,20 @@ def main():
     kcv = hashlib.sha256(BUSINESS_KEY).digest()[:3]
     pinput = proof_input(env_dgst, kcv)
 
+    # 设备私钥对 proofInput 的 AES/ECDSA 导入证明（DSN-CR-020 §5/§7.3）：
+    # ECDSA P-256 / SHA-256、IEEE-P1363 定长 64B（r||s）、low-S 规范化。
+    proof = ecdsa_p1363_low_s(int.from_bytes(DEVICE_PRIV, "big"), pinput)
+
+    # 自检：将 P1363 转 DER 后用 cryptography 独立验证，确保 golden proof 可用。
+    r_int = int.from_bytes(proof[:32], "big")
+    s_int = int.from_bytes(proof[32:], "big")
+    device_priv.public_key().verify(
+        utils.encode_dss_signature(r_int, s_int),
+        hashlib.sha256(pinput).digest(),
+        ec.ECDSA(utils.Prehashed(hashes.SHA256())),
+    )
+    assert s_int <= P256_N // 2, "proof must be low-S"
+
     vector = {
         "_comment": "非生产 golden vector；由 gen_keyprov_ecdh_es_v1_vector.py 生成",
         "inputs": {
@@ -235,6 +347,8 @@ def main():
             "envelope_digest": env_dgst.hex(),
             "key_check_value": kcv.hex(),
             "proof_input": pinput.hex(),
+            "import_proof": proof.hex(),
+            "proof_algorithm": "ECDSA_P256_SHA256_P1363",
         },
     }
 

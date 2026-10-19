@@ -1777,7 +1777,9 @@ void SecService::initializeBusinessKeyProvisioning() {
               auto cap = adapter.probe();
               b.active_cert_p256 = cap.p256;
               b.active_cert_key_agreement = cap.key_agreement;
+              b.active_cert_digital_signature = cap.digital_signature;
               b.private_key_can_derive = cap.private_key_can_derive;
+              b.private_key_can_sign = cap.private_key_can_sign;
               b.active_cert_digest = cap.certificate_digest;
               return b;
           };

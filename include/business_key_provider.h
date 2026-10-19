@@ -7,7 +7,7 @@
 //   - unwrapToStaging：在 HSM/eSE 内执行 unwrap-to-slot，明文不返回主机普通内存；
 //   - commitBatch / rollbackStaging：原子切换 ACTIVE 或回滚 staging；
 //   - querySlot：读取权威 slot 状态（供 ledger 交叉校验）；
-//   - generateProof：使用实际导入密钥做 HMAC/CMAC 或设备证明密钥签名。
+//   - generateProof：使用设备身份私钥生成 ECDSA P-256/SHA-256 P1363 Import Attestation。
 //
 // production 缺少可信 HSM/eSE 能力时 provider 保持 NOT_READY（fail-closed），
 // 禁止软件明文降级；SoftFile provider 仅允许显式非生产 profile。
@@ -45,10 +45,12 @@ struct BusinessKeyDeviceBinding {
     std::string device_identity;             ///< hsm_uid / ecu_uid
     std::string device_key_id;               ///< HSM 内设备密钥 key_id
     std::vector<uint8_t> device_public_key;  ///< 未压缩 EC 公钥（65B，P-256）
-    // ---- TBOX-SEC-DSN-CR-020 §5/§10：ACTIVE 证书 ECDH 能力门禁（由组合根填充）----
+    // ---- TBOX-SEC-DSN-CR-020 §5/§10：ACTIVE 证书 ECDH + 签名能力门禁（组合根填充）----
     bool active_cert_p256 = false;           ///< ACTIVE 证书公钥为允许的 P-256 EC
     bool active_cert_key_agreement = false;  ///< X.509 KeyUsage 含 keyAgreement
+    bool active_cert_digital_signature = false;  ///< X.509 KeyUsage 含 digitalSignature
     bool private_key_can_derive = false;     ///< 对应私钥策略允许 ECDH derive
+    bool private_key_can_sign = false;       ///< 同一私钥策略允许 ECDSA sign（Import Attestation）
     std::vector<uint8_t> active_cert_digest; ///< SHA-256(leaf DER)，用于信封绑定比对
 
     void clearPublicKey() {
@@ -75,8 +77,9 @@ struct BusinessKeyJournalEntry {
     std::string provider_version_digest;
     std::string last_error;  ///< 符号名；仅内部恢复使用
     // ---- 原 ACK / proof（§10：允许保存非敏感 proof，禁止保存密钥明文/KEK/shared secret）----
-    std::vector<uint8_t> import_proof;  ///< canonical ACK proof 原文（非敏感持钥证明）
+    std::vector<uint8_t> import_proof;  ///< 兼容/聚合位；首期 proof 逐 item 存于 items[].import_proof
     std::string proof_algorithm;
+    std::vector<uint8_t> binding_certificate_digest;  ///< ACK 绑定设备证书摘要 SHA-256(leaf DER)
 };
 
 /// provider 能力上报（TBOX-SEC-DSN-CR-020 §11）。
@@ -85,12 +88,12 @@ struct BusinessKeyProviderCapability {
     bool hkdf_sha256 = false;
     bool aes256_gcm_decrypt_to_slot = false;
     bool atomic_dual_slot_commit = false;
+    bool ecdsa_p256_sha256_p1363 = false;  ///< HSM/eSE 支持 ECDSA P-256/SHA-256 P1363 签名
     bool secure_journal_ready = false;
-    bool proof_key_ready = false;
 
     bool all() const {
         return p256_ecdh && hkdf_sha256 && aes256_gcm_decrypt_to_slot &&
-               atomic_dual_slot_commit && secure_journal_ready && proof_key_ready;
+               atomic_dual_slot_commit && ecdsa_p256_sha256_p1363 && secure_journal_ready;
     }
 };
 
@@ -144,10 +147,14 @@ public:
                                 const std::string& purpose,
                                 BusinessKeySlotInfo& out) = 0;
 
-    /// 使用实际导入的 ACTIVE 密钥生成非敏感持钥证明（§7.3 canonical proofInput）。
-    /// proofInput = lengthPrefixed(UTF8("openiov|keyprov-ack|v1"), UTF8(requestId),
-    ///   UTF8(businessDomain), enumValue(purpose), SHA-256(UTF8(keyId)),
-    ///   uint64be(businessKeyVersion), envelopeDigest, keyCheckValue)
+    /// 使用设备身份私钥（本次 provisioning 绑定的 ACTIVE 设备证书对应私钥）生成
+    /// Import Attestation（§7.3 / US-020）。
+    ///   proofInput = lengthPrefixed(UTF8("openiov|keyprov-ack|v1"), UTF8(requestId),
+    ///     UTF8(businessDomain), enumValue(purpose), SHA-256(UTF8(keyId)),
+    ///     uint64be(businessKeyVersion), envelopeDigest, keyCheckValue)
+    ///   proof = ECDSA_P256_SHA256_P1363(devicePrivateKey, SHA-256(proofInput))
+    /// 输出固定 64 字节 IEEE-P1363 low-S；algorithm 恒为 "ECDSA_P256_SHA256_P1363"。
+    /// 仅在双用途原子 commit 成功后才允许调用。
     virtual ErrorCode generateProof(const std::string& domain,
                                     const std::string& purpose,
                                     uint64_t business_key_version,

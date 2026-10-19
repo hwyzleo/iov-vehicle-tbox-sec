@@ -14,7 +14,12 @@
 #include "tbox/sec/business_key.h"
 #include "trusted_time.h"
 
+#include <openssl/bn.h>
+#include <openssl/ec.h>
+#include <openssl/ecdsa.h>
+#include <openssl/obj_mac.h>
 #include <openssl/rand.h>
+#include <openssl/sha.h>
 
 #include <chrono>
 #include <filesystem>
@@ -60,6 +65,58 @@ std::vector<uint8_t> random_key(size_t n = 32) {
 const std::string kDeviceKeyId = "ecu1+ecu1";
 const std::string kDeviceIdentity = "ecu1";
 
+/// 用设备公钥验证 P1363 proof（恒 64B、low-S）对给定 proofInput 的签名。
+bool verify_p1363_proof(const std::vector<uint8_t>& device_pub,
+                        const std::vector<uint8_t>& proof_input,
+                        const std::vector<uint8_t>& proof) {
+    if (proof.size() != 64) return false;
+    EC_KEY* ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (!ec) return false;
+    bool ok = false;
+    const EC_GROUP* group = EC_KEY_get0_group(ec);
+    EC_POINT* pt = EC_POINT_new(group);
+    if (pt && EC_POINT_oct2point(group, pt, device_pub.data(), device_pub.size(), nullptr) == 1) {
+        EC_KEY_set_public_key(ec, pt);
+        BIGNUM* s_bn = BN_bin2bn(proof.data() + 32, 32, nullptr);
+        BIGNUM* half = BN_new();
+        BN_rshift1(half, EC_GROUP_get0_order(group));
+        const bool low_s = BN_cmp(s_bn, half) <= 0;
+        ECDSA_SIG* sig = ECDSA_SIG_new();
+        ECDSA_SIG_set0(sig, BN_bin2bn(proof.data(), 32, nullptr),
+                       BN_bin2bn(proof.data() + 32, 32, nullptr));
+        unsigned char* der = nullptr;
+        int der_len = i2d_ECDSA_SIG(sig, &der);
+        uint8_t digest[SHA256_DIGEST_LENGTH];
+        SHA256(proof_input.data(), proof_input.size(), digest);
+        ok = low_s && der_len > 0 &&
+             ECDSA_verify(0, digest, SHA256_DIGEST_LENGTH, der, der_len, ec) == 1;
+        OPENSSL_free(der);
+        ECDSA_SIG_free(sig);
+        BN_free(s_bn);
+        BN_free(half);
+    }
+    if (pt) EC_POINT_free(pt);
+    EC_KEY_free(ec);
+    return ok;
+}
+
+/// 复算某 item 的 canonical proofInput（与 provider 保持一致）。
+std::vector<uint8_t> item_proof_input(const std::string& request_id, const std::string& purpose,
+                                      const std::string& key_id, const WrappedKeyItem& item) {
+    canonical::ProofInput pi;
+    pi.request_id = request_id;
+    pi.business_domain = kBusinessDomainV2c;
+    uint64_t purpose_val = 0;
+    purposeEnumValue(purpose, purpose_val);
+    pi.purpose = purpose_val;
+    pi.key_id = key_id;
+    pi.business_key_version = item.business_key_version;
+    pi.envelope_digest = item.envelope_digest;
+    pi.key_check_value =
+        std::vector<uint8_t>(item.key_check_value.begin(), item.key_check_value.end());
+    return canonical::buildProofInput(pi);
+}
+
 /// 统计安全原语调用的 HSM 装饰器（用于认证 US-016「0 次硬件调用」）。
 class CountingHsm : public SoftFileHsm {
 public:
@@ -78,7 +135,14 @@ public:
         return SoftFileHsm::unwrap_ecdh_es_v1(key_id, eph, salt, info, nonce, ct, tag, aad,
                                               plain);
     }
+    ErrorCode sign_digest_p1363(const std::string& key_id,
+                                const std::vector<uint8_t>& digest,
+                                std::vector<uint8_t>& signature) override {
+        ++sign_calls;
+        return SoftFileHsm::sign_digest_p1363(key_id, digest, signature);
+    }
     int unwrap_calls = 0;
+    int sign_calls = 0;
 };
 
 /// commit 阶段恒返回未知错误的 provider（用于 OUTCOME_UNKNOWN 对账路径）。
@@ -147,7 +211,9 @@ protected:
         binding_.device_public_key = device_pub_;
         binding_.active_cert_p256 = true;
         binding_.active_cert_key_agreement = true;
+        binding_.active_cert_digital_signature = true;
         binding_.private_key_can_derive = true;
+        binding_.private_key_can_sign = true;
         binding_.active_cert_digest = std::vector<uint8_t>(32, 0xBB);
     }
 
@@ -272,12 +338,21 @@ TEST_F(BusinessKeyTest, Import_TwoItems_ActiveAndProof) {
     ASSERT_EQ(service_->import("req-1", kBusinessDomainV2c, items, result), ErrorCode::SUCCESS);
     EXPECT_EQ(result.state, BusinessKeyImportState::COMMITTED);
     EXPECT_EQ(result.items.size(), 2u);
-    EXPECT_FALSE(result.import_proof.empty());
-    EXPECT_EQ(result.proof_algorithm, "HMAC-SHA256");
-    for (const auto& it : result.items) {
+    EXPECT_EQ(result.proof_algorithm, kImportProofAlgorithmP1363);
+    EXPECT_EQ(result.binding_certificate_digest, binding_.active_cert_digest);
+    for (size_t i = 0; i < result.items.size(); ++i) {
+        const auto& it = result.items[i];
         EXPECT_EQ(it.envelope_format, KeyEnvelopeFormat::ECDH_ES_P256_V1);
         EXPECT_EQ(it.envelope_digest.size(), 32u);
         EXPECT_TRUE(it.key_check_value_present);
+        // 逐 item Import Attestation：64B P1363 low-S，可用设备公钥验签。
+        ASSERT_EQ(it.import_proof.size(), kImportProofSizeP1363);
+        EXPECT_EQ(it.proof_algorithm, kImportProofAlgorithmP1363);
+        auto pin = item_proof_input("req-1", items[i].purpose, items[i].key_id, items[i]);
+        EXPECT_TRUE(verify_p1363_proof(device_pub_, pin, it.import_proof));
+        // 篡改 proofInput 后验签必须失败（测试矩阵 §13.11）。
+        pin[0] ^= 0xff;
+        EXPECT_FALSE(verify_p1363_proof(device_pub_, pin, it.import_proof));
     }
 
     BusinessKeyStatusSet set;
@@ -305,7 +380,12 @@ TEST_F(BusinessKeyTest, Import_Idempotent_SameDigest) {
     ASSERT_EQ(service_->import("req-2", kBusinessDomainV2c, items, r2), ErrorCode::SUCCESS);
     EXPECT_EQ(r2.state, BusinessKeyImportState::COMMITTED);
     EXPECT_EQ(r1.items[0].key_id_digest, r2.items[0].key_id_digest);
-    EXPECT_EQ(r1.import_proof.bytes(), r2.import_proof.bytes());
+    // 重放返回 journal 中原 proof bytes（不重新签名，测试矩阵 §13.12）。
+    ASSERT_EQ(r1.items.size(), 2u);
+    for (size_t i = 0; i < r1.items.size(); ++i) {
+        EXPECT_EQ(r1.items[i].import_proof, r2.items[i].import_proof);
+        EXPECT_EQ(r2.items[i].proof_algorithm, kImportProofAlgorithmP1363);
+    }
 }
 
 TEST_F(BusinessKeyTest, Import_Conflict_DifferentDigest) {
@@ -445,6 +525,73 @@ TEST_F(BusinessKeyTest, CertKeyAgreementMissing_NotReady_NoHardwareCalls) {
     EXPECT_EQ(service_->import("req-ku", kBusinessDomainV2c, items, r),
               ErrorCode::BUSINESS_KEY_NOT_READY);
     EXPECT_EQ(counter->unwrap_calls, 0);
+}
+
+TEST_F(BusinessKeyTest, CertDigitalSignatureMissing_NotReady_NoHardwareCalls) {
+    binding_.active_cert_digital_signature = false;
+    auto counting = std::make_unique<CountingHsm>(
+        hwyz::store::Store::open("sec_hsm", dir_), "aes-256-gcm", dir_ + "/.hsm_kek");
+    ASSERT_EQ(counting->initialize(), ErrorCode::SUCCESS);
+    KeyPair kp;
+    ASSERT_EQ(counting->generate_key_pair(kDeviceKeyId, "ecdsa-p256", kp), ErrorCode::SUCCESS);
+    CountingHsm* counter = counting.get();
+
+    auto provider = std::make_unique<SoftFileBusinessKeyProvider>(
+        counting.get(), provider_config(), [this]() { return binding_; });
+    service_ = build_service(counting.get(), std::move(provider));
+    ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
+
+    auto items = make_batch("req-digsig", 1);
+    ImportResult r;
+    EXPECT_EQ(service_->import("req-digsig", kBusinessDomainV2c, items, r),
+              ErrorCode::BUSINESS_KEY_NOT_READY);
+    EXPECT_EQ(counter->unwrap_calls, 0);
+    EXPECT_EQ(counter->sign_calls, 0);
+}
+
+TEST_F(BusinessKeyTest, PrivateKeySignMissing_NotReady_NoHardwareCalls) {
+    binding_.private_key_can_sign = false;
+    auto counting = std::make_unique<CountingHsm>(
+        hwyz::store::Store::open("sec_hsm", dir_), "aes-256-gcm", dir_ + "/.hsm_kek");
+    ASSERT_EQ(counting->initialize(), ErrorCode::SUCCESS);
+    KeyPair kp;
+    ASSERT_EQ(counting->generate_key_pair(kDeviceKeyId, "ecdsa-p256", kp), ErrorCode::SUCCESS);
+    CountingHsm* counter = counting.get();
+
+    auto provider = std::make_unique<SoftFileBusinessKeyProvider>(
+        counting.get(), provider_config(), [this]() { return binding_; });
+    service_ = build_service(counting.get(), std::move(provider));
+    ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
+
+    auto items = make_batch("req-sign", 1);
+    ImportResult r;
+    EXPECT_EQ(service_->import("req-sign", kBusinessDomainV2c, items, r),
+              ErrorCode::BUSINESS_KEY_NOT_READY);
+    EXPECT_EQ(counter->unwrap_calls, 0);
+    EXPECT_EQ(counter->sign_calls, 0);
+}
+
+TEST_F(BusinessKeyTest, ImportProof_ReplayDoesNotReSign) {
+    make_provider();
+    auto items = make_batch("req-resign", 1);
+    ImportResult r1;
+    ASSERT_EQ(service_->import("req-resign", kBusinessDomainV2c, items, r1), ErrorCode::SUCCESS);
+    // ECDSA 非确定性：若重放重新签名，字节必然不同。逐字节相等即证明未重新签名。
+    for (const auto& it : r1.items) ASSERT_EQ(it.import_proof.size(), kImportProofSizeP1363);
+    ImportResult r2;
+    ASSERT_EQ(service_->import("req-resign", kBusinessDomainV2c, items, r2), ErrorCode::SUCCESS);
+    ASSERT_EQ(r2.items.size(), r1.items.size());
+    for (size_t i = 0; i < r1.items.size(); ++i) {
+        EXPECT_EQ(r1.items[i].import_proof, r2.items[i].import_proof);
+    }
+
+    // 结果查询同样回传 journal 原 proof。
+    ImportResult q;
+    ASSERT_EQ(service_->getImportResult("req-resign", q), ErrorCode::SUCCESS);
+    ASSERT_EQ(q.items.size(), r1.items.size());
+    for (size_t i = 0; i < r1.items.size(); ++i) {
+        EXPECT_EQ(q.items[i].import_proof, r1.items[i].import_proof);
+    }
 }
 
 // ---------------- 结果查询 / 恢复 ----------------

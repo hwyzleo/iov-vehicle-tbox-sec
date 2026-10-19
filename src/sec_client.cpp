@@ -425,6 +425,10 @@ void business_key_status_from_json(
             s.key_check_value_present = true;
         }
     }
+    if (j.contains("import_proof")) {
+        s.import_proof = dec(j.value("import_proof", ""));
+    }
+    s.proof_algorithm = j.value("proof_algorithm", "");
 }
 
 void import_result_from_json(const nlohmann::json& j, ImportResult& out,
@@ -448,6 +452,9 @@ void import_result_from_json(const nlohmann::json& j, ImportResult& out,
         std::fill(proof.begin(), proof.end(), 0);
     }
     out.proof_algorithm = j.value("proof_algorithm", "");
+    if (j.contains("binding_certificate_digest")) {
+        out.binding_certificate_digest = dec(j.value("binding_certificate_digest", ""));
+    }
 }
 
 } // namespace

@@ -31,6 +31,19 @@ bool DeviceKeyAgreementAdapter::hasKeyUsageKeyAgreement(X509* cert) {
     return ok;
 }
 
+bool DeviceKeyAgreementAdapter::hasKeyUsageDigitalSignature(X509* cert) {
+    if (cert == nullptr) return false;
+    ASN1_BIT_STRING* usage = static_cast<ASN1_BIT_STRING*>(
+        X509_get_ext_d2i(cert, NID_key_usage, nullptr, nullptr));
+    if (usage == nullptr) return false;
+    bool ok = false;
+    if (usage->length > 0) {
+        ok = (usage->data[0] & KU_DIGITAL_SIGNATURE) != 0;
+    }
+    ASN1_BIT_STRING_free(usage);
+    return ok;
+}
+
 bool DeviceKeyAgreementAdapter::isP256PublicKey(X509* cert) {
     if (cert == nullptr) return false;
     EVP_PKEY* pkey = X509_get_pubkey(cert);
@@ -67,6 +80,7 @@ DeviceKeyAgreementCapability DeviceKeyAgreementAdapter::probe() const {
     cap.active_cert_present = true;
     cap.p256 = isP256PublicKey(leaf);
     cap.key_agreement = hasKeyUsageKeyAgreement(leaf);
+    cap.digital_signature = hasKeyUsageDigitalSignature(leaf);
     if (!parsed.chain.cert_der_sha256.empty()) {
         const auto& d = parsed.chain.cert_der_sha256.front();
         cap.certificate_digest.assign(d.begin(), d.end());
@@ -75,6 +89,7 @@ DeviceKeyAgreementCapability DeviceKeyAgreementAdapter::probe() const {
     if (hsm_ != nullptr && !device_key_id_.empty()) {
         cap.private_key_exists = hsm_->key_exists(device_key_id_);
         cap.private_key_can_derive = hsm_->supports_ecdh_derive(device_key_id_);
+        cap.private_key_can_sign = hsm_->supports_ecdsa_sign(device_key_id_);
     }
     return cap;
 }

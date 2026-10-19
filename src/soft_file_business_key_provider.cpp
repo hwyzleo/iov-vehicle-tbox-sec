@@ -298,6 +298,7 @@ public:
         j["last_error"] = e.last_error;
         j["proof_algorithm"] = e.proof_algorithm;
         j["import_proof"] = to_hex(e.import_proof);
+        j["binding_certificate_digest"] = to_hex(e.binding_certificate_digest);
         json items = json::array();
         for (auto& it : e.items) {
             json si;
@@ -313,6 +314,8 @@ public:
             si["envelope_digest"] = to_hex(it.envelope_digest);
             si["key_check_value"] = to_hex(it.key_check_value.data(), it.key_check_value.size());
             si["key_check_value_present"] = it.key_check_value_present;
+            si["import_proof"] = to_hex(it.import_proof);
+            si["proof_algorithm"] = it.proof_algorithm;
             items.push_back(si);
         }
         j["items"] = items;
@@ -331,6 +334,7 @@ public:
         e.last_error = j.value("last_error", "");
         e.proof_algorithm = j.value("proof_algorithm", "");
         from_hex(j.value("import_proof", ""), e.import_proof);
+        from_hex(j.value("binding_certificate_digest", ""), e.binding_certificate_digest);
         if (j.contains("items") && j["items"].is_array()) {
             for (auto& si : j["items"]) {
                 BusinessKeyStatus s;
@@ -350,6 +354,8 @@ public:
                     s.key_check_value = {kcv[0], kcv[1], kcv[2]};
                 }
                 s.key_check_value_present = si.value("key_check_value_present", false);
+                from_hex(si.value("import_proof", ""), s.import_proof);
+                s.proof_algorithm = si.value("proof_algorithm", "");
                 e.items.push_back(std::move(s));
             }
         }
@@ -560,7 +566,7 @@ BusinessKeyProviderCapability SoftFileBusinessKeyProvider::capability() const {
     cap.aes256_gcm_decrypt_to_slot = h;
     cap.atomic_dual_slot_commit = true;
     cap.secure_journal_ready = impl_->ready && impl_->store && impl_->store->isReady();
-    cap.proof_key_ready = impl_->ready;
+    cap.ecdsa_p256_sha256_p1363 = h;
     return cap;
 }
 
@@ -739,7 +745,8 @@ ErrorCode SoftFileBusinessKeyProvider::generateProof(
     const std::vector<uint8_t>& envelope_digest, const std::vector<uint8_t>& key_check_value,
     std::vector<uint8_t>& proof, std::string& algorithm) {
     std::lock_guard<std::mutex> lock(impl_->mtx);
-    if (!impl_->ready) return ErrorCode::BUSINESS_KEY_NOT_READY;
+    proof.clear();
+    if (!impl_->ready || !impl_->hsm) return ErrorCode::BUSINESS_KEY_NOT_READY;
     auto it = impl_->active.find(purpose);
     if (it == impl_->active.end() || !it->second.present)
         return ErrorCode::BUSINESS_KEY_NOT_READY;
@@ -749,9 +756,10 @@ ErrorCode SoftFileBusinessKeyProvider::generateProof(
     uint64_t purpose_val = 0;
     if (!purposeEnumValue(purpose, purpose_val)) return ErrorCode::BUSINESS_KEY_UNSUPPORTED;
 
-    std::vector<uint8_t> key;
-    ErrorCode rc = impl_->decrypt_slot_key(domain, purpose, s, key);
-    if (rc != ErrorCode::SUCCESS) return rc;
+    // 签名身份：本次 provisioning 绑定的 ACTIVE 设备证书对应不可导出私钥。
+    BusinessKeyDeviceBinding binding =
+        impl_->binding_provider ? impl_->binding_provider() : BusinessKeyDeviceBinding{};
+    if (!binding.ready || binding.device_key_id.empty()) return ErrorCode::BUSINESS_KEY_NOT_READY;
 
     canonical::ProofInput pi;
     pi.request_id = request_id;
@@ -763,10 +771,21 @@ ErrorCode SoftFileBusinessKeyProvider::generateProof(
     pi.key_check_value = key_check_value;
     std::vector<uint8_t> proof_input = canonical::buildProofInput(pi);
 
-    proof = hmac_sha256(key, proof_input);
-    zero(key);
+    // ECDSA_P256_SHA256_P1363：对 SHA-256(proofInput) 用设备身份私钥签名。
+    std::vector<uint8_t> digest = canonical::sha256(proof_input);
+    ErrorCode rc = impl_->hsm->sign_digest_p1363(binding.device_key_id, digest, proof);
     OPENSSL_cleanse(proof_input.data(), proof_input.size());
-    algorithm = "HMAC-SHA256";
+    OPENSSL_cleanse(digest.data(), digest.size());
+    binding.clearPublicKey();
+    if (rc != ErrorCode::SUCCESS) {
+        proof.clear();
+        return rc == ErrorCode::NOT_IMPLEMENTED ? ErrorCode::BUSINESS_KEY_NOT_READY : rc;
+    }
+    if (proof.size() != kImportProofSizeP1363) {
+        proof.clear();
+        return ErrorCode::BUSINESS_KEY_NOT_READY;
+    }
+    algorithm = kImportProofAlgorithmP1363;
     return ErrorCode::SUCCESS;
 }
 

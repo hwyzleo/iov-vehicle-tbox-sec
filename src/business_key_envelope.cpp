@@ -160,8 +160,10 @@ ErrorCode validateEnvelope(const WrappedKeyItem& item,
     if (!isValidP256UncompressedPoint(params.server_ephemeral_public_key))
         return ErrorCode::WRAPPED_KEY_INVALID;
 
-    // §6.5 证书能力门禁（ACTIVE 证书 P-256 + keyAgreement + 私钥 derive）
-    if (!ctx.active_cert_p256 || !ctx.active_cert_key_agreement || !ctx.private_key_can_derive)
+    // §6.5 证书能力门禁（ACTIVE 证书 P-256 + keyAgreement + digitalSignature + 私钥 sign/derive）
+    if (!ctx.active_cert_p256 || !ctx.active_cert_key_agreement ||
+        !ctx.active_cert_digital_signature || !ctx.private_key_can_derive ||
+        !ctx.private_key_can_sign)
         return ErrorCode::BUSINESS_KEY_NOT_READY;
     if (ctx.active_cert_digest.size() != params.recipient_certificate_digest.size() ||
         !constantTimeEqual(ctx.active_cert_digest, params.recipient_certificate_digest))

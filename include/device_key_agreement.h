@@ -3,14 +3,15 @@
 //
 // DeviceKeyAgreementAdapter（TBOX-SEC-DSN-CR-020 §5 / US-016）。
 //
-// 解析当前 ACTIVE 设备证书，判定其是否可作为 ECDH 解封装身份：
+// 解析当前 ACTIVE 设备证书，判定其是否可作为 ECDH 解封装 + Import Attestation 身份：
 //   - 预期终端实体 leaf（由 CertificateChainParser 保证 leaf-first）；
 //   - 公钥为允许的 P-256 EC；
-//   - X.509 KeyUsage 含 keyAgreement；
+//   - X.509 KeyUsage 同时含 keyAgreement + digitalSignature（US-016）；
 //   - 证书摘要（SHA-256(leaf DER)）用于 recipient_certificate_digest 比对；
-//   - 对应私钥存在且策略允许 ECDH derive。
+//   - 对应同一私钥存在，且策略同时允许 ECDH derive 与 ECDSA sign。
 //
-// 仅有 digitalSignature 的证书 SHALL 判定为能力未就绪，且不得调用安全硬件。
+// 仅有 digitalSignature/仅有 keyAgreement，或句柄只具备 sign/derive 之一，
+// SHALL 判定为能力未就绪，且不得调用安全硬件。
 //
 // Open item：recipient_certificate_digest 的 DER/SPKI 口径按 SHA-256(leaf DER)
 // 冻结，待 FW-SEC test vector / PKI Profile 交叉确认
@@ -33,8 +34,10 @@ struct DeviceKeyAgreementCapability {
     bool active_cert_present = false;
     bool p256 = false;
     bool key_agreement = false;
+    bool digital_signature = false;
     bool private_key_exists = false;
     bool private_key_can_derive = false;
+    bool private_key_can_sign = false;
     std::vector<uint8_t> certificate_digest;  ///< SHA-256(leaf DER)
 };
 
@@ -44,11 +47,13 @@ public:
                               HsmInterface* hsm,
                               std::string device_key_id);
 
-    /// 探测当前能力（只读，不执行 ECDH）。
+    /// 探测当前能力（只读，不执行 ECDH/签名）。
     DeviceKeyAgreementCapability probe() const;
 
     /// 静态工具：X.509 KeyUsage 是否含 keyAgreement。
     static bool hasKeyUsageKeyAgreement(X509* cert);
+    /// 静态工具：X.509 KeyUsage 是否含 digitalSignature。
+    static bool hasKeyUsageDigitalSignature(X509* cert);
     /// 静态工具：公钥是否为 P-256 EC。
     static bool isP256PublicKey(X509* cert);
 

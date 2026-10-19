@@ -102,7 +102,9 @@ protected:
         binding_.device_public_key = device_pub_;
         binding_.active_cert_p256 = true;
         binding_.active_cert_key_agreement = true;
+        binding_.active_cert_digital_signature = true;
         binding_.private_key_can_derive = true;
+        binding_.private_key_can_sign = true;
         binding_.active_cert_digest = std::vector<uint8_t>(32, 0xBB);
 
         BusinessKeyProviderConfig pcfg;
@@ -210,8 +212,13 @@ TEST_F(BusinessKeyIpcTest, Import_And_Status_RoundTrip) {
     EXPECT_EQ(status_of(resp), 0);
     auto j = json::parse(resp);
     EXPECT_EQ(j.value("state", ""), "COMMITTED");
-    EXPECT_FALSE(j.value("import_proof", "").empty());
-    EXPECT_EQ(j.value("proof_algorithm", ""), "HMAC-SHA256");
+    EXPECT_EQ(j.value("proof_algorithm", ""), kImportProofAlgorithmP1363);
+    ASSERT_TRUE(j.contains("items") && j["items"].is_array());
+    for (const auto& it : j["items"]) {
+        // 逐 item Import Attestation（64B P1363 low-S）经 IPC 回传。
+        EXPECT_FALSE(it.value("import_proof", "").empty());
+        EXPECT_EQ(it.value("proof_algorithm", ""), kImportProofAlgorithmP1363);
+    }
 
     json sp;
     sp["business_domain"] = kBusinessDomainV2c;

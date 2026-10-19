@@ -54,7 +54,9 @@ struct EnvelopeContext {
     std::vector<uint8_t> active_cert_digest;  ///< 当前 ACTIVE 证书策略摘要（raw）
     bool active_cert_p256 = false;
     bool active_cert_key_agreement = false;
+    bool active_cert_digital_signature = false;
     bool private_key_can_derive = false;
+    bool private_key_can_sign = false;
 };
 
 /// 校验通过后的解析结果（原始 bytes 仍由 item.parameters 保留）。

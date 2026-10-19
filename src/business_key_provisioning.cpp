@@ -9,8 +9,6 @@
 
 #include <openssl/crypto.h>
 
-#include <nlohmann/json.hpp>
-
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -20,8 +18,6 @@ namespace tbox {
 namespace sec {
 
 namespace {
-
-using json = nlohmann::json;
 
 bool contains(const std::vector<std::string>& v, const std::string& s) {
     return std::find(v.begin(), v.end(), s) != v.end();
@@ -117,7 +113,8 @@ public:
 
     bool binding_agreement_ok(const BusinessKeyDeviceBinding& b) const {
         return b.ready && !b.device_key_id.empty() && b.active_cert_p256 &&
-               b.active_cert_key_agreement && b.private_key_can_derive &&
+               b.active_cert_key_agreement && b.active_cert_digital_signature &&
+               b.private_key_can_derive && b.private_key_can_sign &&
                !b.active_cert_digest.empty();
     }
 
@@ -132,11 +129,15 @@ public:
         c.hkdf_sha256 = pc.hkdf_sha256;
         c.aes256_gcm_decrypt_to_slot = pc.aes256_gcm_decrypt_to_slot;
         c.atomic_dual_slot_commit = pc.atomic_dual_slot_commit;
+        c.ecdsa_p256_sha256_p1363 = pc.ecdsa_p256_sha256_p1363;
         c.secure_journal_ready = pc.secure_journal_ready;
-        c.proof_key_ready = pc.proof_key_ready;
         BusinessKeyDeviceBinding b = probe_binding();
-        c.active_certificate_key_agreement = binding_agreement_ok(b);
+        c.active_certificate_key_agreement =
+            b.ready && b.active_cert_p256 && b.active_cert_key_agreement;
+        c.active_certificate_digital_signature =
+            b.ready && b.active_cert_p256 && b.active_cert_digital_signature;
         c.active_private_key_can_derive = b.ready && b.private_key_can_derive;
+        c.active_private_key_can_sign = b.ready && b.private_key_can_sign;
         int64_t now = 0;
         c.trusted_time_ready = trusted_now_ms(now) == ErrorCode::SUCCESS;
         b.clearPublicKey();
@@ -327,11 +328,12 @@ public:
         out.items = entry.items;
         out.committed_at_ms = entry.committed_at_ms;
         out.provider_version_digest = entry.provider_version_digest;
-        // 原 ACK/proof：直接回传 journal 保存的非敏感证明，不重新生成。
+        // 原 ACK/proof：直接回传 journal 保存的非敏感 proof 原文，不重新签名。
         if (!entry.import_proof.empty()) {
             out.import_proof.assign(entry.import_proof);
         }
         out.proof_algorithm = entry.proof_algorithm;
+        out.binding_certificate_digest = entry.binding_certificate_digest;
         return ErrorCode::SUCCESS;
     }
 
@@ -551,7 +553,9 @@ ErrorCode BusinessKeyProvisioningService::import(const std::string& request_id,
         ctx.active_cert_digest = binding.active_cert_digest;
         ctx.active_cert_p256 = binding.active_cert_p256;
         ctx.active_cert_key_agreement = binding.active_cert_key_agreement;
+        ctx.active_cert_digital_signature = binding.active_cert_digital_signature;
         ctx.private_key_can_derive = binding.private_key_can_derive;
+        ctx.private_key_can_sign = binding.private_key_can_sign;
         EnvelopeLimits limits;
         limits.max_parameters = static_cast<size_t>(impl_->cfg.max_parameters_bytes);
         limits.max_wrapped_key = static_cast<size_t>(impl_->cfg.max_wrapped_key_bytes);
@@ -702,14 +706,15 @@ ErrorCode BusinessKeyProvisioningService::import(const std::string& request_id,
     }
     binding.clearPublicKey();
 
-    // ---- §7.3/§US-020：结果元数据 + ACK proof + ledger ----
+    // ---- §7.3/§US-020：结果元数据 + 逐 item Import Attestation + ledger ----
     int64_t committed_at = now;
     impl_->trusted_now_ms(committed_at);
     entry.phase = BusinessKeyImportPhase::SUCCEEDED;
     entry.committed_at_ms = committed_at;
     entry.provider_version_digest = impl_->provider->providerVersionDigest();
-    json proofs = json::object();
-    std::string proof_alg = "HMAC-SHA256";
+    entry.binding_certificate_digest = binding.active_cert_digest;
+    entry.proof_algorithm = kImportProofAlgorithmP1363;
+    bool proof_failed = false;
     for (size_t i = 0; i < items.size(); ++i) {
         BusinessKeyStatus& st = entry.items[i];
         st.state = BusinessKeyState::ACTIVE;
@@ -722,15 +727,22 @@ ErrorCode BusinessKeyProvisioningService::import(const std::string& request_id,
         ErrorCode prc = impl_->provider->generateProof(
             business_domain, st.purpose, st.business_key_version, request_id, items[i].key_id,
             st.envelope_digest, kcv, proof, palg);
-        if (prc == ErrorCode::SUCCESS) {
-            proofs[st.purpose] = canonical::toHex(proof);
-            proof_alg = palg;
-            if (!proof.empty()) OPENSSL_cleanse(proof.data(), proof.size());
+        if (prc == ErrorCode::SUCCESS && proof.size() == kImportProofSizeP1363) {
+            st.import_proof = proof;
+            st.proof_algorithm = palg;
+        } else {
+            proof_failed = true;
         }
+        if (!proof.empty()) OPENSSL_cleanse(proof.data(), proof.size());
     }
-    std::string bundle = proofs.dump();
-    entry.import_proof.assign(bundle.begin(), bundle.end());
-    entry.proof_algorithm = proof_alg;
+    if (proof_failed) {
+        // 安全签名调用结果不确定：标记 OUTCOME_UNKNOWN，由启动对账收敛，不返回 IMPORTED ACK。
+        entry.phase = BusinessKeyImportPhase::OUTCOME_UNKNOWN;
+        entry.last_error = "IMPORT_ATTESTATION_FAILED";
+        impl_->provider->saveJournal(entry);
+        out.state = BusinessKeyImportState::UNKNOWN;
+        return ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN;
+    }
     impl_->provider->saveJournal(entry);
     impl_->update_ledger(business_domain, entry, generation);
 

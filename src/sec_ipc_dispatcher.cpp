@@ -548,6 +548,13 @@ nlohmann::json business_key_status_to_json(const BusinessKeyStatus& s) {
         j["key_check_value"] = b64_encode(std::vector<uint8_t>(s.key_check_value.begin(),
                                                                s.key_check_value.end()));
     }
+    // TBOX-SEC-DSN-CR-020 §7.3/US-020：逐 item Import Attestation（64B P1363 low-S）
+    if (!s.import_proof.empty()) {
+        j["import_proof"] = b64_encode(s.import_proof);
+    }
+    if (!s.proof_algorithm.empty()) {
+        j["proof_algorithm"] = s.proof_algorithm;
+    }
     return j;
 }
 
@@ -566,6 +573,9 @@ nlohmann::json import_result_to_json(const ImportResult& r) {
             r.import_proof.data(), r.import_proof.data() + r.import_proof.size()));
     }
     j["proof_algorithm"] = r.proof_algorithm;
+    if (!r.binding_certificate_digest.empty()) {
+        j["binding_certificate_digest"] = b64_encode(r.binding_certificate_digest);
+    }
     return j;
 }
 

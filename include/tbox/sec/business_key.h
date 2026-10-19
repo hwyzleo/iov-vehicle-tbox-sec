@@ -122,6 +122,9 @@ struct BusinessKeyStatus {
     std::vector<uint8_t> envelope_digest;      ///< 32B canonical envelope SHA-256
     std::array<uint8_t, 3> key_check_value{};  ///< 3B KCV = first_3(SHA-256(businessKey))
     bool key_check_value_present = false;
+    // ---- 逐 item Import Attestation（§7.3 / US-020）----
+    std::vector<uint8_t> import_proof;         ///< 64B ECDSA P-256 P1363 low-S 原文
+    std::string proof_algorithm;               ///< 固定 ECDSA_P256_SHA256_P1363
 };
 
 struct BusinessKeyStatusSet {
@@ -163,8 +166,9 @@ struct ImportResult {
     std::vector<BusinessKeyStatus> items;
     int64_t committed_at_ms = 0;
     std::string provider_version_digest;
-    SecureBuffer import_proof;  ///< 非敏感持钥证明原文（仅返回调用方，不入日志/Store）
+    SecureBuffer import_proof;  ///< 兼容/聚合位；首期 proof 逐 item 见 items[].import_proof
     std::string proof_algorithm;
+    std::vector<uint8_t> binding_certificate_digest;  ///< ACK 绑定设备证书摘要 SHA-256(leaf DER)
 };
 
 std::string business_key_state_to_string(BusinessKeyState s);
@@ -187,6 +191,11 @@ constexpr const char* kWrappingSuiteEcdhEsP256 = "ECDH_ES_P256_HKDF_SHA256_AES25
 constexpr const char* kDefaultKeyAlgorithm = "AES-256";
 constexpr const char* kDefaultHkdfContextVersion = "v1";
 constexpr const char* kProofContextV1 = "openiov|keyprov-ack|v1";
+
+/// 首期固定 Import Attestation 算法（TBOX-SEC-DSN-CR-020 §7.3 / US-020）。
+/// ECDSA P-256/SHA-256，IEEE-P1363 r(32)||s(32)、low-S、共 64 字节。
+constexpr const char* kImportProofAlgorithmP1363 = "ECDSA_P256_SHA256_P1363";
+constexpr std::size_t kImportProofSizeP1363 = 64;
 
 
 } // namespace sec
