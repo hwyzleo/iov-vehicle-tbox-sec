@@ -51,12 +51,19 @@ struct EnvelopeContext {
     std::string request_id;
     std::string business_domain;
     std::string purpose;              ///< "UPLINK_AEAD"/"DOWNLINK_AEAD"
-    std::vector<uint8_t> active_cert_digest;  ///< 当前 ACTIVE 证书策略摘要（raw）
+    std::vector<uint8_t> active_cert_digest;  ///< 当前 ACTIVE 证书 SHA-256(original leaf DER)
     bool active_cert_p256 = false;
     bool active_cert_key_agreement = false;
     bool active_cert_digital_signature = false;
     bool private_key_can_derive = false;
     bool private_key_can_sign = false;
+    // TBOX-SEC-DSN-CR-020 §2.1/§6.5 修订：逻辑 Profile 合取门禁（fail-closed）
+    bool active_cert_ca_false = false;               ///< 终端实体（BC 缺失或 CA=false）
+    bool active_cert_eku_client_auth_only = false;   ///< EKU 仅 clientAuth
+    bool active_cert_critical_extensions_allowed = false;  ///< 关键扩展 allowlist
+    bool active_cert_leaf_digest_bound = false;      ///< 原始 leaf DER 摘要已绑定
+    bool active_cert_chain_key_match = false;        ///< leaf 公钥与本地句柄公钥匹配
+    bool identity_template_sign_derive = false;      ///< 设备密钥模板/句柄支持 sign+derive
 };
 
 /// 校验通过后的解析结果（原始 bytes 仍由 item.parameters 保留）。

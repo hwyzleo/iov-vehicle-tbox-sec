@@ -204,13 +204,78 @@ TEST_F(CsrBuilderTest, BuildCsrKeyUsage) {
                 X509V3_EXT_d2i(ext));
             ASSERT_NE(ku, nullptr);
             ASSERT_GT(ku->length, 0);
+            // TBOX-SEC-DSN-CR-020 §2.1：KU 必须同时含 digitalSignature + keyAgreement，
+            // 且不得以 keyEncipherment 替代 keyAgreement。
             EXPECT_TRUE(ku->data[0] & 0x80)
                 << "digitalSignature bit not set";
+            EXPECT_TRUE(ku->data[0] & 0x08)
+                << "keyAgreement bit not set (CSR must request keyAgreement)";
+            EXPECT_FALSE(ku->data[0] & 0x20)
+                << "keyEncipherment must not substitute keyAgreement";
+            // 固定向量：BIT STRING 内容恰为 {0x88}（digitalSignature|keyAgreement）
+            EXPECT_EQ(ku->length, 1);
+            EXPECT_EQ(ku->data[0], 0x88);
             ASN1_BIT_STRING_free(ku);
             break;
         }
     }
     EXPECT_TRUE(found_ku) << "KeyUsage extension missing";
+
+    sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
+    X509_REQ_free(req);
+}
+
+TEST_F(CsrBuilderTest, BuildCsrEkuClientAuthOnly) {
+    CsrConfig config;
+    config.hsm_uid = test_ecu_uid;
+    config.key_id = test_ecu_uid;
+    config.algorithm = "SHA256withECDSA";
+
+    std::vector<uint8_t> csr_der;
+    ASSERT_EQ(builder->build_csr(test_vin, config, csr_der), ErrorCode::SUCCESS);
+
+    const unsigned char* p = csr_der.data();
+    X509_REQ* req = d2i_X509_REQ(nullptr, &p, static_cast<long>(csr_der.size()));
+    ASSERT_NE(req, nullptr);
+
+    STACK_OF(X509_EXTENSION)* exts = X509_REQ_get_extensions(req);
+    ASSERT_NE(exts, nullptr);
+
+    bool found_eku = false;
+    for (int i = 0; i < sk_X509_EXTENSION_num(exts); i++) {
+        X509_EXTENSION* ext = sk_X509_EXTENSION_value(exts, i);
+        ASN1_OBJECT* obj = X509_EXTENSION_get_object(ext);
+        if (OBJ_obj2nid(obj) == NID_ext_key_usage) {
+            found_eku = true;
+            EXTENDED_KEY_USAGE* eku = static_cast<EXTENDED_KEY_USAGE*>(
+                X509V3_EXT_d2i(ext));
+            ASSERT_NE(eku, nullptr);
+            ASSERT_EQ(sk_ASN1_OBJECT_num(eku), 1)
+                << "EKU 仅允许一个用途（clientAuth）";
+
+            char buf[128];
+            OBJ_obj2txt(buf, sizeof(buf), sk_ASN1_OBJECT_value(eku, 0), 1);
+            EXPECT_STREQ(buf, "1.3.6.1.5.5.7.3.2")
+                << "EKU 必须仅为 clientAuth";
+
+            // 不得出现 anyExtendedKeyUsage(2.5.29.37.0)/serverAuth(1.3.6.1.5.5.7.3.1)
+            for (int j = 0; j < sk_ASN1_OBJECT_num(eku); ++j) {
+                OBJ_obj2txt(buf, sizeof(buf), sk_ASN1_OBJECT_value(eku, j), 1);
+                EXPECT_STRNE(buf, "2.5.29.37.0") << "anyExtendedKeyUsage 禁止";
+                EXPECT_STRNE(buf, "1.3.6.1.5.5.7.3.1") << "serverAuth 禁止";
+            }
+            sk_ASN1_OBJECT_pop_free(eku, ASN1_OBJECT_free);
+            break;
+        }
+    }
+    EXPECT_TRUE(found_eku) << "ExtendedKeyUsage extension missing";
+
+    // 不得请求 CA intent（无 basicConstraints / keyCertSign）
+    for (int i = 0; i < sk_X509_EXTENSION_num(exts); i++) {
+        X509_EXTENSION* ext = sk_X509_EXTENSION_value(exts, i);
+        EXPECT_NE(OBJ_obj2nid(X509_EXTENSION_get_object(ext)), NID_basic_constraints)
+            << "CSR 不得请求 CA intent（basicConstraints）";
+    }
 
     sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
     X509_REQ_free(req);

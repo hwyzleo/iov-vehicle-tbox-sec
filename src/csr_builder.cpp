@@ -215,8 +215,11 @@ ErrorCode CsrBuilder::marshal_san_extension(
 ErrorCode CsrBuilder::marshal_ku_extension(std::vector<uint8_t>& ext_der) {
     static const uint8_t OID_KU[] = {0x55, 0x1D, 0x0F};
 
-    // digitalSignature = bit 0 → 0x80
-    std::vector<uint8_t> ku_data = {0x80};
+    // digitalSignature (bit 0) + keyAgreement (bit 4)（TBOX-SEC-DSN-CR-020 §2.1：
+    // CSR 请求 KeyUsage digitalSignature,keyAgreement；不得以 keyEncipherment 替代
+    // keyAgreement，不得请求 anyExtendedKeyUsage / serverAuth / CA intent）。
+    // X.509 KeyUsage BIT STRING：digitalSignature=0x80，keyAgreement=0x08 → 0x88。
+    std::vector<uint8_t> ku_data = {0x88};
     std::vector<uint8_t> bs;
     der_encode_bit_string(ku_data, 0, bs);
 

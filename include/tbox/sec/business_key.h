@@ -184,10 +184,18 @@ struct ImportResult {
 /// PKI 未签发兼容 `keyAgreement` 证书时，代码/测试可发布，但 capability 不上报 v1、
 /// 导入返回 BUSINESS_KEY_NOT_READY。
 ///
+/// 契约版本语义（TBOX-SEC-DSN-CR-020 §11 修订）：
+///   - kContractVersion=2 为当前完整字段集合；消费者必须按整值 allowlist 精确匹配，
+///     缺失/未知版本一律判 NOT_READY（fail-closed）；
+///   - v1 不得被解释为 ECDH-ES v1 READY：旧消费者收到 v2（未知）按 fail-closed
+///     判定 Keyprov 不可用；新消费者识别 v1（旧结构）只能判定新 Keyprov 不可用；
+///   - 禁止缺字段默认 true、版本别名或静默降级；
+///   - 状态查询/诊断可在版本不匹配时保留，但不得接受新的 ECDH-ES 导入。
+///
 /// 本结构位于公开 SDK 头，供 TSP 通过 SecClient 只读查询。
 struct V2cKeyProvisioningCapability {
     /// capability 契约版本；消费者按整值 allowlist 精确匹配，缺失/未知判 NOT_READY。
-    static constexpr uint32_t kContractVersion = 1;
+    static constexpr uint32_t kContractVersion = 2;
     uint32_t capability_contract_version = kContractVersion;
 
     // ---- TBOX-TSP-DSN-CR-012 §8 显式门禁（TSP 侧 readiness 直接消费）----
@@ -195,6 +203,14 @@ struct V2cKeyProvisioningCapability {
     bool atomic_dual_purpose_commit_ready = false;      ///< 双用途原子提交能力
     bool import_proof_sign_ecdsa_p256_v1_ready = false; ///< 每用途 P1363 Import Attestation 签名能力
     bool secure_journal_replay_ready = false;           ///< 安全 journal 原 proof 重放能力
+
+    // ---- 证书生产闭环 / 逻辑 Profile 门禁（TBOX-SEC-DSN-CR-020 §2.1/§11 修订）----
+    bool identity_key_template_sign_derive = false;     ///< 设备密钥模板/句柄支持 sign+derive（不可导出）
+    bool csr_key_usage_request_matched = false;         ///< CSR 请求 KU=digitalSignature+keyAgreement
+    bool certificate_profile_matched = false;           ///< 逻辑 Profile TBOX_DEVICE_ECDH_ES_P256_V1 匹配
+    bool certificate_chain_and_key_match = false;       ///< 链/证书公钥与本地句柄公钥匹配
+    bool certificate_critical_extensions_allowed = false; ///< 关键扩展满足 allowlist（未知关键扩展 fail-closed）
+    bool leaf_certificate_digest_bound = false;         ///< 原始 leaf DER SHA-256 已绑定
 
     // ---- 详细能力（诊断 / 内部合取）----
     bool proto_release_matched = false;          ///< PAR-PROTO release/DescriptorSet 锁定已安装
@@ -214,6 +230,9 @@ struct V2cKeyProvisioningCapability {
     bool all() const {
         return envelope_v1_import_ready && atomic_dual_purpose_commit_ready &&
                import_proof_sign_ecdsa_p256_v1_ready && secure_journal_replay_ready &&
+               identity_key_template_sign_derive && csr_key_usage_request_matched &&
+               certificate_profile_matched && certificate_chain_and_key_match &&
+               certificate_critical_extensions_allowed && leaf_certificate_digest_bound &&
                proto_release_matched && envelope_format_v1 && p256_ecdh && hkdf_sha256 &&
                aes256_gcm_decrypt_to_slot && atomic_dual_slot_commit &&
                active_certificate_key_agreement && active_certificate_digital_signature &&

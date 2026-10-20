@@ -23,6 +23,55 @@ bool isBase64Char(char c) {
     return std::isalnum(u) != 0 || c == '+' || c == '/' || c == '=';
 }
 
+// base64 解码（仅 CERTIFICATE 块内容；输入已在上层校验仅含 base64 字符与空白）。
+// 返回解码后的原始 DER 字节（即收到时的原始证书字节，非 i2d 重编码）。
+bool base64Decode(const std::string& text, std::vector<uint8_t>& out) {
+    static const int8_t kDec[256] = {
+        // 标准 base64 索引表；非 base64 字符置 -1
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,
+        52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
+        -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+        15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
+        -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+        41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    };
+    out.clear();
+    uint32_t acc = 0;
+    int bits = 0;
+    for (size_t i = 0; i < text.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        const int8_t v = kDec[c];
+        if (c == '=') break;  // padding：终止
+        if (v < 0) continue;  // 空白
+        acc = (acc << 6) | static_cast<uint32_t>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<uint8_t>((acc >> bits) & 0xFF));
+        }
+    }
+    return !out.empty();
+}
+
+// 原始证书字节（收到的原文）的 SHA-256；zero 数组表示不可用。
+std::array<uint8_t, 32> sha256OfBytes(const uint8_t* data, size_t len) {
+    std::array<uint8_t, 32> digest{};
+    if (data && len > 0) {
+        SHA256(data, len, digest.data());
+    }
+    return digest;
+}
+
 // X509 DER 的 SHA-256（不输出原始 DER）
 std::array<uint8_t, 32> derSha256(const X509* cert) {
     std::array<uint8_t, 32> digest{};
@@ -114,6 +163,15 @@ ParseResult CertificateChainParser::parseDerSingle(ByteView payload,
     chain.leaf.reset(cert);
     chain.cert_der_sha256.push_back(derSha256(chain.leaf.get()));
 
+    // 原始 leaf DER 字节（收到的原文）的 SHA-256（CR-020 §7.2：禁止 i2d 重编码口径）。
+    // 前导/尾随空白可容忍；中间字节即原始证书 DER。
+    size_t der_end = payload.size;
+    while (der_end > start && isAsciiSpace(payload.data[der_end - 1])) {
+        --der_end;
+    }
+    chain.leaf_der_original_sha256 =
+        sha256OfBytes(payload.data + start, der_end - start);
+
     r.ok = true;
     r.stage = CertificateParseStage::Ok;
     r.chain = std::move(chain);
@@ -137,6 +195,8 @@ ParseResult CertificateChainParser::parsePemChain(ByteView payload,
 
     size_t pos = 0;
     size_t block_count = 0;
+    size_t first_block_b64_begin = 0;
+    size_t first_block_b64_end = 0;
     while (pos < data.size()) {
         while (pos < data.size() && isAsciiSpace(static_cast<uint8_t>(data[pos]))) {
             ++pos;
@@ -161,6 +221,10 @@ ParseResult CertificateChainParser::parsePemChain(ByteView payload,
                 r.stage = CertificateParseStage::InputFormat;
                 return r;
             }
+        }
+        if (block_count == 0) {
+            first_block_b64_begin = pos;
+            first_block_b64_end = end_pos;
         }
         pos = end_pos + end_len;
         ++block_count;
@@ -239,6 +303,15 @@ ParseResult CertificateChainParser::parsePemChain(ByteView payload,
         chain.intermediates.push_back(std::move(certs[i]));
     }
     chain.cert_der_sha256 = std::move(digests);
+
+    // 原始 leaf DER（收到的 base64 解码字节，非 i2d 重编码）的 SHA-256（CR-020 §7.2）。
+    std::vector<uint8_t> leaf_orig_der;
+    if (base64Decode(data.substr(first_block_b64_begin,
+                                 first_block_b64_end - first_block_b64_begin),
+                      leaf_orig_der)) {
+        chain.leaf_der_original_sha256 =
+            sha256OfBytes(leaf_orig_der.data(), leaf_orig_der.size());
+    }
 
     r.ok = true;
     r.stage = CertificateParseStage::Ok;

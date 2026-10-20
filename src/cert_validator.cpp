@@ -61,6 +61,42 @@ bool hasClientAuthEku(const X509* cert) {
     return ok;
 }
 
+// 终端实体判定（TBOX-SEC-DSN-CR-020 §2.1）：BasicConstraints 缺失或明确 CA=false 均可；
+// 不得要求 basicConstraints 扩展必须显式存在。仅当显式 ca=TRUE 时判为非终端实体。
+bool isCaTrue(const X509* cert) {
+    BASIC_CONSTRAINTS* bc = static_cast<BASIC_CONSTRAINTS*>(
+        X509_get_ext_d2i(const_cast<X509*>(cert), NID_basic_constraints, nullptr, nullptr));
+    if (!bc) return false;  // 缺失 → 终端实体
+    const bool ca = (bc->ca != 0);
+    BASIC_CONSTRAINTS_free(bc);
+    return ca;
+}
+
+// 未知/未经允许的关键扩展 fail-closed（TBOX-SEC-DSN-CR-020 §2.1/§11）。
+// 关键扩展 allowlist：仅标准 RFC 5280 设备 profile 扩展允许以关键方式出现；
+// 其余（自定义 OID、未知扩展）一律拒绝。非关键扩展不受门禁。
+bool unknownCriticalExtensionRejected(const X509* cert) {
+    const STACK_OF(X509_EXTENSION)* exts = X509_get0_extensions(const_cast<X509*>(cert));
+    if (!exts) return false;  // 无扩展 → 无可拒绝项
+    for (int i = 0; i < sk_X509_EXTENSION_num(exts); ++i) {
+        X509_EXTENSION* ext = sk_X509_EXTENSION_value(exts, i);
+        if (!X509_EXTENSION_get_critical(ext)) continue;
+        const int nid = OBJ_obj2nid(X509_EXTENSION_get_object(ext));
+        switch (nid) {
+            case NID_basic_constraints:
+            case NID_key_usage:
+            case NID_ext_key_usage:
+            case NID_subject_alt_name:
+            case NID_subject_key_identifier:
+            case NID_authority_key_identifier:
+                break;
+            default:
+                return true;  // 发现未知/未经允许的关键扩展
+        }
+    }
+    return false;
+}
+
 // 可验证自签名 leaf 识别（TBOX-SEC-DSN-CR-016 §3.2）：
 // 同时满足 subject==issuer 且可用自身公钥验证签名；仅 DN 相等不足以判定自签名，
 // 该检查属于 leaf profile 约束，不作为 CA 信任验证。
@@ -100,21 +136,28 @@ ErrorCode CertValidator::validate_certificate(const std::string& vin,
     // CertificateChainParser 提取后传入（X509*，避免二次解析，本类不拥有 chain）。
     // 1~4. 证书 profile（TBOX-SEC-DSN-CR-003 §5 / REQ US-001）：
     //   Subject CN == hsm_uid(ecu_uid)；KU 含 digitalSignature；EKU 含 clientAuth。
+    // CR-020 §2.1 通用门禁：CA=false（终端实体）与未知关键扩展（fail-closed）。
+    //   TLS 路径保持原 TLS Profile（不新增 keyAgreement 要求）；双 KU / clientAuth-only /
+    //   P-256 / 逻辑 Profile / leaf digest / 句柄 sign+derive 由 ECDH-ES capability 路径门禁。
     const bool cn_ok = subjectCommonNameMatches(cert, ecu_uid);
     const bool ku_ok = hasKeyUsageDigitalSignature(cert);
     const bool eku_ok = hasClientAuthEku(cert);
+    const bool ca_ok = !isCaTrue(cert);
+    const bool critical_ok = !unknownCriticalExtensionRejected(cert);
 
     // 5. 可验证自签名 leaf 以 profile 非法拒绝（位于 key match 之前，
     //    确保自签名 leaf 稳定返回 profile-invalid 而非被独立密钥提前映射为 key mismatch）
     const bool self_signed = is_verifiable_self_signed(cert);
 
-    if (!cn_ok || !ku_ok || !eku_ok || self_signed) {
+    if (!cn_ok || !ku_ok || !eku_ok || !ca_ok || !critical_ok || self_signed) {
         SecLogAdapter::certificate().error(
             "sec.certificate.profile.rejected",
-            "证书 profile 校验失败：CN/KeyUsage/ExtendedKeyUsage/自签名与设备身份不符",
+            "证书 profile 校验失败：CN/KeyUsage/ExtendedKeyUsage/CA/关键扩展/自签名与设备身份不符",
             {{"cn_match", tbox::fw::log::FieldValue::makeBool(cn_ok)},
              {"ku_digital_signature", tbox::fw::log::FieldValue::makeBool(ku_ok)},
              {"eku_client_auth", tbox::fw::log::FieldValue::makeBool(eku_ok)},
+             {"ca_false", tbox::fw::log::FieldValue::makeBool(ca_ok)},
+             {"critical_extensions_ok", tbox::fw::log::FieldValue::makeBool(critical_ok)},
              {"self_signed", tbox::fw::log::FieldValue::makeBool(self_signed)}});
         return ErrorCode::CERT_VALIDATION_FAILED;
     }

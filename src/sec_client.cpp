@@ -576,6 +576,13 @@ ErrorCode SecClient::get_v2c_key_provisioning_capability(
             auto j = nlohmann::json::parse(response_json);
             out.capability_contract_version =
                 j.value("capability_contract_version", 0u);
+            // TBOX-SEC-DSN-CR-020 §11 修订：版本不匹配（旧服务 v1 或未知版本）
+            // fail-closed —— 仅保留收到的版本号，其余字段全为默认 false，
+            // 使 all()==false（新 Keyprov 不可用），禁止把旧结构解释为 ECDH-ES READY。
+            if (out.capability_contract_version !=
+                V2cKeyProvisioningCapability::kContractVersion) {
+                return ErrorCode::BUSINESS_KEY_NOT_READY;
+            }
             out.envelope_v1_import_ready = j.value("envelope_v1_import_ready", false);
             out.atomic_dual_purpose_commit_ready =
                 j.value("atomic_dual_purpose_commit_ready", false);
@@ -583,6 +590,18 @@ ErrorCode SecClient::get_v2c_key_provisioning_capability(
                 j.value("import_proof_sign_ecdsa_p256_v1_ready", false);
             out.secure_journal_replay_ready =
                 j.value("secure_journal_replay_ready", false);
+            out.identity_key_template_sign_derive =
+                j.value("identity_key_template_sign_derive", false);
+            out.csr_key_usage_request_matched =
+                j.value("csr_key_usage_request_matched", false);
+            out.certificate_profile_matched =
+                j.value("certificate_profile_matched", false);
+            out.certificate_chain_and_key_match =
+                j.value("certificate_chain_and_key_match", false);
+            out.certificate_critical_extensions_allowed =
+                j.value("certificate_critical_extensions_allowed", false);
+            out.leaf_certificate_digest_bound =
+                j.value("leaf_certificate_digest_bound", false);
             out.proto_release_matched = j.value("proto_release_matched", false);
             out.envelope_format_v1 = j.value("envelope_format_v1", false);
             out.p256_ecdh = j.value("p256_ecdh", false);

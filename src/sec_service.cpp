@@ -1781,6 +1781,14 @@ void SecService::initializeBusinessKeyProvisioning() {
               b.private_key_can_derive = cap.private_key_can_derive;
               b.private_key_can_sign = cap.private_key_can_sign;
               b.active_cert_digest = cap.certificate_digest;
+              // CR-020 §2.1/§11 修订门禁：逻辑 Profile TBOX_DEVICE_ECDH_ES_P256_V1 传导
+              b.active_cert_ca_false = cap.ca_false;
+              b.active_cert_eku_client_auth_only = cap.eku_client_auth_only;
+              b.active_cert_critical_extensions_allowed = cap.critical_extensions_allowed;
+              b.active_cert_leaf_digest_bound = cap.leaf_digest_bound;
+              b.active_cert_chain_key_match = cap.cert_chain_key_match;
+              b.identity_template_sign_derive =
+                  cap.private_key_can_derive && cap.private_key_can_sign;
               return b;
           };
 

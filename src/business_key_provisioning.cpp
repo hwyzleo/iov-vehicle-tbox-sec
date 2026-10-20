@@ -115,7 +115,12 @@ public:
         return b.ready && !b.device_key_id.empty() && b.active_cert_p256 &&
                b.active_cert_key_agreement && b.active_cert_digital_signature &&
                b.private_key_can_derive && b.private_key_can_sign &&
-               !b.active_cert_digest.empty();
+               !b.active_cert_digest.empty() &&
+               // CR-020 §2.1/§11 修订：逻辑 Profile 合取 + 原始 leaf DER 绑定 + 链/密钥匹配
+               b.active_cert_ca_false && b.active_cert_eku_client_auth_only &&
+               b.active_cert_critical_extensions_allowed &&
+               b.active_cert_leaf_digest_bound && b.active_cert_chain_key_match &&
+               b.identity_template_sign_derive;
     }
 
     V2cKeyProvisioningCapability compute_capability() {
@@ -137,6 +142,18 @@ public:
         c.import_proof_sign_ecdsa_p256_v1_ready = c.ecdsa_p256_sha256_p1363;
         c.secure_journal_replay_ready = c.secure_journal_ready;
         BusinessKeyDeviceBinding b = probe_binding();
+        // CR-020 §2.1/§11 修订：证书生产闭环 / 逻辑 Profile 门禁
+        c.csr_key_usage_request_matched = true;  // CSR Builder 固定请求双 KU（test_csr_builder 断言 DER）
+        c.identity_key_template_sign_derive = b.ready && b.identity_template_sign_derive;
+        c.certificate_profile_matched =
+            b.ready && b.active_cert_p256 && b.active_cert_key_agreement &&
+            b.active_cert_digital_signature && b.active_cert_ca_false &&
+            b.active_cert_eku_client_auth_only &&
+            b.active_cert_critical_extensions_allowed;
+        c.certificate_chain_and_key_match = b.ready && b.active_cert_chain_key_match;
+        c.certificate_critical_extensions_allowed =
+            b.ready && b.active_cert_critical_extensions_allowed;
+        c.leaf_certificate_digest_bound = b.ready && b.active_cert_leaf_digest_bound;
         c.active_certificate_key_agreement =
             b.ready && b.active_cert_p256 && b.active_cert_key_agreement;
         c.active_certificate_digital_signature =
@@ -561,6 +578,14 @@ ErrorCode BusinessKeyProvisioningService::import(const std::string& request_id,
         ctx.active_cert_digital_signature = binding.active_cert_digital_signature;
         ctx.private_key_can_derive = binding.private_key_can_derive;
         ctx.private_key_can_sign = binding.private_key_can_sign;
+        // CR-020 §2.1/§6.5 修订门禁传导
+        ctx.active_cert_ca_false = binding.active_cert_ca_false;
+        ctx.active_cert_eku_client_auth_only = binding.active_cert_eku_client_auth_only;
+        ctx.active_cert_critical_extensions_allowed =
+            binding.active_cert_critical_extensions_allowed;
+        ctx.active_cert_leaf_digest_bound = binding.active_cert_leaf_digest_bound;
+        ctx.active_cert_chain_key_match = binding.active_cert_chain_key_match;
+        ctx.identity_template_sign_derive = binding.identity_template_sign_derive;
         EnvelopeLimits limits;
         limits.max_parameters = static_cast<size_t>(impl_->cfg.max_parameters_bytes);
         limits.max_wrapped_key = static_cast<size_t>(impl_->cfg.max_wrapped_key_bytes);

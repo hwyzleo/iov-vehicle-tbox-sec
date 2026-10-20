@@ -106,6 +106,12 @@ protected:
         binding_.private_key_can_derive = true;
         binding_.private_key_can_sign = true;
         binding_.active_cert_digest = std::vector<uint8_t>(32, 0xBB);
+        binding_.active_cert_ca_false = true;
+        binding_.active_cert_eku_client_auth_only = true;
+        binding_.active_cert_critical_extensions_allowed = true;
+        binding_.active_cert_leaf_digest_bound = true;
+        binding_.active_cert_chain_key_match = true;
+        binding_.identity_template_sign_derive = true;
 
         BusinessKeyProviderConfig pcfg;
         pcfg.store_root = dir_ + "/bk";
@@ -274,13 +280,23 @@ TEST_F(BusinessKeyIpcTest, Capability_Query) {
     EXPECT_EQ(status_of(resp), 0);
     auto j = json::parse(resp);
     EXPECT_TRUE(j.value("success", false));
+    // TBOX-SEC-DSN-CR-020 §11 修订：契约版本升级为 2（完整字段集合 + 整值 allowlist）
     EXPECT_EQ(j.value("capability_contract_version", 0u),
               V2cKeyProvisioningCapability::kContractVersion);
+    EXPECT_EQ(j.value("capability_contract_version", 0u), 2u);
     // TBOX-TSP-DSN-CR-012 §8：四项显式门禁必须可区分
     EXPECT_TRUE(j.contains("envelope_v1_import_ready"));
     EXPECT_TRUE(j.contains("atomic_dual_purpose_commit_ready"));
     EXPECT_TRUE(j.contains("import_proof_sign_ecdsa_p256_v1_ready"));
     EXPECT_TRUE(j.contains("secure_journal_replay_ready"));
+    // TBOX-SEC-DSN-CR-020 §2.1/§11 修订：证书生产闭环 / 逻辑 Profile 门禁字段
+    EXPECT_TRUE(j.contains("identity_key_template_sign_derive"));
+    EXPECT_TRUE(j.contains("csr_key_usage_request_matched"));
+    EXPECT_TRUE(j.contains("certificate_profile_matched"));
+    EXPECT_TRUE(j.contains("certificate_chain_and_key_match"));
+    EXPECT_TRUE(j.contains("certificate_critical_extensions_allowed"));
+    EXPECT_TRUE(j.contains("leaf_certificate_digest_bound"));
+    EXPECT_TRUE(j.contains("all"));
 }
 
 TEST_F(BusinessKeyIpcTest, Capability_AclDenied_WrongPeer) {

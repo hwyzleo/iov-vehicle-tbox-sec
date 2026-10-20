@@ -215,6 +215,12 @@ protected:
         binding_.private_key_can_derive = true;
         binding_.private_key_can_sign = true;
         binding_.active_cert_digest = std::vector<uint8_t>(32, 0xBB);
+        binding_.active_cert_ca_false = true;
+        binding_.active_cert_eku_client_auth_only = true;
+        binding_.active_cert_critical_extensions_allowed = true;
+        binding_.active_cert_leaf_digest_bound = true;
+        binding_.active_cert_chain_key_match = true;
+        binding_.identity_template_sign_derive = true;
     }
 
     void TearDown() override {
@@ -570,6 +576,176 @@ TEST_F(BusinessKeyTest, PrivateKeySignMissing_NotReady_NoHardwareCalls) {
     EXPECT_EQ(counter->unwrap_calls, 0);
     EXPECT_EQ(counter->sign_calls, 0);
 }
+
+// ---- TBOX-SEC-DSN-CR-020 §2.1/§11 修订：逻辑 Profile 合取任一不满足 → NOT_READY ----
+
+TEST_F(BusinessKeyTest, ProfileCaFalseMissing_NotReady_NoHardwareCalls) {
+    binding_.active_cert_ca_false = false;
+    auto counting = std::make_unique<CountingHsm>(
+        hwyz::store::Store::open("sec_hsm", dir_), "aes-256-gcm", dir_ + "/.hsm_kek");
+    ASSERT_EQ(counting->initialize(), ErrorCode::SUCCESS);
+    KeyPair kp;
+    ASSERT_EQ(counting->generate_key_pair(kDeviceKeyId, "ecdsa-p256", kp), ErrorCode::SUCCESS);
+    CountingHsm* counter = counting.get();
+
+    auto provider = std::make_unique<SoftFileBusinessKeyProvider>(
+        counting.get(), provider_config(), [this]() { return binding_; });
+    service_ = build_service(counting.get(), std::move(provider));
+    ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
+
+    auto items = make_batch("req-ca", 1);
+    ImportResult r;
+    EXPECT_EQ(service_->import("req-ca", kBusinessDomainV2c, items, r),
+              ErrorCode::BUSINESS_KEY_NOT_READY);
+    EXPECT_EQ(counter->unwrap_calls, 0);
+    EXPECT_EQ(counter->sign_calls, 0);
+}
+
+TEST_F(BusinessKeyTest, ProfileEkuClientAuthOnlyMissing_NotReady_NoHardwareCalls) {
+    binding_.active_cert_eku_client_auth_only = false;
+    auto counting = std::make_unique<CountingHsm>(
+        hwyz::store::Store::open("sec_hsm", dir_), "aes-256-gcm", dir_ + "/.hsm_kek");
+    ASSERT_EQ(counting->initialize(), ErrorCode::SUCCESS);
+    KeyPair kp;
+    ASSERT_EQ(counting->generate_key_pair(kDeviceKeyId, "ecdsa-p256", kp), ErrorCode::SUCCESS);
+    CountingHsm* counter = counting.get();
+
+    auto provider = std::make_unique<SoftFileBusinessKeyProvider>(
+        counting.get(), provider_config(), [this]() { return binding_; });
+    service_ = build_service(counting.get(), std::move(provider));
+    ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
+
+    auto items = make_batch("req-eku", 1);
+    ImportResult r;
+    EXPECT_EQ(service_->import("req-eku", kBusinessDomainV2c, items, r),
+              ErrorCode::BUSINESS_KEY_NOT_READY);
+    EXPECT_EQ(counter->unwrap_calls, 0);
+    EXPECT_EQ(counter->sign_calls, 0);
+}
+
+TEST_F(BusinessKeyTest, ProfileCriticalExtensionsMissing_NotReady_NoHardwareCalls) {
+    binding_.active_cert_critical_extensions_allowed = false;
+    auto counting = std::make_unique<CountingHsm>(
+        hwyz::store::Store::open("sec_hsm", dir_), "aes-256-gcm", dir_ + "/.hsm_kek");
+    ASSERT_EQ(counting->initialize(), ErrorCode::SUCCESS);
+    KeyPair kp;
+    ASSERT_EQ(counting->generate_key_pair(kDeviceKeyId, "ecdsa-p256", kp), ErrorCode::SUCCESS);
+    CountingHsm* counter = counting.get();
+
+    auto provider = std::make_unique<SoftFileBusinessKeyProvider>(
+        counting.get(), provider_config(), [this]() { return binding_; });
+    service_ = build_service(counting.get(), std::move(provider));
+    ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
+
+    auto items = make_batch("req-crit", 1);
+    ImportResult r;
+    EXPECT_EQ(service_->import("req-crit", kBusinessDomainV2c, items, r),
+              ErrorCode::BUSINESS_KEY_NOT_READY);
+    EXPECT_EQ(counter->unwrap_calls, 0);
+    EXPECT_EQ(counter->sign_calls, 0);
+}
+
+TEST_F(BusinessKeyTest, ProfileLeafDigestUnbound_NotReady_NoHardwareCalls) {
+    binding_.active_cert_leaf_digest_bound = false;
+    auto counting = std::make_unique<CountingHsm>(
+        hwyz::store::Store::open("sec_hsm", dir_), "aes-256-gcm", dir_ + "/.hsm_kek");
+    ASSERT_EQ(counting->initialize(), ErrorCode::SUCCESS);
+    KeyPair kp;
+    ASSERT_EQ(counting->generate_key_pair(kDeviceKeyId, "ecdsa-p256", kp), ErrorCode::SUCCESS);
+    CountingHsm* counter = counting.get();
+
+    auto provider = std::make_unique<SoftFileBusinessKeyProvider>(
+        counting.get(), provider_config(), [this]() { return binding_; });
+    service_ = build_service(counting.get(), std::move(provider));
+    ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
+
+    auto items = make_batch("req-leaf", 1);
+    ImportResult r;
+    EXPECT_EQ(service_->import("req-leaf", kBusinessDomainV2c, items, r),
+              ErrorCode::BUSINESS_KEY_NOT_READY);
+    EXPECT_EQ(counter->unwrap_calls, 0);
+    EXPECT_EQ(counter->sign_calls, 0);
+}
+
+TEST_F(BusinessKeyTest, ProfileChainKeyMismatch_NotReady_NoHardwareCalls) {
+    binding_.active_cert_chain_key_match = false;
+    auto counting = std::make_unique<CountingHsm>(
+        hwyz::store::Store::open("sec_hsm", dir_), "aes-256-gcm", dir_ + "/.hsm_kek");
+    ASSERT_EQ(counting->initialize(), ErrorCode::SUCCESS);
+    KeyPair kp;
+    ASSERT_EQ(counting->generate_key_pair(kDeviceKeyId, "ecdsa-p256", kp), ErrorCode::SUCCESS);
+    CountingHsm* counter = counting.get();
+
+    auto provider = std::make_unique<SoftFileBusinessKeyProvider>(
+        counting.get(), provider_config(), [this]() { return binding_; });
+    service_ = build_service(counting.get(), std::move(provider));
+    ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
+
+    auto items = make_batch("req-ckm", 1);
+    ImportResult r;
+    EXPECT_EQ(service_->import("req-ckm", kBusinessDomainV2c, items, r),
+              ErrorCode::BUSINESS_KEY_NOT_READY);
+    EXPECT_EQ(counter->unwrap_calls, 0);
+    EXPECT_EQ(counter->sign_calls, 0);
+}
+
+TEST_F(BusinessKeyTest, IdentityTemplateSignDeriveMissing_NotReady_NoHardwareCalls) {
+    binding_.identity_template_sign_derive = false;
+    auto counting = std::make_unique<CountingHsm>(
+        hwyz::store::Store::open("sec_hsm", dir_), "aes-256-gcm", dir_ + "/.hsm_kek");
+    ASSERT_EQ(counting->initialize(), ErrorCode::SUCCESS);
+    KeyPair kp;
+    ASSERT_EQ(counting->generate_key_pair(kDeviceKeyId, "ecdsa-p256", kp), ErrorCode::SUCCESS);
+    CountingHsm* counter = counting.get();
+
+    auto provider = std::make_unique<SoftFileBusinessKeyProvider>(
+        counting.get(), provider_config(), [this]() { return binding_; });
+    service_ = build_service(counting.get(), std::move(provider));
+    ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
+
+    auto items = make_batch("req-tpl", 1);
+    ImportResult r;
+    EXPECT_EQ(service_->import("req-tpl", kBusinessDomainV2c, items, r),
+              ErrorCode::BUSINESS_KEY_NOT_READY);
+    EXPECT_EQ(counter->unwrap_calls, 0);
+    EXPECT_EQ(counter->sign_calls, 0);
+}
+
+// ---- TBOX-SEC-DSN-CR-020 §11：capability 计算（v2 契约 / 逻辑 Profile 门禁合取）----
+
+TEST_F(BusinessKeyTest, Capability_FullBinding_AllProfileGatesTrue) {
+    make_provider();
+    auto cap = service_->capability();
+    EXPECT_EQ(cap.capability_contract_version,
+              V2cKeyProvisioningCapability::kContractVersion);
+    EXPECT_EQ(cap.capability_contract_version, 2u);
+    EXPECT_TRUE(cap.identity_key_template_sign_derive);
+    EXPECT_TRUE(cap.csr_key_usage_request_matched);
+    EXPECT_TRUE(cap.certificate_profile_matched);
+    EXPECT_TRUE(cap.certificate_chain_and_key_match);
+    EXPECT_TRUE(cap.certificate_critical_extensions_allowed);
+    EXPECT_TRUE(cap.leaf_certificate_digest_bound);
+    EXPECT_TRUE(cap.all());
+    EXPECT_TRUE(service_->isReady());
+}
+
+TEST_F(BusinessKeyTest, Capability_ProfileGateMissing_AllFalse_FailClosed) {
+    // 任一 Profile 门禁缺失 → certificate_profile_matched=false，all()=false，
+    // import_ready 不开启（fail-closed：状态查询可保留，不接受新 ECDH-ES 信封）
+    binding_.active_cert_eku_client_auth_only = false;
+    make_provider();
+    auto cap = service_->capability();
+    EXPECT_FALSE(cap.certificate_profile_matched);
+    EXPECT_FALSE(cap.all());
+    EXPECT_FALSE(service_->isReady());
+
+    auto items = make_batch("req-capfail", 1);
+    ImportResult r;
+    EXPECT_EQ(service_->import("req-capfail", kBusinessDomainV2c, items, r),
+              ErrorCode::BUSINESS_KEY_NOT_READY);
+}
+
+
 
 TEST_F(BusinessKeyTest, ImportProof_ReplayDoesNotReSign) {
     make_provider();

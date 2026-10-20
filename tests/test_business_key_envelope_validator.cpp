@@ -89,6 +89,12 @@ EnvelopeContext context_for(const KeyprovEnvelopeInput& in) {
     ctx.active_cert_digital_signature = true;
     ctx.private_key_can_derive = true;
     ctx.private_key_can_sign = true;
+    ctx.active_cert_ca_false = true;
+    ctx.active_cert_eku_client_auth_only = true;
+    ctx.active_cert_critical_extensions_allowed = true;
+    ctx.active_cert_leaf_digest_bound = true;
+    ctx.active_cert_chain_key_match = true;
+    ctx.identity_template_sign_derive = true;
     return ctx;
 }
 

@@ -51,7 +51,15 @@ struct BusinessKeyDeviceBinding {
     bool active_cert_digital_signature = false;  ///< X.509 KeyUsage 含 digitalSignature
     bool private_key_can_derive = false;     ///< 对应私钥策略允许 ECDH derive
     bool private_key_can_sign = false;       ///< 同一私钥策略允许 ECDSA sign（Import Attestation）
-    std::vector<uint8_t> active_cert_digest; ///< SHA-256(leaf DER)，用于信封绑定比对
+    std::vector<uint8_t> active_cert_digest; ///< SHA-256(original leaf DER 字节)，用于信封绑定比对
+
+    // ---- TBOX-SEC-DSN-CR-020 §2.1/§11 修订门禁（逻辑 Profile TBOX_DEVICE_ECDH_ES_P256_V1）----
+    bool active_cert_ca_false = false;               ///< 终端实体（BC 缺失或 CA=false）
+    bool active_cert_eku_client_auth_only = false;   ///< EKU 仅 clientAuth（无 anyEKU/serverAuth/其他）
+    bool active_cert_critical_extensions_allowed = false;  ///< 关键扩展满足 allowlist
+    bool active_cert_leaf_digest_bound = false;      ///< 原始 leaf DER 摘要已绑定
+    bool active_cert_chain_key_match = false;        ///< leaf 公钥与本地句柄公钥匹配
+    bool identity_template_sign_derive = false;      ///< 设备密钥模板/句柄支持 sign+derive（不可导出）
 
     void clearPublicKey() {
         if (!device_public_key.empty()) {

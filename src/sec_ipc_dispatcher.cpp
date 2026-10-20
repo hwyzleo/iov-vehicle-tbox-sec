@@ -574,6 +574,13 @@ nlohmann::json capability_to_json(const V2cKeyProvisioningCapability& c) {
     j["atomic_dual_purpose_commit_ready"] = c.atomic_dual_purpose_commit_ready;
     j["import_proof_sign_ecdsa_p256_v1_ready"] = c.import_proof_sign_ecdsa_p256_v1_ready;
     j["secure_journal_replay_ready"] = c.secure_journal_replay_ready;
+    // TBOX-SEC-DSN-CR-020 §2.1/§11 修订：证书生产闭环 / 逻辑 Profile 门禁
+    j["identity_key_template_sign_derive"] = c.identity_key_template_sign_derive;
+    j["csr_key_usage_request_matched"] = c.csr_key_usage_request_matched;
+    j["certificate_profile_matched"] = c.certificate_profile_matched;
+    j["certificate_chain_and_key_match"] = c.certificate_chain_and_key_match;
+    j["certificate_critical_extensions_allowed"] = c.certificate_critical_extensions_allowed;
+    j["leaf_certificate_digest_bound"] = c.leaf_certificate_digest_bound;
     // 详细能力（诊断）
     j["proto_release_matched"] = c.proto_release_matched;
     j["envelope_format_v1"] = c.envelope_format_v1;

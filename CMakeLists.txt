@@ -326,6 +326,7 @@ if(GTest_FOUND)
         tests/test_certificate_store.cpp
         tests/test_cert_install_e2e.cpp
         tests/test_certificate_chain_parser.cpp
+        tests/test_device_key_agreement.cpp
         tests/test_sec_application.cpp
         tests/test_sec_config_checker.cpp
         tests/test_business_key_canonical_encoding.cpp

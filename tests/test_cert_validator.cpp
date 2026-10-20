@@ -467,3 +467,184 @@ TEST_F(CertValidatorTest, UncertaintyCrossesBoundary_Rejected) {
     EXPECT_EQ(result, ErrorCode::CERT_EXPIRED);
     EXPECT_FALSE(valid);
 }
+
+// ---- TBOX-SEC-DSN-CR-020 §2.1：通用门禁（CA=false 终端实体 / 未知关键扩展 fail-closed）----
+
+namespace {
+
+// 生成由同一 ca 签发的叶证书，可附加 BasicConstraints CA=TRUE 或未知关键扩展。
+// 返回 (leaf_der, ca_der)。
+std::pair<std::vector<uint8_t>, std::vector<uint8_t>> make_ca_signed_leaf_custom(
+    const char* cn, const std::vector<uint8_t>& leaf_pub_raw,
+    bool ca_true, bool unknown_critical) {
+    EvpUP ca_key = gen_ec_key();
+    X509UP ca(X509_new());
+    X509_set_version(ca.get(), 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(ca.get()), 1);
+    X509_NAME* can = X509_get_subject_name(ca.get());
+    X509_NAME_add_entry_by_txt(can, "CN", MBSTRING_ASC,
+        reinterpret_cast<const unsigned char*>("Test Root CA"), -1, -1, 0);
+    X509_set_issuer_name(ca.get(), can);
+    X509_set_pubkey(ca.get(), ca_key.get());
+    X509_gmtime_adj(X509_get_notBefore(ca.get()), 0);
+    X509_gmtime_adj(X509_get_notAfter(ca.get()), 3650 * 24 * 3600L);
+    X509_sign(ca.get(), ca_key.get(), EVP_sha256());
+
+    EvpUP dev_key = pkey_from_raw_pub(leaf_pub_raw);
+    X509UP leaf(X509_new());
+    X509_set_version(leaf.get(), 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(leaf.get()), 2);
+    X509_NAME* n = X509_get_subject_name(leaf.get());
+    X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC,
+        reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
+    X509_set_issuer_name(leaf.get(), X509_get_subject_name(ca.get()));
+    X509_set_pubkey(leaf.get(), dev_key.get());
+    X509_gmtime_adj(X509_get_notBefore(leaf.get()), 0);
+    X509_gmtime_adj(X509_get_notAfter(leaf.get()), 365 * 24 * 3600L);
+    set_common_exts(leaf.get(), false, true, true, cn);  // CN + KU + EKU(clientAuth)
+
+    if (ca_true) {
+        BASIC_CONSTRAINTS* bc = BASIC_CONSTRAINTS_new();
+        bc->ca = 1;
+        X509_EXTENSION* ext = X509V3_EXT_i2d(NID_basic_constraints, 1, bc);
+        X509_add_ext(leaf.get(), ext, -1);
+        X509_EXTENSION_free(ext);
+        BASIC_CONSTRAINTS_free(bc);
+    }
+    if (unknown_critical) {
+        // 未知自定义 OID 1.2.3.4.5，critical=1（CR-020：未知关键扩展 fail-closed）
+        ASN1_OBJECT* o = OBJ_txt2obj("1.2.3.4.5", 1);
+        ASN1_OCTET_STRING* oct = ASN1_OCTET_STRING_new();
+        ASN1_OCTET_STRING_set(oct, reinterpret_cast<const unsigned char*>("x"), 1);
+        X509_EXTENSION* ext = X509_EXTENSION_create_by_OBJ(nullptr, o, 1, oct);
+        X509_add_ext(leaf.get(), ext, -1);
+        X509_EXTENSION_free(ext);
+        ASN1_OBJECT_free(o);
+        ASN1_OCTET_STRING_free(oct);
+    }
+    X509_sign(leaf.get(), ca_key.get(), EVP_sha256());
+
+    unsigned char* buf = nullptr;
+    int len = i2d_X509(leaf.get(), &buf);
+    std::vector<uint8_t> leaf_der(buf, buf + len);
+    OPENSSL_free(buf);
+    buf = nullptr;
+    len = i2d_X509(ca.get(), &buf);
+    std::vector<uint8_t> ca_der_out(buf, buf + len);
+    OPENSSL_free(buf);
+    return {std::move(leaf_der), std::move(ca_der_out)};
+}
+
+} // namespace
+
+// CA=true 的“叶证书”必须被拒绝（终端实体判定；不得接受 CA 意图）
+TEST_F(CertValidatorTest, RejectCaTrueLeaf) {
+    KeyPair key_pair;
+    key_engine->get_device_key(test_ecu_uid, test_ecu_uid, key_pair);
+    auto [cert, ca] = make_ca_signed_leaf_custom(
+        test_ecu_uid.c_str(), key_pair.public_key, /*ca_true=*/true, false);
+    (void)ca;
+    X509UP leaf = der_to_x509(cert);
+    bool valid = false;
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, leaf.get(), valid);
+    EXPECT_EQ(result, ErrorCode::CERT_VALIDATION_FAILED);
+    EXPECT_FALSE(valid);
+}
+
+// 未知关键扩展 fail-closed（CR-020 §2.1/§11）
+TEST_F(CertValidatorTest, RejectUnknownCriticalExtension) {
+    KeyPair key_pair;
+    key_engine->get_device_key(test_ecu_uid, test_ecu_uid, key_pair);
+    auto [cert, ca] = make_ca_signed_leaf_custom(
+        test_ecu_uid.c_str(), key_pair.public_key, /*ca_true=*/false, /*unknown_critical=*/true);
+    (void)ca;
+    X509UP leaf = der_to_x509(cert);
+    bool valid = false;
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, leaf.get(), valid);
+    EXPECT_EQ(result, ErrorCode::CERT_VALIDATION_FAILED);
+    EXPECT_FALSE(valid);
+}
+
+// BasicConstraints 缺失的终端实体（常见于 TLS/设备叶证书）必须通过 CA 门禁
+// （CR-020：不得要求 basicConstraints 扩展必须显式存在）
+TEST_F(CertValidatorTest, AcceptLeafWithoutBasicConstraints) {
+    KeyPair key_pair;
+    key_engine->get_device_key(test_ecu_uid, test_ecu_uid, key_pair);
+    auto [cert, ca] = make_ca_signed_leaf_pair_with_pubkey(
+        test_ecu_uid.c_str(), key_pair.public_key, true, true);  // 无 BC
+    (void)ca;
+    X509UP leaf = der_to_x509(cert);
+    bool valid = false;
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, leaf.get(), valid);
+    // CA 门禁放行 → 后续 key match 成功 → SUCCESS
+    EXPECT_EQ(result, ErrorCode::SUCCESS);
+    EXPECT_TRUE(valid);
+}
+
+// 允许清单内的关键扩展（KU/EKU/BC=critical）必须通过（不误伤标准扩展）
+TEST_F(CertValidatorTest, AcceptAllowedCriticalExtensions) {
+    KeyPair key_pair;
+    key_engine->get_device_key(test_ecu_uid, test_ecu_uid, key_pair);
+    // 标准 make_ca_signed_leaf_pair_with_pubkey 生成的 KU/EKU 为非关键；
+    // 显式构造 critical KU/EKU/BC(false) 通过门禁。
+    EvpUP ca_key = gen_ec_key();
+    X509UP ca(X509_new());
+    X509_set_version(ca.get(), 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(ca.get()), 1);
+    X509_NAME* can = X509_get_subject_name(ca.get());
+    X509_NAME_add_entry_by_txt(can, "CN", MBSTRING_ASC,
+        reinterpret_cast<const unsigned char*>("Test Root CA"), -1, -1, 0);
+    X509_set_issuer_name(ca.get(), can);
+    X509_set_pubkey(ca.get(), ca_key.get());
+    X509_gmtime_adj(X509_get_notBefore(ca.get()), 0);
+    X509_gmtime_adj(X509_get_notAfter(ca.get()), 3650 * 24 * 3600L);
+    X509_sign(ca.get(), ca_key.get(), EVP_sha256());
+
+    EvpUP dev_key = pkey_from_raw_pub(key_pair.public_key);
+    X509UP leaf(X509_new());
+    X509_set_version(leaf.get(), 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(leaf.get()), 2);
+    X509_NAME* n = X509_get_subject_name(leaf.get());
+    X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC,
+        reinterpret_cast<const unsigned char*>(test_ecu_uid.c_str()), -1, -1, 0);
+    X509_set_issuer_name(leaf.get(), X509_get_subject_name(ca.get()));
+    X509_set_pubkey(leaf.get(), dev_key.get());
+    X509_gmtime_adj(X509_get_notBefore(leaf.get()), 0);
+    X509_gmtime_adj(X509_get_notAfter(leaf.get()), 365 * 24 * 3600L);
+
+    // critical KU (digitalSignature + keyAgreement 双位)
+    ASN1_BIT_STRING* bits = ASN1_BIT_STRING_new();
+    ASN1_BIT_STRING_set_bit(bits, 0, 1);  // digitalSignature
+    ASN1_BIT_STRING_set_bit(bits, 4, 1);  // keyAgreement
+    X509_EXTENSION* ku_ext = X509V3_EXT_i2d(NID_key_usage, 1, bits);
+    X509_add_ext(leaf.get(), ku_ext, -1);
+    X509_EXTENSION_free(ku_ext);
+    ASN1_BIT_STRING_free(bits);
+    // critical EKU clientAuth
+    EXTENDED_KEY_USAGE* eku = EXTENDED_KEY_USAGE_new();
+    sk_ASN1_OBJECT_push(eku, OBJ_txt2obj("1.3.6.1.5.5.7.3.2", 1));
+    X509_EXTENSION* eku_ext = X509V3_EXT_i2d(NID_ext_key_usage, 1, eku);
+    X509_add_ext(leaf.get(), eku_ext, -1);
+    X509_EXTENSION_free(eku_ext);
+    EXTENDED_KEY_USAGE_free(eku);
+    // critical basicConstraints CA=false
+    BASIC_CONSTRAINTS* bc = BASIC_CONSTRAINTS_new();
+    bc->ca = 0;
+    X509_EXTENSION* bc_ext = X509V3_EXT_i2d(NID_basic_constraints, 1, bc);
+    X509_add_ext(leaf.get(), bc_ext, -1);
+    X509_EXTENSION_free(bc_ext);
+    BASIC_CONSTRAINTS_free(bc);
+
+    X509_sign(leaf.get(), ca_key.get(), EVP_sha256());
+
+    unsigned char* buf = nullptr;
+    int len = i2d_X509(leaf.get(), &buf);
+    std::vector<uint8_t> cert_der(buf, buf + len);
+    OPENSSL_free(buf);
+
+    X509UP leaf_x509 = der_to_x509(cert_der);
+    bool valid = false;
+    ErrorCode result = validator->validate_certificate(test_vin, test_ecu_uid, leaf_x509.get(), valid);
+    EXPECT_EQ(result, ErrorCode::SUCCESS);
+    EXPECT_TRUE(valid);
+}

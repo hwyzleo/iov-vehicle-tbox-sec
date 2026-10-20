@@ -388,3 +388,91 @@ TEST_F(CertificateChainParserTest, EmptyPemChain_Rejected) {
         bytes_of("-----BEGIN CERTIFICATE-----\n\n-----END CERTIFICATE-----\n"), limits_);
     EXPECT_FALSE(r.ok);
 }
+
+// ---- TBOX-SEC-DSN-CR-020 §7.2：原始 leaf DER 字节摘要（非 i2d 重编码口径）----
+
+namespace {
+
+std::array<uint8_t, 32> sha256_bytes(const uint8_t* data, size_t len) {
+    std::array<uint8_t, 32> d{};
+    SHA256(data, len, d.data());
+    return d;
+}
+
+// 手工 base64 解码 PEM 块（EVP_DecodeBlock 需要 4 字节对齐 + padding；
+// 注意 EVP_DecodeBlock 会把 '=' 解码为 0x00 且返回长度含 padding，需按 padding 数裁剪）
+std::vector<uint8_t> base64_decode_block(const std::string& pem) {
+    const std::string kBegin = "-----BEGIN CERTIFICATE-----";
+    const std::string kEnd = "-----END CERTIFICATE-----";
+    size_t b = pem.find(kBegin);
+    size_t e = pem.find(kEnd, b);
+    if (b == std::string::npos || e == std::string::npos) return {};
+    std::string b64 = pem.substr(b + kBegin.size(), e - (b + kBegin.size()));
+    std::string cleaned;
+    for (char c : b64) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '+' || c == '/' || c == '=')
+            cleaned += c;
+    }
+    int pad = 0;
+    if (!cleaned.empty() && cleaned.back() == '=') ++pad;
+    if (cleaned.size() >= 2 && cleaned[cleaned.size() - 2] == '=') ++pad;
+    while (cleaned.size() % 4 != 0) cleaned += "=";
+    std::vector<uint8_t> out(cleaned.size() * 3 / 4 + 4);
+    const int n = EVP_DecodeBlock(out.data(),
+        reinterpret_cast<const unsigned char*>(cleaned.data()), cleaned.size());
+    if (n <= 0) return {};
+    out.resize(static_cast<size_t>(n) - static_cast<size_t>(pad));
+    return out;
+}
+
+} // namespace
+
+TEST_F(CertificateChainParserTest, SingleDer_OriginalLeafDigestIsInputBytes) {
+    ChainFixture f = make_two_level_chain();
+    std::vector<uint8_t> der = der_of(f.leaf.get());
+    ParseResult r = parser_.parse(der, limits_);
+    ASSERT_TRUE(r.ok);
+
+    std::array<uint8_t, 32> expected =
+        sha256_bytes(der.data(), der.size());
+    EXPECT_EQ(r.chain.leaf_der_original_sha256, expected)
+        << "原始 leaf DER 摘要必须为 SHA-256(收到的原始字节)";
+}
+
+TEST_F(CertificateChainParserTest, DerTrailingWhitespace_OriginalDigestIgnoresWhitespace) {
+    ChainFixture f = make_two_level_chain();
+    std::vector<uint8_t> der = der_of(f.leaf.get());
+    std::vector<uint8_t> payload = der;
+    payload.push_back('\n');
+    payload.push_back('\r');
+    ParseResult r = parser_.parse(payload, limits_);
+    ASSERT_TRUE(r.ok);
+
+    std::array<uint8_t, 32> expected =
+        sha256_bytes(der.data(), der.size());
+    EXPECT_EQ(r.chain.leaf_der_original_sha256, expected);
+}
+
+TEST_F(CertificateChainParserTest, PemChain_OriginalLeafDigestIsDecodedBlock) {
+    ChainFixture f = make_two_level_chain();
+    std::string pem = f.leaf_pem + f.intermediate_pem;
+    ParseResult r = parser_.parse(bytes_of(pem), limits_);
+    ASSERT_TRUE(r.ok);
+
+    // 原始口径：SHA-256(base64 解码后的块字节)，与 PEM 文本/重编码无关
+    std::vector<uint8_t> orig_der = base64_decode_block(f.leaf_pem);
+    ASSERT_FALSE(orig_der.empty());
+    std::array<uint8_t, 32> expected =
+        sha256_bytes(orig_der.data(), orig_der.size());
+    EXPECT_EQ(r.chain.leaf_der_original_sha256, expected);
+
+    // 与 i2d 重编码摘要一致（标准证书重编码字节相同；此处验证一致性链路）
+    std::vector<uint8_t> reenc = der_of(f.leaf.get());
+    EXPECT_EQ(r.chain.leaf_der_original_sha256,
+              sha256_bytes(reenc.data(), reenc.size()));
+
+    // PEM 文本自身绝不等于摘要（防止误把文本当 DER 哈希）
+    std::vector<uint8_t> text(f.leaf_pem.begin(), f.leaf_pem.end());
+    EXPECT_NE(r.chain.leaf_der_original_sha256,
+              sha256_bytes(text.data(), text.size()));
+}

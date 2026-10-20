@@ -160,10 +160,16 @@ ErrorCode validateEnvelope(const WrappedKeyItem& item,
     if (!isValidP256UncompressedPoint(params.server_ephemeral_public_key))
         return ErrorCode::WRAPPED_KEY_INVALID;
 
-    // §6.5 证书能力门禁（ACTIVE 证书 P-256 + keyAgreement + digitalSignature + 私钥 sign/derive）
+    // §6.5 证书能力门禁（ACTIVE 证书 P-256 + keyAgreement + digitalSignature + 私钥 sign/derive
+    // + CR-020 §2.1 逻辑 Profile 合取：CA=false、clientAuth-only、关键扩展 allowlist、
+    // leaf 原始 DER 绑定、链/密钥匹配、模板 sign+derive）
     if (!ctx.active_cert_p256 || !ctx.active_cert_key_agreement ||
         !ctx.active_cert_digital_signature || !ctx.private_key_can_derive ||
-        !ctx.private_key_can_sign)
+        !ctx.private_key_can_sign || !ctx.active_cert_ca_false ||
+        !ctx.active_cert_eku_client_auth_only ||
+        !ctx.active_cert_critical_extensions_allowed ||
+        !ctx.active_cert_leaf_digest_bound || !ctx.active_cert_chain_key_match ||
+        !ctx.identity_template_sign_derive)
         return ErrorCode::BUSINESS_KEY_NOT_READY;
     if (ctx.active_cert_digest.size() != params.recipient_certificate_digest.size() ||
         !constantTimeEqual(ctx.active_cert_digest, params.recipient_certificate_digest))

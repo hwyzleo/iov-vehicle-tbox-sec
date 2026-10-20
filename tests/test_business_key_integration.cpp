@@ -87,6 +87,12 @@ protected:
         binding_.private_key_can_derive = true;
         binding_.private_key_can_sign = true;
         binding_.active_cert_digest = std::vector<uint8_t>(32, 0xBB);
+        binding_.active_cert_ca_false = true;
+        binding_.active_cert_eku_client_auth_only = true;
+        binding_.active_cert_critical_extensions_allowed = true;
+        binding_.active_cert_leaf_digest_bound = true;
+        binding_.active_cert_chain_key_match = true;
+        binding_.identity_template_sign_derive = true;
 
         BusinessKeyProviderConfig pcfg;
         pcfg.store_root = test_dir_ + "/bk";

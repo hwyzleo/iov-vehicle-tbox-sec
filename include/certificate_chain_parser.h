@@ -57,6 +57,10 @@ struct ParsedCertificateChain {
     std::vector<UniqueX509> intermediates;    ///< leaf 之后的 intermediate(s)
     /// 各证书 DER 的 SHA-256（重复检测 / Root 比对用；日志不得输出 digest 全值或原始证书）
     std::vector<std::array<uint8_t, 32>> cert_der_sha256;
+    /// 原始 leaf DER 字节（收到的原文，非重编码）的 SHA-256（TBOX-SEC-DSN-CR-020 §7.2：
+    /// leafCertificateDigest=SHA-256(original bytes)，禁止以 i2d 重编码 DER/SPKI/CSR
+    /// fingerprint/serial/Profile 摘要替代）。无 leaf 时为零数组。
+    std::array<uint8_t, 32> leaf_der_original_sha256{};
 };
 
 /// 链解析限制（TBOX-SEC-DSN-CR-018 §3.3 / §8）
