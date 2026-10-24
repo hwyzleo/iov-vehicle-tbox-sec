@@ -595,6 +595,9 @@ nlohmann::json capability_to_json(const V2cKeyProvisioningCapability& c) {
     j["ecdsa_p256_sha256_p1363"] = c.ecdsa_p256_sha256_p1363;
     j["secure_journal_ready"] = c.secure_journal_ready;
     j["trusted_time_ready"] = c.trusted_time_ready;
+    // TBOX-SEC-DSN-CR-021：NOT_FOUND 结果查询能力（仅可观测/灰度；不进 all()）
+    j["business_key_import_result_not_found_v1"] =
+        c.business_key_import_result_not_found_v1;
     j["all"] = c.all();
     return j;
 }
@@ -603,7 +606,10 @@ nlohmann::json import_result_to_json(const ImportResult& r) {
     nlohmann::json j;
     j["request_id"] = r.request_id;
     j["business_domain"] = r.business_domain;
+    // TBOX-SEC-DSN-CR-021 §4：additive 编码——稳定字符串 + 数值同时输出，
+    // 不得更改既有字段名与类型；旧 client 不识别新数值时经 default 分支得到 UNKNOWN。
     j["state"] = business_key_import_state_to_string(r.state);
+    j["state_code"] = static_cast<uint32_t>(r.state);
     nlohmann::json items = nlohmann::json::array();
     for (const auto& s : r.items) items.push_back(business_key_status_to_json(s));
     j["items"] = items;

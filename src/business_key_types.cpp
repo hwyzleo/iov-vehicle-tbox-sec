@@ -90,6 +90,7 @@ std::string business_key_import_state_to_string(BusinessKeyImportState s) {
         case BusinessKeyImportState::COMMITTED: return "COMMITTED";
         case BusinessKeyImportState::FAILED: return "FAILED";
         case BusinessKeyImportState::UNKNOWN: return "UNKNOWN";
+        case BusinessKeyImportState::NOT_FOUND: return "NOT_FOUND";
     }
     return "UNKNOWN";
 }
@@ -99,7 +100,29 @@ BusinessKeyImportState string_to_business_key_import_state(const std::string& s)
     if (s == "STAGED") return BusinessKeyImportState::STAGED;
     if (s == "COMMITTED") return BusinessKeyImportState::COMMITTED;
     if (s == "FAILED") return BusinessKeyImportState::FAILED;
+    if (s == "NOT_FOUND") return BusinessKeyImportState::NOT_FOUND;
     return BusinessKeyImportState::UNKNOWN;
+}
+
+// TBOX-SEC-DSN-CR-021 §2：NOT_FOUND 为 additive 数值（下一个未使用值）；
+// 未知数值必须映射 UNKNOWN（禁止默认零值），不得重排/复用既有数值。
+BusinessKeyImportState import_state_from_code(uint32_t code) {
+    switch (code) {
+        case static_cast<uint32_t>(BusinessKeyImportState::REQUESTED):
+            return BusinessKeyImportState::REQUESTED;
+        case static_cast<uint32_t>(BusinessKeyImportState::STAGED):
+            return BusinessKeyImportState::STAGED;
+        case static_cast<uint32_t>(BusinessKeyImportState::COMMITTED):
+            return BusinessKeyImportState::COMMITTED;
+        case static_cast<uint32_t>(BusinessKeyImportState::FAILED):
+            return BusinessKeyImportState::FAILED;
+        case static_cast<uint32_t>(BusinessKeyImportState::UNKNOWN):
+            return BusinessKeyImportState::UNKNOWN;
+        case static_cast<uint32_t>(BusinessKeyImportState::NOT_FOUND):
+            return BusinessKeyImportState::NOT_FOUND;
+        default:
+            return BusinessKeyImportState::UNKNOWN;
+    }
 }
 
 std::string key_envelope_format_to_string(KeyEnvelopeFormat f) {

@@ -16,8 +16,11 @@
 #include "peer_credential.h"
 #include "trusted_time.h"
 #include "ipc.h"
+#include "ipc_protocol.h"
 #include "store.h"
 #include "utils.h"
+
+#include <nlohmann/json.hpp>
 
 #include <openssl/rand.h>
 #include <openssl/crypto.h>
@@ -252,10 +255,110 @@ TEST_F(BusinessKeyIntegrationTest, Idempotent_Reimport_SameItems) {
     EXPECT_EQ(r1.items[0].key_id_digest, r2.items[0].key_id_digest);
 }
 
-TEST_F(BusinessKeyIntegrationTest, ImportResult_UnknownRequest) {
+TEST_F(BusinessKeyIntegrationTest, ImportResult_NotFound_FreshNoResidue) {
     SecClient client(socket_path_);
     ASSERT_TRUE(client.connect());
     ImportResult r;
     ASSERT_EQ(client.get_business_key_import_result("no-such-request", r), ErrorCode::SUCCESS);
-    EXPECT_EQ(r.state, BusinessKeyImportState::UNKNOWN);
+    // TBOX-SEC-DSN-CR-021：fresh 设备无记录 + 无残留 → NOT_FOUND（区别于 UNKNOWN）
+    EXPECT_EQ(r.state, BusinessKeyImportState::NOT_FOUND);
+}
+
+// TBOX-SEC-DSN-CR-021 §4：client parser 兼容矩阵（数值+稳定字符串 additive 编码）。
+// 用固定响应的 stub server 验证：旧 SEC（无 state_code）、未知数值、数值/字符串冲突、
+// 缺失 state 均映射 UNKNOWN；已知 NOT_FOUND 正常映射。
+TEST_F(BusinessKeyIntegrationTest, ClientParser_CompatMatrix) {
+    const std::string stub_sock = test_dir_ + "/stub.sock";
+    ::tbox::fw::ipc::IpcConfig cfg;
+    cfg.connect_timeout_ms = 3000;
+    cfg.receive_timeout_ms = 5000;
+    auto stub = std::make_unique<::tbox::fw::ipc::Server>(stub_sock, cfg);
+    std::string stub_response;
+    ASSERT_TRUE(stub->start(
+        [&](uint32_t m, std::string_view, int) -> std::string {
+            if (m != static_cast<uint32_t>(ipc::MethodId::GET_BUSINESS_KEY_IMPORT_RESULT)) {
+                return "{\"status\":306}";
+            }
+            return stub_response;
+        },
+        [](int) {}));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    SecClient client(stub_sock);
+    ASSERT_TRUE(client.connect());
+
+    // 旧 SEC 响应（无 state_code）：仅按稳定字符串映射；新 client 不得推断 NOT_FOUND
+    stub_response =
+        "{\"status\":0,\"request_id\":\"x\",\"business_domain\":\"V2C_COMM\","
+        "\"state\":\"UNKNOWN\",\"items\":[]}";
+    ImportResult r1;
+    ASSERT_EQ(client.get_business_key_import_result("x", r1), ErrorCode::SUCCESS);
+    EXPECT_EQ(r1.state, BusinessKeyImportState::UNKNOWN);
+
+    // 已知 NOT_FOUND（数值 5 + 稳定字符串）→ 正常映射
+    stub_response =
+        "{\"status\":0,\"request_id\":\"x\",\"business_domain\":\"V2C_COMM\","
+        "\"state\":\"NOT_FOUND\",\"state_code\":5,\"items\":[]}";
+    ImportResult r2;
+    ASSERT_EQ(client.get_business_key_import_result("x", r2), ErrorCode::SUCCESS);
+    EXPECT_EQ(r2.state, BusinessKeyImportState::NOT_FOUND);
+
+    // 未知数值 → UNKNOWN（禁止默认零值）
+    stub_response =
+        "{\"status\":0,\"request_id\":\"x\",\"business_domain\":\"V2C_COMM\","
+        "\"state\":\"UNKNOWN\",\"state_code\":99,\"items\":[]}";
+    ImportResult r3;
+    ASSERT_EQ(client.get_business_key_import_result("x", r3), ErrorCode::SUCCESS);
+    EXPECT_EQ(r3.state, BusinessKeyImportState::UNKNOWN);
+
+    // 数值/字符串冲突 → UNKNOWN（fail-closed）
+    stub_response =
+        "{\"status\":0,\"request_id\":\"x\",\"business_domain\":\"V2C_COMM\","
+        "\"state\":\"COMMITTED\",\"state_code\":5,\"items\":[]}";
+    ImportResult r4;
+    ASSERT_EQ(client.get_business_key_import_result("x", r4), ErrorCode::SUCCESS);
+    EXPECT_EQ(r4.state, BusinessKeyImportState::UNKNOWN);
+
+    // 缺失 state（仅数值）→ UNKNOWN
+    stub_response =
+        "{\"status\":0,\"request_id\":\"x\",\"business_domain\":\"V2C_COMM\","
+        "\"state_code\":2,\"items\":[]}";
+    ImportResult r5;
+    ASSERT_EQ(client.get_business_key_import_result("x", r5), ErrorCode::SUCCESS);
+    EXPECT_EQ(r5.state, BusinessKeyImportState::UNKNOWN);
+
+    // 旧 SEC 返回已知确定结果（无 state_code）→ 按字符串正常映射
+    stub_response =
+        "{\"status\":0,\"request_id\":\"x\",\"business_domain\":\"V2C_COMM\","
+        "\"state\":\"REQUESTED\",\"items\":[]}";
+    ImportResult r6;
+    ASSERT_EQ(client.get_business_key_import_result("x", r6), ErrorCode::SUCCESS);
+    EXPECT_EQ(r6.state, BusinessKeyImportState::REQUESTED);
+
+    stub->stop();
+}
+
+// 冻结旧 client parser 语义（TBOX-SEC-DSN-CR-021 §4：旧 client 不识别 NOT_FOUND
+// 时必须经 default 分支得到 UNKNOWN）。此处复刻 CR-021 前的 parser：仅按稳定字符串
+// 映射、未知字符串 → UNKNOWN，不读取 state_code。
+namespace {
+BusinessKeyImportState legacy_client_import_state(const nlohmann::json& j) {
+    std::string s = j.value("state", "UNKNOWN");
+    if (s == "REQUESTED") return BusinessKeyImportState::REQUESTED;
+    if (s == "STAGED") return BusinessKeyImportState::STAGED;
+    if (s == "COMMITTED") return BusinessKeyImportState::COMMITTED;
+    if (s == "FAILED") return BusinessKeyImportState::FAILED;
+    return BusinessKeyImportState::UNKNOWN;  // "NOT_FOUND"/未知 → default → UNKNOWN
+}
+} // namespace
+
+TEST_F(BusinessKeyIntegrationTest, OldClientFixture_NewSecResponse_FailClosed) {
+    // 冻结旧 client 读取新 SEC 响应：识别 REQUESTED/STAGED/COMMITTED/FAILED，
+    // 不识别 "NOT_FOUND" → 经 default 分支得到 UNKNOWN（fail-closed，不误建 attempt）。
+    auto j = nlohmann::json::parse(
+        "{\"state\":\"NOT_FOUND\",\"state_code\":5,\"items\":[]}");
+    EXPECT_EQ(legacy_client_import_state(j), BusinessKeyImportState::UNKNOWN);
+    auto j2 = nlohmann::json::parse(
+        "{\"state\":\"COMMITTED\",\"state_code\":2,\"items\":[]}");
+    EXPECT_EQ(legacy_client_import_state(j2), BusinessKeyImportState::COMMITTED);
 }

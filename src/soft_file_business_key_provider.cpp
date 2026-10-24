@@ -38,6 +38,9 @@ constexpr int kAesGcmIv = 12;
 constexpr int kAesGcmTag = 16;
 constexpr int kKekSize = 32;
 
+/// state 文件格式版本（TBOX-SEC-DSN-CR-021：未知版本 → UNSUPPORTED_VERSION）。
+constexpr uint32_t kSupportedStateVersion = 1;
+
 int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::system_clock::now().time_since_epoch())
@@ -230,6 +233,9 @@ public:
     std::vector<uint8_t> kek;
     std::vector<uint8_t> mac_key;
 
+    uint32_t state_version = kSupportedStateVersion;  ///< state 文件格式版本（"v"）
+    bool state_version_unknown = false;               ///< 未知版本：journal 读取 UNSUPPORTED_VERSION
+
     uint64_t generation = 0;
     std::string commit_marker;
     std::map<std::string, Slot> active;
@@ -376,9 +382,13 @@ public:
 
     ErrorCode load_state() {
         if (!store || !store->isReady()) return ErrorCode::BUSINESS_KEY_NOT_READY;
+        state_version = kSupportedStateVersion;
+        state_version_unknown = false;
         if (!store->has("state")) return ErrorCode::SUCCESS;
         try {
             auto state = json::parse(store->load<std::string>("state"));
+            state_version = state.value("v", kSupportedStateVersion);
+            state_version_unknown = (state_version > kSupportedStateVersion);
             generation = state.value("generation", 0ULL);
             commit_marker = state.value("commit_marker", "");
             staging_generation = state.value("staging_generation", 0ULL);
@@ -796,24 +806,66 @@ ErrorCode SoftFileBusinessKeyProvider::generateProof(
 }
 
 // ============================================================
-// Journal
+// Journal（结构化读取，TBOX-SEC-DSN-CR-021 §2/§5）
 // ============================================================
 
-bool SoftFileBusinessKeyProvider::loadJournal(const std::string& request_id_digest,
-                                              BusinessKeyJournalEntry& out) {
+JournalLoadResult SoftFileBusinessKeyProvider::loadJournalEx(
+    const std::string& request_id_digest) {
     std::lock_guard<std::mutex> lock(impl_->mtx);
+    JournalLoadResult r;
+    // §5.4：存储/权限/I/O 故障或 provider 未就绪 → IO_ERROR（fail-closed）
+    if (!impl_->ready || !impl_->store || !impl_->store->isReady()) {
+        r.status = JournalLoadStatus::IO_ERROR;
+        r.provider_error = ErrorCode::BUSINESS_KEY_NOT_READY;
+        return r;
+    }
+    // §5.4：schema 版本未知 → UNSUPPORTED_VERSION（不是“不存在”）
+    if (impl_->state_version_unknown) {
+        r.status = JournalLoadStatus::UNSUPPORTED_VERSION;
+        r.provider_error = ErrorCode::STORAGE_CORRUPTION;
+        return r;
+    }
+    // §5.3：仅记录明确不存在（state 已成功加载、父目录/索引健康）时为 NOT_FOUND
     auto it = impl_->journal.find(request_id_digest);
-    if (it == impl_->journal.end()) return false;
+    if (it == impl_->journal.end()) {
+        r.status = JournalLoadStatus::NOT_FOUND;
+        r.provider_error = ErrorCode::SUCCESS;
+        return r;
+    }
+    // §5.4：MAC/认证失败不是“不存在”
     if (it->second.mac_hex != impl_->journal_mac(it->second.entry)) {
         SecLogAdapter::business_key().error(
-            "sec.business_key.journal_tamper", "导入 journal 条目 MAC 校验失败，按 UNKNOWN 处理");
-        out = BusinessKeyJournalEntry{};
-        out.request_id_digest = request_id_digest;
-        out.phase = BusinessKeyImportPhase::UNKNOWN;
-        return true;
+            "sec.business_key.journal_tamper",
+            "导入 journal 条目 MAC 校验失败（AUTH_FAILED，按 UNKNOWN 处理）",
+            {tbox::fw::log::Field("request_id_digest",
+                 tbox::fw::log::FieldValue::makeString(request_id_digest))});
+        r.status = JournalLoadStatus::AUTH_FAILED;
+        r.provider_error = ErrorCode::STORAGE_CORRUPTION;
+        return r;
     }
-    out = it->second.entry;
-    return true;
+    // §5.4：requestId binding 不一致 → schema/数据损坏
+    if (it->second.entry.request_id_digest != request_id_digest) {
+        r.status = JournalLoadStatus::CORRUPT;
+        r.provider_error = ErrorCode::STORAGE_CORRUPTION;
+        return r;
+    }
+    r.status = JournalLoadStatus::FOUND;
+    r.entry = it->second.entry;
+    r.provider_error = ErrorCode::SUCCESS;
+    return r;
+}
+
+bool SoftFileBusinessKeyProvider::hasTransactionResidue(
+    const std::string& request_id_digest) const {
+    (void)request_id_digest;
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    // 无法查询时视为存在残留（fail-closed）
+    if (!impl_->ready || !impl_->store || !impl_->store->isReady()) return true;
+    // staging：在途事务残留（journal 缺失但存在 staging → 无法排除该 rid 相关）
+    if (!impl_->staging.empty()) return true;
+    // commit marker：已有提交事务存在，无法证明该 rid 从未被处理
+    if (!impl_->commit_marker.empty()) return true;
+    return false;
 }
 
 ErrorCode SoftFileBusinessKeyProvider::saveJournal(const BusinessKeyJournalEntry& entry) {
@@ -829,6 +881,13 @@ ErrorCode SoftFileBusinessKeyProvider::saveJournal(const BusinessKeyJournalEntry
 std::vector<BusinessKeyJournalEntry> SoftFileBusinessKeyProvider::listJournal() {
     std::lock_guard<std::mutex> lock(impl_->mtx);
     std::vector<BusinessKeyJournalEntry> out;
+    // schema 版本未知：不信任条目内容，跳过启动恢复（fail-closed）
+    if (impl_->state_version_unknown) {
+        SecLogAdapter::business_key().error(
+            "sec.business_key.journal_version_unsupported",
+            "导入 journal 状态版本未知，跳过启动恢复（fail-closed）");
+        return out;
+    }
     for (auto& [rid, js] : impl_->journal) {
         if (js.mac_hex == impl_->journal_mac(js.entry)) {
             out.push_back(js.entry);

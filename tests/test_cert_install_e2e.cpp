@@ -28,6 +28,11 @@
 #include <filesystem>
 #include <memory>
 
+// 证书 notBefore 回溯 1h：夹具的 FakeTrustedTimeProvider 在 buildService() 时捕获固定
+// 样本，而证书在测试体稍后创建（X509 时间为秒粒度）。若样本与 notBefore 跨秒边界，
+// 时间校验会偶发失败（READY 断言 flaky）。回溯后样本始终落在 [notBefore, notAfter] 内。
+#define E2E_NOT_BEFORE_BACKDATE_SEC (-3600)
+
 using namespace tbox::sec;
 using namespace hwyz::config;
 using ::testing::Return;
@@ -72,7 +77,7 @@ X509UP make_root_ca(EVP_PKEY* ca_key) {
     X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC, (const unsigned char*)"E2E Root CA", -1, -1, 0);
     X509_set_issuer_name(cert.get(), n);
     X509_set_pubkey(cert.get(), ca_key);
-    X509_gmtime_adj(X509_get_notBefore(cert.get()), 0);
+    X509_gmtime_adj(X509_get_notBefore(cert.get()), E2E_NOT_BEFORE_BACKDATE_SEC);
     X509_gmtime_adj(X509_get_notAfter(cert.get()), 3650 * 24 * 3600L);
     BASIC_CONSTRAINTS* bc = BASIC_CONSTRAINTS_new(); bc->ca = 1;
     X509_EXTENSION* ext = X509V3_EXT_i2d(NID_basic_constraints, 1, bc);
@@ -90,7 +95,7 @@ X509UP make_leaf(EVP_PKEY* ca_key, X509* ca_cert, EVP_PKEY* dev_pubkey) {
     X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC, (const unsigned char*)"ecu1", -1, -1, 0);
     X509_set_issuer_name(cert.get(), X509_get_subject_name(ca_cert));
     X509_set_pubkey(cert.get(), dev_pubkey);
-    X509_gmtime_adj(X509_get_notBefore(cert.get()), 0);
+    X509_gmtime_adj(X509_get_notBefore(cert.get()), E2E_NOT_BEFORE_BACKDATE_SEC);
     X509_gmtime_adj(X509_get_notAfter(cert.get()), 365 * 24 * 3600L);
     BASIC_CONSTRAINTS* bc = BASIC_CONSTRAINTS_new(); bc->ca = 0;
     X509_EXTENSION* ext = X509V3_EXT_i2d(NID_basic_constraints, 1, bc);
@@ -117,7 +122,7 @@ X509UP make_leaf_signed(EVP_PKEY* issuer_key, X509* issuer_cert, EVP_PKEY* dev_p
     X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC, (const unsigned char*)"ecu1", -1, -1, 0);
     X509_set_issuer_name(cert.get(), X509_get_subject_name(issuer_cert));
     X509_set_pubkey(cert.get(), dev_pubkey);
-    X509_gmtime_adj(X509_get_notBefore(cert.get()), 0);
+    X509_gmtime_adj(X509_get_notBefore(cert.get()), E2E_NOT_BEFORE_BACKDATE_SEC);
     X509_gmtime_adj(X509_get_notAfter(cert.get()), 365 * 24 * 3600L);
     BASIC_CONSTRAINTS* bc = BASIC_CONSTRAINTS_new(); bc->ca = 0;
     X509_EXTENSION* ext = X509V3_EXT_i2d(NID_basic_constraints, 1, bc);
@@ -143,7 +148,7 @@ X509UP make_intermediate_ca(EVP_PKEY* root_key, X509* root_cert, EVP_PKEY* int_k
     X509_NAME_add_entry_by_txt(n, "CN", MBSTRING_ASC, (const unsigned char*)"E2E Intermediate CA", -1, -1, 0);
     X509_set_issuer_name(cert.get(), X509_get_subject_name(root_cert));
     X509_set_pubkey(cert.get(), int_key);
-    X509_gmtime_adj(X509_get_notBefore(cert.get()), 0);
+    X509_gmtime_adj(X509_get_notBefore(cert.get()), E2E_NOT_BEFORE_BACKDATE_SEC);
     X509_gmtime_adj(X509_get_notAfter(cert.get()), 3650 * 24 * 3600L);
     BASIC_CONSTRAINTS* bc = BASIC_CONSTRAINTS_new(); bc->ca = 1;
     X509_EXTENSION* ext = X509V3_EXT_i2d(NID_basic_constraints, 1, bc);

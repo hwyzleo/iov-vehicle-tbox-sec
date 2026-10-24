@@ -38,12 +38,16 @@ enum class BusinessKeyState : uint8_t {
 };
 
 /// 批次导入状态（US-011；结果查询/IPC 返回粒度的公开态）
-enum class BusinessKeyImportState : uint8_t {
+///
+/// TBOX-SEC-DSN-CR-021：底层类型为 std::uint32_t；NOT_FOUND 为 additive 值
+/// （下一个未使用数值），不得重排或复用既有 wire 数值。
+enum class BusinessKeyImportState : uint32_t {
     REQUESTED = 0,  ///< 已受理，尚未完成解封装
     STAGED = 1,     ///< 两用途 staging 完整，未 commit
     COMMITTED = 2,  ///< 已原子激活（IMPORTED）
     FAILED = 3,     ///< 失败并已回滚
-    UNKNOWN = 4     ///< 结果未知，需按 requestId 查询
+    UNKNOWN = 4,    ///< 结果未知，需按 requestId 查询
+    NOT_FOUND = 5   ///< 无该 requestId 记录且无事务残留（仅结构化 journal 证明无痕迹时返回）
 };
 
 /// 信封格式（TBOX-SEC-DSN-CR-020 §4 / PAR-PROTO-DSN-CR-007 §3）。
@@ -227,6 +231,11 @@ struct V2cKeyProvisioningCapability {
     bool secure_journal_ready = false;           ///< 安全 journal / ledger 可用
     bool trusted_time_ready = false;             ///< 可信时间可用
 
+    // ---- TBOX-SEC-DSN-CR-021：NOT_FOUND 结果查询能力（仅可观测/灰度）----
+    // 该字段不参与 all() 合取，也不得被调用方用于在 capability 缺失时把
+    // UNKNOWN 转换为 NOT_FOUND；只用于可观测性与灰度发布比对。
+    bool business_key_import_result_not_found_v1 = false;
+
     bool all() const {
         return envelope_v1_import_ready && atomic_dual_purpose_commit_ready &&
                import_proof_sign_ecdsa_p256_v1_ready && secure_journal_replay_ready &&
@@ -245,6 +254,8 @@ std::string business_key_state_to_string(BusinessKeyState s);
 BusinessKeyState string_to_business_key_state(const std::string& s);
 std::string business_key_import_state_to_string(BusinessKeyImportState s);
 BusinessKeyImportState string_to_business_key_import_state(const std::string& s);
+/// 数值 → 枚举（TBOX-SEC-DSN-CR-021 IPC additive 编码；未知数值映射 UNKNOWN，禁止零值）。
+BusinessKeyImportState import_state_from_code(uint32_t code);
 std::string key_envelope_format_to_string(KeyEnvelopeFormat f);
 KeyEnvelopeFormat string_to_key_envelope_format(const std::string& s);
 std::string business_key_import_phase_to_string(BusinessKeyImportPhase p);

@@ -439,7 +439,32 @@ void import_result_from_json(const nlohmann::json& j, ImportResult& out,
                              const std::function<std::vector<uint8_t>(const std::string&)>& dec) {
     out.request_id = j.value("request_id", "");
     out.business_domain = j.value("business_domain", "");
-    out.state = string_to_business_key_import_state(j.value("state", "UNKNOWN"));
+    // TBOX-SEC-DSN-CR-021 §4：数值(state_code) + 稳定字符串(state) additive 编码。
+    //   - 已知且一致 → 采用；未知数值/字符串、数值/字符串冲突、缺失 state → UNKNOWN
+    //     （禁止默认零值）；
+    //   - 旧 SEC 响应无 state_code → 仅按稳定字符串映射，不得从错误文本/空字段/
+    //     版本推断 NOT_FOUND。
+    out.state = BusinessKeyImportState::UNKNOWN;
+    const bool has_code =
+        j.contains("state_code") && j["state_code"].is_number_unsigned();
+    const bool has_str = j.contains("state") && j["state"].is_string();
+    if (!has_code) {
+        if (has_str) {
+            out.state =
+                string_to_business_key_import_state(j["state"].get<std::string>());
+        }
+    } else {
+        const BusinessKeyImportState code_state =
+            import_state_from_code(j["state_code"].get<uint32_t>());
+        if (!has_str) {
+            out.state = BusinessKeyImportState::UNKNOWN;  // 缺失 state → UNKNOWN
+        } else {
+            const BusinessKeyImportState str_state =
+                string_to_business_key_import_state(j["state"].get<std::string>());
+            out.state = (code_state == str_state) ? code_state
+                                                  : BusinessKeyImportState::UNKNOWN;
+        }
+    }
     out.items.clear();
     if (j.contains("items") && j["items"].is_array()) {
         for (const auto& ji : j["items"]) {

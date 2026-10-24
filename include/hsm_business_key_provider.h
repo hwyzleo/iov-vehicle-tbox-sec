@@ -57,6 +57,16 @@ public:
         return ErrorCode::BUSINESS_KEY_NOT_READY;
     }
 
+    // ---- TBOX-SEC-DSN-CR-021 §2/§5：production fail-closed 结构化 journal 读取 ----
+    // 真实厂商 SDK 接入前无法证明“无事务痕迹”，因此保持 IO_ERROR / 残留=true（fail-closed），
+    // 服务层将据此返回稳定错误或 UNKNOWN，绝不扩大 NOT_FOUND。
+    JournalLoadResult loadJournalEx(const std::string&) override {
+        JournalLoadResult r;
+        r.status = JournalLoadStatus::IO_ERROR;
+        r.provider_error = ErrorCode::BUSINESS_KEY_NOT_READY;
+        return r;
+    }
+    bool hasTransactionResidue(const std::string&) const override { return true; }
     bool loadJournal(const std::string&, BusinessKeyJournalEntry&) override { return false; }
     ErrorCode saveJournal(const BusinessKeyJournalEntry&) override {
         return ErrorCode::BUSINESS_KEY_NOT_READY;

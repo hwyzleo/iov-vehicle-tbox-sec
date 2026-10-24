@@ -136,6 +136,8 @@ public:
         c.atomic_dual_slot_commit = pc.atomic_dual_slot_commit;
         c.ecdsa_p256_sha256_p1363 = pc.ecdsa_p256_sha256_p1363;
         c.secure_journal_ready = pc.secure_journal_ready;
+        // TBOX-SEC-DSN-CR-021：NOT_FOUND 结果查询能力（仅可观测/灰度，不进 all()）
+        c.business_key_import_result_not_found_v1 = true;
         // TBOX-TSP-DSN-CR-012 §8：显式门禁别名（语义与详细能力一致）
         c.envelope_v1_import_ready = c.envelope_format_v1;
         c.atomic_dual_purpose_commit_ready = c.atomic_dual_slot_commit;
@@ -420,6 +422,54 @@ public:
         }
         return ErrorCode::SUCCESS;
     }
+
+    /// TBOX-SEC-DSN-CR-021 §3：残留事务核对。
+    /// provider 侧（staging/commit marker/operation binding，fail-closed）或
+    /// SecureMetadataLedger 中任一用途的 request_id_digest 绑定命中时返回 true。
+    /// true 时服务层不得上报 NOT_FOUND（保持 UNKNOWN/稳定错误）。
+    bool has_transaction_residue(const std::string& rid_digest) const {
+        if (provider->hasTransactionResidue(rid_digest)) return true;
+        if (ledger) {
+            for (const auto& p : cfg.required_purposes) {
+                BusinessKeyMetadata meta;
+                if (ledger->get(kBusinessDomainV2c, p, meta) && meta.present &&
+                    !meta.request_id_digest.empty() && meta.request_id_digest == rid_digest) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// 脱敏日志：仅记录 request_id_digest / journal_load_status / import_state /
+    /// provider_error_class / 耗时；禁止 wrappedKey、proof、完整 requestId、证书、slotRef。
+    void log_journal_load_outcome(const std::string& rid_digest, JournalLoadStatus status,
+                                  const char* import_state, ErrorCode provider_error,
+                                  bool security_event) {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0_)
+                            .count();
+        auto fields = {
+            tbox::fw::log::Field("request_id_digest",
+                tbox::fw::log::FieldValue::makeString(rid_digest)),
+            tbox::fw::log::Field("journal_load_status",
+                tbox::fw::log::FieldValue::makeString(journal_load_status_to_string(status))),
+            tbox::fw::log::Field("import_state",
+                tbox::fw::log::FieldValue::makeString(import_state)),
+            tbox::fw::log::Field("provider_error_class",
+                tbox::fw::log::FieldValue::makeString(error_code_to_string(provider_error))),
+            tbox::fw::log::Field("duration_ms",
+                tbox::fw::log::FieldValue::makeInt(static_cast<int64_t>(ms)))};
+        if (security_event) {
+            SecLogAdapter::business_key().error("sec.business_key.journal_load_failed",
+                "导入结果查询：journal 读取失败（fail-closed，按 UNKNOWN 处理）", fields);
+        } else {
+            SecLogAdapter::business_key().warn("sec.business_key.residue_unknown",
+                "导入结果查询：journal 无记录但存在事务残留，按 UNKNOWN 处理", fields);
+        }
+    }
+
+    std::chrono::steady_clock::time_point t0_;
 };
 
 // ============================================================
@@ -795,21 +845,67 @@ ErrorCode BusinessKeyProvisioningService::getImportResult(const std::string& req
     if (!impl_->cfg.enabled || !impl_->provider_ready)
         return ErrorCode::BUSINESS_KEY_NOT_READY;
     if (request_id.empty()) return ErrorCode::INVALID_PARAMETER;
+    if (request_id.size() > 128) return ErrorCode::INVALID_PARAMETER;  // 超长 requestId（安全）
 
     const std::string rid_digest = rid_digest_of(request_id);
-    BusinessKeyJournalEntry entry;
-    if (!impl_->provider->loadJournal(rid_digest, entry)) {
-        out.state = BusinessKeyImportState::UNKNOWN;
-        return ErrorCode::SUCCESS;  // 未知：调用方应先查询而非重放
+    impl_->t0_ = std::chrono::steady_clock::now();
+
+    // TBOX-SEC-DSN-CR-021 §3：结构化 journal 读取，不再把任意 false 直接解释为不存在。
+    JournalLoadResult lr = impl_->provider->loadJournalEx(rid_digest);
+    switch (lr.status) {
+        case JournalLoadStatus::FOUND: {
+            if (!lr.entry) {  // 防御：FOUND 必须携带条目
+                impl_->log_journal_load_outcome(rid_digest, lr.status, "UNKNOWN",
+                                                ErrorCode::STORAGE_CORRUPTION, true);
+                out.business_domain = kBusinessDomainV2c;
+                out.state = BusinessKeyImportState::UNKNOWN;
+                return ErrorCode::SUCCESS;
+            }
+            const BusinessKeyJournalEntry& entry = *lr.entry;
+            if (entry.phase == BusinessKeyImportPhase::SUCCEEDED) {
+                return impl_->build_committed_result(entry, out);
+            }
+            // 其余 phase 按权威 phase 派生；OUTCOME_UNKNOWN 必须保持 UNKNOWN。
+            out.business_domain = kBusinessDomainV2c;
+            out.state = import_state_from_phase(entry.phase);
+            out.items = entry.items;
+            out.provider_version_digest = entry.provider_version_digest;
+            return ErrorCode::SUCCESS;
+        }
+        case JournalLoadStatus::NOT_FOUND: {
+            // 残留核对：无 staging、无 commit marker、无 operation binding/ledger 痕迹
+            // 时才返回 NOT_FOUND；发现痕迹或无法查询 → UNKNOWN（fail-closed）。
+            out.business_domain = kBusinessDomainV2c;
+            if (impl_->has_transaction_residue(rid_digest)) {
+                impl_->log_journal_load_outcome(rid_digest, lr.status, "UNKNOWN",
+                                                ErrorCode::SUCCESS, false);
+                out.state = BusinessKeyImportState::UNKNOWN;
+            } else {
+                out.state = BusinessKeyImportState::NOT_FOUND;
+            }
+            return ErrorCode::SUCCESS;
+        }
+        case JournalLoadStatus::AUTH_FAILED:
+        case JournalLoadStatus::CORRUPT:
+        case JournalLoadStatus::UNSUPPORTED_VERSION: {
+            // 安全事件 + UNKNOWN；MAC 失败不是“不存在”。
+            impl_->log_journal_load_outcome(rid_digest, lr.status, "UNKNOWN",
+                                            lr.provider_error, true);
+            out.business_domain = kBusinessDomainV2c;
+            out.state = BusinessKeyImportState::UNKNOWN;
+            return ErrorCode::SUCCESS;
+        }
+        case JournalLoadStatus::IO_ERROR:
+        default: {
+            // 稳定错误；调用方 fail-closed。
+            impl_->log_journal_load_outcome(rid_digest, lr.status, "UNKNOWN",
+                                            lr.provider_error, true);
+            out.business_domain = kBusinessDomainV2c;
+            out.state = BusinessKeyImportState::UNKNOWN;
+            return lr.provider_error != ErrorCode::SUCCESS ? lr.provider_error
+                                                           : ErrorCode::STORAGE_READ_FAILED;
+        }
     }
-    if (entry.phase == BusinessKeyImportPhase::SUCCEEDED) {
-        return impl_->build_committed_result(entry, out);
-    }
-    out.business_domain = kBusinessDomainV2c;
-    out.state = import_state_from_phase(entry.phase);
-    out.items = entry.items;
-    out.provider_version_digest = entry.provider_version_digest;
-    return ErrorCode::SUCCESS;
 }
 
 } // namespace sec

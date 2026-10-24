@@ -20,6 +20,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -105,6 +106,41 @@ struct BusinessKeyProviderCapability {
     }
 };
 
+// ============================================================
+// 结构化 journal 读取（TBOX-SEC-DSN-CR-021 §2/§12.6.1）
+// ============================================================
+
+/// provider journal 读取的稳定分类结果，不再以单个 bool 承载不存在、
+/// 认证失败与 I/O 故障。
+enum class JournalLoadStatus {
+    FOUND,               ///< 条目存在且 MAC/schema/requestId binding 校验通过
+    NOT_FOUND,           ///< 条目明确不存在（父目录/索引健康；SoftFile 仅 ENOENT 语义）
+    IO_ERROR,            ///< 存储/权限/I/O 故障，无法判定
+    AUTH_FAILED,         ///< MAC/认证校验失败（不是“不存在”）
+    CORRUPT,             ///< 格式/短读/schema 损坏
+    UNSUPPORTED_VERSION  ///< journal/schema 版本未知
+};
+
+/// provider journal 读取的结构化结果。
+/// provider_error 使用既有稳定 ErrorCode 分类（非敏感），不得用 SUCCESS+NOT_FOUND 掩盖故障。
+struct JournalLoadResult {
+    JournalLoadStatus status = JournalLoadStatus::IO_ERROR;
+    std::optional<BusinessKeyJournalEntry> entry;
+    ErrorCode provider_error = ErrorCode::SUCCESS;
+};
+
+inline const char* journal_load_status_to_string(JournalLoadStatus s) {
+    switch (s) {
+        case JournalLoadStatus::FOUND: return "FOUND";
+        case JournalLoadStatus::NOT_FOUND: return "NOT_FOUND";
+        case JournalLoadStatus::IO_ERROR: return "IO_ERROR";
+        case JournalLoadStatus::AUTH_FAILED: return "AUTH_FAILED";
+        case JournalLoadStatus::CORRUPT: return "CORRUPT";
+        case JournalLoadStatus::UNSUPPORTED_VERSION: return "UNSUPPORTED_VERSION";
+    }
+    return "IO_ERROR";
+}
+
 class BusinessKeyProvider {
 public:
     virtual ~BusinessKeyProvider() = default;
@@ -174,9 +210,38 @@ public:
                                     std::string& algorithm) = 0;
 
     // ---- Import journal（掉电安全 + 防篡改；authoritative requestId 幂等）----
-    /// 读取 journal 条目；不存在返回 false。
+    /// 结构化读取 journal 条目（TBOX-SEC-DSN-CR-021 §2）。
+    ///
+    /// 返回 FOUND 表示条目存在且 MAC/schema/requestId binding 校验通过；
+    /// NOT_FOUND 仅在该 provider 能明确证明无事务痕迹时产生；
+    /// AUTH_FAILED/CORRUPT/UNSUPPORTED_VERSION/IO_ERROR 均为明确故障分类。
+    virtual JournalLoadResult loadJournalEx(const std::string& request_id_digest) = 0;
+
+    /// 是否仍存在与该 requestId 相关（或无法排除相关）的事务痕迹
+    /// （staging slot / commit marker / operation binding）。
+    ///
+    /// 服务层仅在 loadJournalEx 返回 NOT_FOUND 且本方法返回 false 时才可上报
+    /// BusinessKeyImportState::NOT_FOUND；true 或无法查询时必须保持 UNKNOWN
+    /// （fail-closed，不得为恢复业务扩大 NOT_FOUND）。
+    virtual bool hasTransactionResidue(const std::string& request_id_digest) const = 0;
+
+    /// 读取 journal 条目（兼容包装，TBOX-SEC-DSN-CR-021 §2：委托 loadJournalEx）；
+    /// 条目不存在返回 false；MAC 失败返回 true 且 out.phase=UNKNOWN（沿用既有语义）。
     virtual bool loadJournal(const std::string& request_id_digest,
-                             BusinessKeyJournalEntry& out) = 0;
+                             BusinessKeyJournalEntry& out) {
+        JournalLoadResult r = loadJournalEx(request_id_digest);
+        if (r.status == JournalLoadStatus::FOUND && r.entry) {
+            out = *r.entry;
+            return true;
+        }
+        if (r.status == JournalLoadStatus::AUTH_FAILED) {
+            out = BusinessKeyJournalEntry{};
+            out.request_id_digest = request_id_digest;
+            out.phase = BusinessKeyImportPhase::UNKNOWN;
+            return true;
+        }
+        return false;
+    }
     /// 写入/覆盖 journal 条目（原子、防篡改）。
     virtual ErrorCode saveJournal(const BusinessKeyJournalEntry& entry) = 0;
     /// 列出全部 journal 条目（用于启动恢复）。

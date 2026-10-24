@@ -80,8 +80,10 @@ public:
                             std::vector<uint8_t>& proof,
                             std::string& algorithm) override;
 
-    bool loadJournal(const std::string& request_id_digest,
-                     BusinessKeyJournalEntry& out) override;
+    // ---- Import journal（TBOX-SEC-DSN-CR-021 §2：结构化读取）----
+    JournalLoadResult loadJournalEx(const std::string& request_id_digest) override;
+    bool hasTransactionResidue(const std::string& request_id_digest) const override;
+    // loadJournal 兼容包装继承基类默认实现（委托 loadJournalEx）
     ErrorCode saveJournal(const BusinessKeyJournalEntry& entry) override;
     std::vector<BusinessKeyJournalEntry> listJournal() override;
     bool hasPendingStaging() const override;

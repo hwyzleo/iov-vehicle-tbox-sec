@@ -14,6 +14,8 @@
 #include "tbox/sec/business_key.h"
 #include "trusted_time.h"
 
+#include <nlohmann/json.hpp>
+
 #include <openssl/bn.h>
 #include <openssl/ec.h>
 #include <openssl/ecdsa.h>
@@ -39,6 +41,15 @@ std::string unique_dir() {
               std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directories(p);
     return p.string();
+}
+
+/// 直接操纵 SoftFile provider 的 state JSON（模拟 journal 丢失/篡改/版本等）。
+void mutate_state(const std::string& store_root,
+                  const std::function<void(nlohmann::json&)>& fn) {
+    auto st = hwyz::store::Store::open("sec_business_keys", store_root);
+    auto state = nlohmann::json::parse(st.load<std::string>("state"));
+    fn(state);
+    st.save("state", state.dump());
 }
 
 std::shared_ptr<TrustedTimeProvider> fake_time() {
@@ -183,6 +194,12 @@ public:
     bool loadJournal(const std::string& r, BusinessKeyJournalEntry& o) override {
         return inner_->loadJournal(r, o);
     }
+    JournalLoadResult loadJournalEx(const std::string& r) override {
+        return inner_->loadJournalEx(r);
+    }
+    bool hasTransactionResidue(const std::string& r) const override {
+        return inner_->hasTransactionResidue(r);
+    }
     ErrorCode saveJournal(const BusinessKeyJournalEntry& e) override {
         return inner_->saveJournal(e);
     }
@@ -266,6 +283,16 @@ protected:
             hsm_.get(), provider_config(), [this]() { return binding_; });
         provider_ = provider.get();
         service_ = build_service(hsm_.get(), std::move(provider), enabled);
+        ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
+    }
+
+    /// 重建 provider/service（读同一 store；用于模拟磁盘状态变更后的启动）。
+    void rebuild_service() {
+        service_.reset();
+        auto p2 = std::make_unique<SoftFileBusinessKeyProvider>(
+            hsm_.get(), provider_config(), [this]() { return binding_; });
+        provider_ = p2.get();
+        service_ = build_service(hsm_.get(), std::move(p2));
         ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
     }
 
@@ -725,6 +752,8 @@ TEST_F(BusinessKeyTest, Capability_FullBinding_AllProfileGatesTrue) {
     EXPECT_TRUE(cap.certificate_chain_and_key_match);
     EXPECT_TRUE(cap.certificate_critical_extensions_allowed);
     EXPECT_TRUE(cap.leaf_certificate_digest_bound);
+    // TBOX-SEC-DSN-CR-021：NOT_FOUND 查询能力为可观测字段，且不参与 all() 合取
+    EXPECT_TRUE(cap.business_key_import_result_not_found_v1);
     EXPECT_TRUE(cap.all());
     EXPECT_TRUE(service_->isReady());
 }
@@ -772,10 +801,159 @@ TEST_F(BusinessKeyTest, ImportProof_ReplayDoesNotReSign) {
 
 // ---------------- 结果查询 / 恢复 ----------------
 
-TEST_F(BusinessKeyTest, ImportResult_Unknown) {
+TEST_F(BusinessKeyTest, ImportResult_NotFound_FreshNoResidue) {
     make_provider();
     ImportResult r;
     ASSERT_EQ(service_->getImportResult("never-seen", r), ErrorCode::SUCCESS);
+    // TBOX-SEC-DSN-CR-021 §3：journal 明确无记录 + 无 staging/commit marker/ledger
+    // 痕迹时才返回 NOT_FOUND（区别于“结果未知 UNKNOWN”）。
+    EXPECT_EQ(r.state, BusinessKeyImportState::NOT_FOUND);
+}
+
+TEST_F(BusinessKeyTest, ImportResult_Unknown_CommitResidueExists) {
+    make_provider();
+    auto items = make_batch("req-residue", 1);
+    ImportResult r0;
+    ASSERT_EQ(service_->import("req-residue", kBusinessDomainV2c, items, r0), ErrorCode::SUCCESS);
+    // 设备已有已提交事务（commit marker 存在），但该 rid 从未被记录：
+    // 无法证明“无事务痕迹” → UNKNOWN（fail-closed，不得扩大 NOT_FOUND）。
+    ImportResult r;
+    ASSERT_EQ(service_->getImportResult("req-other", r), ErrorCode::SUCCESS);
+    EXPECT_EQ(r.state, BusinessKeyImportState::UNKNOWN);
+}
+
+TEST_F(BusinessKeyTest, ImportResult_Unknown_JournalLost_CommitMarkerRemains) {
+    make_provider();
+    auto items = make_batch("req-lost", 1);
+    ImportResult r0;
+    ASSERT_EQ(service_->import("req-lost", kBusinessDomainV2c, items, r0), ErrorCode::SUCCESS);
+    // 模拟 journal 条目丢失（磁盘删除该 rid 记录），commit marker/active 仍在：
+    // journal 缺失但 commit marker 存在 → UNKNOWN（测试矩阵：残留痕迹）。
+    const std::string rid =
+        canonical::toHex(canonical::sha256(std::string("req-lost")));
+    mutate_state(dir_ + "/bk", [&](nlohmann::json& state) { state["journal"].erase(rid); });
+    rebuild_service();
+    ImportResult r;
+    ASSERT_EQ(service_->getImportResult("req-lost", r), ErrorCode::SUCCESS);
+    EXPECT_EQ(r.state, BusinessKeyImportState::UNKNOWN);
+}
+
+TEST_F(BusinessKeyTest, ImportResult_Unknown_JournalLost_StagingRemains) {
+    // FailingCommitProvider：commit 恒 INTERNAL_ERROR → OUTCOME_UNKNOWN，staging 残留。
+    auto inner = std::make_unique<SoftFileBusinessKeyProvider>(
+        hsm_.get(), provider_config(), [this]() { return binding_; });
+    auto provider = std::make_unique<FailingCommitProvider>(std::move(inner));
+    service_ = build_service(hsm_.get(), std::move(provider));
+    ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
+    auto items = make_batch("req-stg", 1);
+    ImportResult r0;
+    EXPECT_EQ(service_->import("req-stg", kBusinessDomainV2c, items, r0),
+              ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN);
+    // 删除 journal 条目但保留 staging 残留：journal 缺失但 staging 存在 → UNKNOWN。
+    const std::string rid =
+        canonical::toHex(canonical::sha256(std::string("req-stg")));
+    mutate_state(dir_ + "/bk", [&](nlohmann::json& state) { state["journal"].erase(rid); });
+    service_.reset();
+    auto p2 = std::make_unique<SoftFileBusinessKeyProvider>(
+        hsm_.get(), provider_config(), [this]() { return binding_; });
+    provider_ = p2.get();
+    service_ = build_service(hsm_.get(), std::move(p2));
+    ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
+    ImportResult r;
+    ASSERT_EQ(service_->getImportResult("req-stg", r), ErrorCode::SUCCESS);
+    EXPECT_EQ(r.state, BusinessKeyImportState::UNKNOWN);
+}
+
+TEST_F(BusinessKeyTest, ImportResult_Failed_PhasePreserved) {
+    make_provider();
+    BusinessKeyJournalEntry e;
+    e.request_id_digest = canonical::toHex(canonical::sha256(std::string("req-failed")));
+    e.phase = BusinessKeyImportPhase::FAILED;
+    ASSERT_EQ(provider_->saveJournal(e), ErrorCode::SUCCESS);
+    ImportResult r;
+    ASSERT_EQ(service_->getImportResult("req-failed", r), ErrorCode::SUCCESS);
+    EXPECT_EQ(r.state, BusinessKeyImportState::FAILED);
+}
+
+TEST_F(BusinessKeyTest, ImportResult_Staged_PhasePreserved) {
+    make_provider();
+    BusinessKeyJournalEntry e;
+    e.request_id_digest = canonical::toHex(canonical::sha256(std::string("req-staged")));
+    e.phase = BusinessKeyImportPhase::BOTH_STAGED;
+    ASSERT_EQ(provider_->saveJournal(e), ErrorCode::SUCCESS);
+    ImportResult r;
+    ASSERT_EQ(service_->getImportResult("req-staged", r), ErrorCode::SUCCESS);
+    EXPECT_EQ(r.state, BusinessKeyImportState::STAGED);
+}
+
+TEST_F(BusinessKeyTest, ImportResult_OutcomeUnknown_StaysUnknown) {
+    make_provider();
+    BusinessKeyJournalEntry e;
+    e.request_id_digest = canonical::toHex(canonical::sha256(std::string("req-ouc")));
+    e.phase = BusinessKeyImportPhase::OUTCOME_UNKNOWN;
+    ASSERT_EQ(provider_->saveJournal(e), ErrorCode::SUCCESS);
+    ImportResult r;
+    ASSERT_EQ(service_->getImportResult("req-ouc", r), ErrorCode::SUCCESS);
+    EXPECT_EQ(r.state, BusinessKeyImportState::UNKNOWN);
+}
+
+TEST_F(BusinessKeyTest, JournalLoad_MacTamper_AuthFailed_NotNotFound) {
+    make_provider();
+    BusinessKeyJournalEntry e;
+    e.request_id_digest = canonical::toHex(canonical::sha256(std::string("req-mac")));
+    e.phase = BusinessKeyImportPhase::FAILED;
+    ASSERT_EQ(provider_->saveJournal(e), ErrorCode::SUCCESS);
+    // 篡改磁盘 journal MAC：完整性失败不是“不存在”。
+    const std::string rid = e.request_id_digest;
+    mutate_state(dir_ + "/bk", [&](nlohmann::json& state) {
+        std::string mac = state["journal"][rid]["mac"];
+        mac[0] = (mac[0] == 'a') ? 'b' : 'a';
+        state["journal"][rid]["mac"] = mac;
+    });
+    auto p2 = std::make_unique<SoftFileBusinessKeyProvider>(
+        hsm_.get(), provider_config(), [this]() { return binding_; });
+    ASSERT_EQ(p2->initialize(), ErrorCode::SUCCESS);
+    JournalLoadResult lr = p2->loadJournalEx(rid);
+    EXPECT_EQ(lr.status, JournalLoadStatus::AUTH_FAILED);
+    EXPECT_NE(lr.status, JournalLoadStatus::NOT_FOUND);
+}
+
+TEST_F(BusinessKeyTest, ImportResult_SchemaVersionUnknown_Unknown) {
+    // schema 版本未知（"v":99）：结构化读取报 UNSUPPORTED_VERSION → UNKNOWN，非 NOT_FOUND。
+    {
+        auto st = hwyz::store::Store::open("sec_business_keys", dir_ + "/bk");
+        st.save("state", nlohmann::json{{ "v", 99 },
+                                         { "generation", 0 },
+                                         { "commit_marker", "" },
+                                         { "staging_generation", 0 }}.dump());
+    }
+    rebuild_service();
+    ImportResult r;
+    ASSERT_EQ(service_->getImportResult("req-schema", r), ErrorCode::SUCCESS);
+    EXPECT_EQ(r.state, BusinessKeyImportState::UNKNOWN);
+}
+
+TEST_F(BusinessKeyTest, ImportResult_StateTruncated_NotReady_NotNotFound) {
+    // state 文件截断（短读）：provider 初始化失败 → NOT_READY（fail-closed，非 NOT_FOUND）。
+    {
+        auto st = hwyz::store::Store::open("sec_business_keys", dir_ + "/bk");
+        st.save("state", std::string("{\"v\":1,\"generation\":0,"));
+    }
+    service_.reset();
+    auto p2 = std::make_unique<SoftFileBusinessKeyProvider>(
+        hsm_.get(), provider_config(), [this]() { return binding_; });
+    service_ = build_service(hsm_.get(), std::move(p2));
+    EXPECT_EQ(service_->initialize(), ErrorCode::BUSINESS_KEY_NOT_READY);
+    ImportResult r;
+    EXPECT_EQ(service_->getImportResult("req-trunc", r), ErrorCode::BUSINESS_KEY_NOT_READY);
+    EXPECT_EQ(r.state, BusinessKeyImportState::UNKNOWN);
+}
+
+TEST_F(BusinessKeyTest, ImportResult_RequestIdTooLong_Invalid) {
+    make_provider();
+    std::string long_rid(129, 'x');
+    ImportResult r;
+    EXPECT_EQ(service_->getImportResult(long_rid, r), ErrorCode::INVALID_PARAMETER);
     EXPECT_EQ(r.state, BusinessKeyImportState::UNKNOWN);
 }
 
@@ -871,6 +1049,17 @@ TEST(SecureBufferTest, EnumRoundTrip) {
     EXPECT_EQ(business_key_import_state_to_string(BusinessKeyImportState::COMMITTED),
               "COMMITTED");
     EXPECT_EQ(string_to_business_key_import_state("STAGED"), BusinessKeyImportState::STAGED);
+    // TBOX-SEC-DSN-CR-021：NOT_FOUND additive 数值/字符串 round-trip；未知 → UNKNOWN（非零值）
+    EXPECT_EQ(business_key_import_state_to_string(BusinessKeyImportState::NOT_FOUND),
+              "NOT_FOUND");
+    EXPECT_EQ(string_to_business_key_import_state("NOT_FOUND"),
+              BusinessKeyImportState::NOT_FOUND);
+    EXPECT_EQ(string_to_business_key_import_state("BOGUS"),
+              BusinessKeyImportState::UNKNOWN);
+    EXPECT_EQ(import_state_from_code(5), BusinessKeyImportState::NOT_FOUND);
+    EXPECT_EQ(import_state_from_code(static_cast<uint32_t>(BusinessKeyImportState::COMMITTED)),
+              BusinessKeyImportState::COMMITTED);
+    EXPECT_EQ(import_state_from_code(99), BusinessKeyImportState::UNKNOWN);
     EXPECT_EQ(key_envelope_format_to_string(KeyEnvelopeFormat::ECDH_ES_P256_V1),
               "ECDH_ES_P256_V1");
     EXPECT_EQ(string_to_key_envelope_format("ECDH_ES_P256_V1"),

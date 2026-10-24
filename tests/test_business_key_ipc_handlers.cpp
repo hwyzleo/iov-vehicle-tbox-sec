@@ -259,6 +259,8 @@ TEST_F(BusinessKeyIpcTest, Result_Query) {
     EXPECT_EQ(status_of(resp), 0);
     auto j = json::parse(resp);
     EXPECT_EQ(j.value("state", ""), "COMMITTED");
+    // TBOX-SEC-DSN-CR-021 §4：additive 编码——数值(state_code) + 稳定字符串同时输出
+    EXPECT_EQ(j.value("state_code", -1), static_cast<uint32_t>(BusinessKeyImportState::COMMITTED));
     // TBOX-TSP-DSN-CR-012 Q3：结果查询返回完整 key_id 与逐 item 证书摘要，
     // 供 TSP 重启后重建原 ACK（ack.key_id == response.key_id）。
     ASSERT_TRUE(j.contains("items") && j["items"].is_array());
@@ -271,6 +273,35 @@ TEST_F(BusinessKeyIpcTest, Result_Query) {
         // 64B → base64 恰为 88 字符（P1363 low-S）
         EXPECT_EQ(it.value("import_proof", "").size(), 88u);
     }
+}
+
+TEST_F(BusinessKeyIpcTest, Result_NotFound_NoResidue) {
+    // fresh fixture：无记录 + 无残留 → NOT_FOUND（数值 5 + 稳定字符串 NOT_FOUND）
+    json q;
+    q["request_id"] = "ipc-notfound";
+    auto resp = dispatcher_->dispatch(
+        static_cast<uint32_t>(ipc::MethodId::GET_BUSINESS_KEY_IMPORT_RESULT), q.dump(), 0);
+    EXPECT_EQ(status_of(resp), 0);
+    auto j = json::parse(resp);
+    EXPECT_EQ(j.value("state", ""), "NOT_FOUND");
+    EXPECT_EQ(j.value("state_code", -1),
+              static_cast<uint32_t>(BusinessKeyImportState::NOT_FOUND));
+}
+
+TEST_F(BusinessKeyIpcTest, Result_NotFound_ResidueExists_Unknown) {
+    // 已有提交事务（commit marker）存在时，无记录 rid 必须保持 UNKNOWN（fail-closed）
+    auto params = make_import_params("ipc-req-res", 1);
+    dispatcher_->dispatch(static_cast<uint32_t>(ipc::MethodId::IMPORT_WRAPPED_BUSINESS_KEYS),
+                          params.dump(), 0);
+    json q;
+    q["request_id"] = "ipc-other";
+    auto resp = dispatcher_->dispatch(
+        static_cast<uint32_t>(ipc::MethodId::GET_BUSINESS_KEY_IMPORT_RESULT), q.dump(), 0);
+    EXPECT_EQ(status_of(resp), 0);
+    auto j = json::parse(resp);
+    EXPECT_EQ(j.value("state", ""), "UNKNOWN");
+    EXPECT_EQ(j.value("state_code", -1),
+              static_cast<uint32_t>(BusinessKeyImportState::UNKNOWN));
 }
 
 TEST_F(BusinessKeyIpcTest, Capability_Query) {
@@ -296,6 +327,9 @@ TEST_F(BusinessKeyIpcTest, Capability_Query) {
     EXPECT_TRUE(j.contains("certificate_chain_and_key_match"));
     EXPECT_TRUE(j.contains("certificate_critical_extensions_allowed"));
     EXPECT_TRUE(j.contains("leaf_certificate_digest_bound"));
+    // TBOX-SEC-DSN-CR-021：NOT_FOUND 查询能力仅用于可观测/灰度（可区分，但不进 all()）
+    EXPECT_TRUE(j.contains("business_key_import_result_not_found_v1"));
+    EXPECT_TRUE(j.value("business_key_import_result_not_found_v1", false));
     EXPECT_TRUE(j.contains("all"));
 }
 
