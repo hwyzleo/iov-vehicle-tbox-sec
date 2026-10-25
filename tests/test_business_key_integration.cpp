@@ -96,6 +96,9 @@ protected:
         binding_.active_cert_leaf_digest_bound = true;
         binding_.active_cert_chain_key_match = true;
         binding_.identity_template_sign_derive = true;
+        // KL1 准入：证书有效期须覆盖租约 E（默认长有效；CR-023）。
+        binding_.active_cert_valid_from_ms = now_ms() - 86400000;
+        binding_.active_cert_valid_to_ms = now_ms() + 86400000;
 
         BusinessKeyProviderConfig pcfg;
         pcfg.store_root = test_dir_ + "/bk";
@@ -385,4 +388,158 @@ TEST_F(BusinessKeyIntegrationTest, OldClientFixture_NewSecResponse_FailClosed) {
     auto j2 = nlohmann::json::parse(
         "{\"state\":\"COMMITTED\",\"state_code\":2,\"items\":[]}");
     EXPECT_EQ(legacy_client_import_state(j2), BusinessKeyImportState::COMMITTED);
+}
+
+// ---------------- KL1 客户端级（TBOX-SEC-DSN-CR-023；真实 socket） ----------------
+
+TEST_F(BusinessKeyIntegrationTest, Kl1_ProbeSnapshot_ClientPassthrough) {
+    SecClient client(socket_path_);
+    ASSERT_TRUE(client.connect());
+    KeyprovContractSnapshot snap;
+    ASSERT_EQ(client.get_keyprov_contract_snapshot(snap), ErrorCode::SUCCESS);
+    // typed 原值透传：缺省 = UNAVAILABLE，不是支持；epoch 非 0、存储健康、租约准入就绪。
+    EXPECT_NE(snap.capability_epoch, 0ULL);
+    EXPECT_EQ(snap.result_contract_version, V2cKeyProvisioningCapability::kContractVersion);
+    EXPECT_EQ(snap.query_semantics_version, 1u);
+    EXPECT_TRUE(snap.storage_ready);
+    EXPECT_TRUE(snap.supports_atomic_dual_commit);
+    EXPECT_TRUE(snap.supports_lease_admission);
+    EXPECT_EQ(snap.kl1_profile_version, kKeyprovKl1ProfileVersion);
+    // 构建 ID 可观测（daemon 来自服务端、SDK 来自客户端自身）。
+    EXPECT_FALSE(snap.daemon_build_id.empty());
+    EXPECT_FALSE(snap.sdk_build_id.empty());
+}
+
+TEST_F(BusinessKeyIntegrationTest, Kl1_ImportAndQuery_ClientRoundTrip) {
+    SecClient client(socket_path_);
+    ASSERT_TRUE(client.connect());
+    KeyprovContractSnapshot snap;
+    ASSERT_EQ(client.get_keyprov_contract_snapshot(snap), ErrorCode::SUCCESS);
+    ASSERT_TRUE(snap.supports_lease_admission);
+
+    KeyprovImportContext ctx;
+    ctx.admission_expire_at_ms = now_ms() + 60000;  // U=now < E
+    ctx.capability_epoch = snap.capability_epoch;
+    ctx.kl1_profile_version = kKeyprovKl1ProfileVersion;
+    auto items = make_batch("kl1-ipc-1", 1);
+    ImportResult r;
+    KeyprovResultAttachment a;
+    ASSERT_EQ(client.import_wrapped_business_keys_kl1("kl1-ipc-1", kBusinessDomainV2c, items,
+                                                      ctx, r, a),
+              ErrorCode::SUCCESS);
+    EXPECT_EQ(r.state, BusinessKeyImportState::COMMITTED);
+    ASSERT_EQ(r.items.size(), 2u);
+    ASSERT_EQ(r.items[0].import_proof.size(), kImportProofSizeP1363);
+    // 同快照 epoch + 证据摘要随结果回传（非 SDK 硬编码 version 2）。
+    EXPECT_EQ(a.snapshot.capability_epoch, snap.capability_epoch);
+    EXPECT_FALSE(a.request_identity_digest.empty());
+
+    // 同 epoch 查询：返回原 proof 与证据摘要。
+    ImportResult q;
+    KeyprovResultAttachment qa;
+    ASSERT_EQ(client.get_business_key_import_result_kl1("kl1-ipc-1", q, qa),
+              ErrorCode::SUCCESS);
+    EXPECT_EQ(q.state, BusinessKeyImportState::COMMITTED);
+    EXPECT_EQ(q.items[0].import_proof, r.items[0].import_proof);
+    EXPECT_EQ(qa.snapshot.capability_epoch, snap.capability_epoch);
+    EXPECT_EQ(qa.request_identity_digest, a.request_identity_digest);
+}
+
+TEST_F(BusinessKeyIntegrationTest, Kl1_SdkFailClosed_EpochOrProfileMissing_NotReady) {
+    SecClient client(socket_path_);
+    ASSERT_TRUE(client.connect());
+    auto items = make_batch("kl1-sdk-1", 1);
+    ImportResult r;
+    KeyprovResultAttachment a;
+    // epoch 缺失（0）→ SDK 直接 NOT_READY，不发起 IPC、不降级旧 import。
+    KeyprovImportContext ctx0;
+    ctx0.admission_expire_at_ms = now_ms() + 60000;
+    ctx0.capability_epoch = 0;
+    ctx0.kl1_profile_version = kKeyprovKl1ProfileVersion;
+    EXPECT_EQ(client.import_wrapped_business_keys_kl1("kl1-sdk-1", kBusinessDomainV2c, items,
+                                                      ctx0, r, a),
+              ErrorCode::BUSINESS_KEY_NOT_READY);
+    // profile 未知 → NOT_READY。
+    KeyprovImportContext ctx1;
+    ctx1.admission_expire_at_ms = now_ms() + 60000;
+    ctx1.capability_epoch = 1;
+    ctx1.kl1_profile_version = 99;
+    EXPECT_EQ(client.import_wrapped_business_keys_kl1("kl1-sdk-1", kBusinessDomainV2c, items,
+                                                      ctx1, r, a),
+              ErrorCode::BUSINESS_KEY_NOT_READY);
+}
+
+TEST_F(BusinessKeyIntegrationTest, Kl1_EpochSwitch_OldEpochRejected_1030) {
+    // daemon 重启/恢复 → 新 epoch；携带旧 epoch 的新 import 必须 1030 且无副作用。
+    SecClient client(socket_path_);
+    ASSERT_TRUE(client.connect());
+    KeyprovContractSnapshot s1;
+    ASSERT_EQ(client.get_keyprov_contract_snapshot(s1), ErrorCode::SUCCESS);
+    const uint64_t e1 = s1.capability_epoch;
+
+    // 停止旧 server，重建服务/dispatcher/server（模拟 daemon 重启）。
+    server_->stop();
+    auto provider2 = std::make_unique<SoftFileBusinessKeyProvider>(
+        hsm_.get(),
+        [&]() {
+            BusinessKeyProviderConfig pcfg;
+            pcfg.store_root = test_dir_ + "/bk";
+            pcfg.kek_path = test_dir_ + "/bk/.kek";
+            pcfg.allowed_algorithms = {kDefaultKeyAlgorithm};
+            pcfg.allowed_wrapping_suites = {kWrappingSuiteEcdhEsP256};
+            return pcfg;
+        }(),
+        [this]() { return binding_; });
+    TrustedTimeSample s;
+    s.utc_now = std::chrono::system_clock::now();
+    s.trust_state = TimeTrustState::Trusted;
+    s.source = TimeSource::FakeTest;
+    s.reason = TimeReason::FakeTest;
+    BusinessKeyProvisioningConfig cfg;
+    cfg.enabled = true;
+    cfg.is_production = false;
+    cfg.allowed_algorithms = {kDefaultKeyAlgorithm};
+    cfg.allowed_wrapping_suites = {kWrappingSuiteEcdhEsP256};
+    cfg.allowed_envelope_formats = {kKeyEnvelopeFormatEcdhEsP256V1};
+    service_.reset();
+    service_ = std::make_unique<BusinessKeyProvisioningService>(
+        std::move(cfg), std::move(provider2), std::make_shared<FakeTrustedTimeProvider>(s),
+        std::make_unique<SecureMetadataLedger>(hwyz::store::Store::open("sec", test_dir_)),
+        [this]() { return binding_; });
+    ASSERT_EQ(service_->initialize(), ErrorCode::SUCCESS);
+    dispatcher_ = std::make_unique<SecIpcDispatcher>(nullptr);
+    dispatcher_->setBusinessKeyService(service_.get());
+    dispatcher_->setPeerCredentialResolver(std::make_shared<TspPeerResolver>());
+    dispatcher_->setBusinessKeyPeerService("tbox-tsp.service");
+    ::tbox::fw::ipc::IpcConfig ipc_cfg;
+    ipc_cfg.connect_timeout_ms = 3000;
+    ipc_cfg.receive_timeout_ms = 5000;
+    server_ = std::make_unique<::tbox::fw::ipc::Server>(socket_path_, ipc_cfg);
+    auto* disp = dispatcher_.get();
+    ASSERT_TRUE(server_->start(
+        [disp](uint32_t m, std::string_view p, int fd) { return disp->dispatch(m, p, fd); },
+        [](int) {}));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    SecClient client2(socket_path_);
+    ASSERT_TRUE(client2.connect());
+    KeyprovContractSnapshot s2;
+    ASSERT_EQ(client2.get_keyprov_contract_snapshot(s2), ErrorCode::SUCCESS);
+    EXPECT_NE(s2.capability_epoch, e1);  // epoch 随 daemon 重启更换
+
+    // 携带旧 epoch（e1）的新 import → 1030，且未建 journal（无副作用）。
+    KeyprovImportContext ctx;
+    ctx.admission_expire_at_ms = now_ms() + 60000;
+    ctx.capability_epoch = e1;
+    ctx.kl1_profile_version = kKeyprovKl1ProfileVersion;
+    auto items = make_batch("kl1-epoch-switch-1", 1);
+    ImportResult r;
+    KeyprovResultAttachment a;
+    EXPECT_EQ(client2.import_wrapped_business_keys_kl1(
+                  "kl1-epoch-switch-1", kBusinessDomainV2c, items, ctx, r, a),
+              ErrorCode::KL1_CAPABILITY_EPOCH_MISMATCH);
+    ImportResult q;
+    EXPECT_EQ(client2.get_business_key_import_result("kl1-epoch-switch-1", q),
+              ErrorCode::SUCCESS);
+    EXPECT_EQ(q.state, BusinessKeyImportState::NOT_FOUND);  // 未启动，无副作用
 }

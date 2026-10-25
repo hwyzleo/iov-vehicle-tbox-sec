@@ -45,6 +45,10 @@ struct DeviceKeyAgreementCapability {
     bool private_key_can_sign = false;
     std::vector<uint8_t> certificate_digest;  ///< SHA-256(original leaf DER 字节)
 
+    // ---- TBOX-SEC-DSN-CR-023：KL1 准入（证书有效期须覆盖租约 E，非敏感）----
+    int64_t active_cert_valid_from_ms = 0;   ///< leaf notBefore（unix ms）
+    int64_t active_cert_valid_to_ms = 0;    ///< leaf notAfter（unix ms）
+
     // ---- TBOX-SEC-DSN-CR-020 §2.1/§11 修订门禁 ----
     bool ca_false = false;                    ///< 终端实体（BC 缺失或 CA=false）
     bool eku_client_auth_only = false;        ///< EKU 仅 clientAuth（无 anyEKU/serverAuth/其他）

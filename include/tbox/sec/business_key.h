@@ -281,6 +281,53 @@ constexpr const char* kProofContextV1 = "openiov|keyprov-ack|v1";
 constexpr const char* kImportProofAlgorithmP1363 = "ECDSA_P256_SHA256_P1363";
 constexpr std::size_t kImportProofSizeP1363 = 64;
 
+// ============================================================================
+// KL1 契约快照与租约准入（TBOX-SEC-DSN-CR-023 §12.11.1/§12.11.3）
+//
+// - 快照字段以 typed 结构原值透传：SDK 不得把缺失/未识别版本当作 0=可用，
+//   缺省值（version=0/epoch=0/flag=false）一律表示 UNAVAILABLE，不是支持；
+// - capability_epoch 由 SEC 生成，绑定当前 daemon 与存储恢复世代；
+//   重启/恢复/存储更换都会更换 epoch；epoch=0 表示未知/不可判定；
+// - result_contract_version 只表明结果编码版本，不能替代完整能力检查
+//   （capability=0 / result=2 不一致时契约视为 UNKNOWN，禁止版本比较自动修复）；
+// - 本类型为新增 additive 契约，不改动既有 ImportResult/WrappedKeyItem 等
+//   旧结构的内存布局与 wire 字段。
+// ============================================================================
+
+/// KL1 契约快照（服务端权威值；SDK 原值透传，不做版本别名/缺省可用推断）。
+struct KeyprovContractSnapshot {
+    uint32_t result_contract_version = 0;   ///< 导入/结果编码契约版本（服务实际值；0=UNAVAILABLE）
+    uint32_t query_semantics_version = 0;   ///< 查询语义版本（NOT_FOUND/UNKNOWN 分类；0=UNAVAILABLE）
+    uint64_t capability_epoch = 0;          ///< SEC 生成；重启/恢复/存储更换换 epoch；0=未知
+    bool storage_ready = false;             ///< journal/ledger 存储健康可读；false=不可判定/不健康
+    bool supports_atomic_dual_commit = false;   ///< 双用途原子提交能力
+    bool supports_lease_admission = false;      ///< KL1 租约准入能力；false 时新 TSP 不得调用 KL1 接口
+    uint32_t kl1_profile_version = 0;       ///< 本地 KL1 profile 版本；0=UNAVAILABLE
+    std::string daemon_build_id;            ///< daemon 构建标识（可观测；非敏感）
+    std::string sdk_build_id;               ///< SDK 构建标识（可观测；非敏感）
+};
+
+/// KL1 导入准入上下文（仅用于准入，不是可变业务内容；
+/// 不进入既有 material/wire digest 与 operation idempotency）。
+struct KeyprovImportContext {
+    int64_t admission_expire_at_ms = 0;     ///< 外层 bundle 接受截止 E（外层 field4）；非 item.validTo、非 ACK deadline
+    uint64_t capability_epoch = 0;          ///< 调用方 probe 快照所见 epoch；不匹配 → KL1_CAPABILITY_EPOCH_MISMATCH
+    uint32_t kl1_profile_version = 0;       ///< 调用方 KL1 profile 版本；未知/缺失 → 拒绝
+};
+
+/// KL1 查询/导入结果附加事实（additive 封装：不改 ImportResult 布局，
+/// 由新 SDK 方法返回；服务端经 IPC JSON additive 字段承载）。
+struct KeyprovResultAttachment {
+    KeyprovContractSnapshot snapshot;       ///< 与本次结果同一快照（epoch/contract/存储健康）
+    std::string request_identity_digest;    ///< 已存在请求身份/证据摘要（requestDigest，hex；仅 FOUND 时非空）
+    int64_t queried_at_ms = 0;              ///< 服务端判定时刻（可信时间）
+};
+
+/// KL1 profile 常量（与 PAR-PROTO 共享向量 case_set 一致）。
+constexpr const char* kKeyprovKl1ProfileName = "keyprov-lifecycle-kl1-v1";
+constexpr uint32_t kKeyprovKl1ProfileVersion = 1;
+
+
 
 } // namespace sec
 } // namespace tbox

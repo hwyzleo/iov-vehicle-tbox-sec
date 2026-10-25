@@ -1789,6 +1789,9 @@ void SecService::initializeBusinessKeyProvisioning() {
               b.active_cert_chain_key_match = cap.cert_chain_key_match;
               b.identity_template_sign_derive =
                   cap.private_key_can_derive && cap.private_key_can_sign;
+              // TBOX-SEC-DSN-CR-023：KL1 准入需要证书有效期覆盖租约 E
+              b.active_cert_valid_from_ms = cap.active_cert_valid_from_ms;
+              b.active_cert_valid_to_ms = cap.active_cert_valid_to_ms;
               return b;
           };
 

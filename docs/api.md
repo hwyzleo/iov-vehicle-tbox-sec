@@ -130,3 +130,42 @@ Execute routines.
 
 **Supported RIDs:**
 - `0xFF00`: Generate key pair
+
+## KL1 契约快照与租约准入（TBOX-SEC-DSN-CR-023；additive）
+
+### IPC 方法号（已冻结；framework-ipc 传输层 method_id 为不透明 uint32，无全局登记）
+
+| MethodId | 方法 | 说明 |
+|---|---|---|
+| 22 | `IMPORT_WRAPPED_BUSINESS_KEYS_KL1` | KL1 租约准入导入（携带 admission_expire_at_ms / capability_epoch / kl1_profile_version） |
+| 23 | `GET_KEYPROV_CONTRACT_SNAPSHOT` | 只读 KL1 契约快照（result_contract_version / query_semantics_version / capability_epoch / storage_ready / supports_atomic_dual_commit / supports_lease_admission / kl1_profile_version / build_id） |
+
+既有方法号（1..21）、旧符号与旧结构布局不变；未知方法返回传输失败，新 SDK 判为「不支持 KL1」，不得降级调用旧 import（方法 19）。
+
+### SDK 新符号（旧函数不变）
+
+- `get_keyprov_contract_snapshot(KeyprovContractSnapshot&)`：typed 原值透传，缺省 = UNAVAILABLE，不是支持；
+- `import_wrapped_business_keys_kl1(request_id, domain, items, context, out, attach)`：SDK 侧 fail-closed（profile/epoch 缺失直接 NOT_READY）；
+- `get_business_key_import_result_kl1(request_id, out, attach)`：结果附带同一快照 epoch/contract 与已存在 request 身份/证据摘要。
+
+### KL1 错误码（1029/1030 不是强 NOT_FOUND）
+
+| 码 | 符号 | 触发 | TSP 后续 |
+|---|---|---|---|
+| 1029 | `KL1_ADMISSION_REJECTED` | 新 operation、时间健康但 U≥E（含锁内重检） | 既定过期处置；新 E 受一次 freshen 与持久预算限制 |
+| 1030 | `KL1_CAPABILITY_EPOCH_MISMATCH` | 调用方 epoch ≠ 当前 SEC epoch | 重新 probe，清零跨 epoch NF 稳定化计数，按原 rid 查询；不能凭 probe 成功自动重发 |
+
+1022/1023/1025 复用既有语义（同 rid 不同 digest 冲突 / item·cert 有效期覆盖 E / 能力·时间·存储不健康）。
+
+### 锁内处理顺序（事实优先级）
+
+1. 匹配 COMMITTED → 恢复原结果/proof（旧 E 过期不否定事实，不重签）；
+2. STAGED/PROCESSING/UNKNOWN 或可疑残留 → 原精确状态或既有 UNKNOWN/1024，交恢复/对账，不建第二 operation；
+3. 确属新 operation → 存储/能力/可信时间不健康 1025 → epoch 不匹配 1030 → U≥E 1029 → 全部门禁满足才建 journal。
+
+### 共享向量
+
+`tests/fixtures/keyprov-kl1-v1/lifecycle-vectors.json` 为 PAR-PROTO-DSN-CR-010 原件本地副本
+（SHA256 `5226b92733a93634d9bdd11ec7090b1ba655979e3beca0399784e9db7de855e3`），
+责任映射见 `tests/fixtures/keyprov-kl1-v1/keyprov_kl1_manifest.json`
+（direct/cross-end/sec-derived/other 四类；LC07/LC20/LC24 属其他端或 SEC 专属派生，不记为原用例 PASS）。

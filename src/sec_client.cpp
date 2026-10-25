@@ -486,6 +486,31 @@ void import_result_from_json(const nlohmann::json& j, ImportResult& out,
     }
 }
 
+/// SDK 构建标识（可观测；非敏感）。
+constexpr const char* kSecClientBuildId = "sec-client-kl1-v1";
+
+/// KL1 契约快照解析：typed 原值透传，不做版本别名/缺省可用推断。
+void keyprov_snapshot_from_json(const nlohmann::json& j, KeyprovContractSnapshot& s,
+                                const std::string& client_build_id) {
+    s.result_contract_version = j.value("result_contract_version", 0u);
+    s.query_semantics_version = j.value("query_semantics_version", 0u);
+    s.capability_epoch = j.value("capability_epoch", 0ULL);
+    s.storage_ready = j.value("storage_ready", false);
+    s.supports_atomic_dual_commit = j.value("supports_atomic_dual_commit", false);
+    s.supports_lease_admission = j.value("supports_lease_admission", false);
+    s.kl1_profile_version = j.value("kl1_profile_version", 0u);
+    s.daemon_build_id = j.value("daemon_build_id", "");
+    s.sdk_build_id = client_build_id;  // 客户端自身构建 ID（服务端所见 SDK 版本另在 daemon_build 侧）
+}
+
+/// KL1 结果附加事实解析（additive 字段；缺失 → 默认 UNAVAILABLE/空）。
+void keyprov_attachment_from_json(const nlohmann::json& j, KeyprovResultAttachment& a,
+                                  const std::string& client_build_id) {
+    keyprov_snapshot_from_json(j, a.snapshot, client_build_id);
+    a.request_identity_digest = j.value("request_identity_digest", "");
+    a.queried_at_ms = j.value("queried_at_ms", 0LL);
+}
+
 } // namespace
 
 ErrorCode SecClient::get_business_key_status(const std::string& business_domain,
@@ -675,6 +700,140 @@ ErrorCode SecClient::get_v2c_key_provisioning_capability(
             out.trusted_time_ready = j.value("trusted_time_ready", false);
         } catch (const std::exception&) {
             return ErrorCode::INTERNAL_ERROR;
+        }
+    }
+    return static_cast<ErrorCode>(status);
+}
+
+ErrorCode SecClient::get_keyprov_contract_snapshot(KeyprovContractSnapshot& out) {
+    auto [ok, status, response_json] = impl_->send_request(
+        static_cast<uint32_t>(ipc::MethodId::GET_KEYPROV_CONTRACT_SNAPSHOT), "{}");
+    if (!ok) return ErrorCode::CONNECTION_FAILED;
+    out = KeyprovContractSnapshot{};
+    if (status == 0) {
+        try {
+            auto j = nlohmann::json::parse(response_json);
+            keyprov_snapshot_from_json(j, out, kSecClientBuildId);
+        } catch (const std::exception&) {
+            return ErrorCode::INTERNAL_ERROR;
+        }
+    }
+    return static_cast<ErrorCode>(status);
+}
+
+ErrorCode SecClient::import_wrapped_business_keys_kl1(
+    const std::string& request_id, const std::string& business_domain,
+    const std::vector<WrappedKeyItem>& items, const KeyprovImportContext& context,
+    ImportResult& out, KeyprovResultAttachment& attach) {
+    // SDK 侧 fail-closed：profile 未知/缺失、epoch 缺失/未知、E 缺失 → 直接 NOT_READY，
+    // 不得把缺失当可用、不得降级调用旧 import。
+    if (context.kl1_profile_version != kKeyprovKl1ProfileVersion ||
+        context.capability_epoch == 0 || context.admission_expire_at_ms == 0) {
+        out = ImportResult{};
+        out.request_id = request_id;
+        out.business_domain = business_domain;
+        out.state = BusinessKeyImportState::UNKNOWN;
+        return ErrorCode::BUSINESS_KEY_NOT_READY;
+    }
+
+    nlohmann::json params;
+    params["request_id"] = request_id;
+    params["business_domain"] = business_domain;
+    // KL1 准入上下文（仅用于准入，不入 material/wire digest/幂等）
+    params["admission_expire_at_ms"] = context.admission_expire_at_ms;
+    params["capability_epoch"] = context.capability_epoch;
+    params["kl1_profile_version"] = context.kl1_profile_version;
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& item : items) {
+        nlohmann::json e;
+        e["purpose"] = item.purpose;
+        e["key_id"] = item.key_id;
+        e["business_key_version"] = item.business_key_version;
+        e["algorithm"] = item.algorithm;
+        e["wrapped_key"] = impl_->b64_encode(std::vector<uint8_t>(
+            item.wrapped_key.data(), item.wrapped_key.data() + item.wrapped_key.size()));
+        e["parameters"] = impl_->b64_encode(std::vector<uint8_t>(
+            item.parameters.data(), item.parameters.data() + item.parameters.size()));
+        e["valid_from_ms"] = item.valid_from_ms;
+        e["valid_to_ms"] = item.valid_to_ms;
+        e["wrapping_suite"] = item.wrapping_suite;
+        e["envelope_format"] = key_envelope_format_to_string(item.envelope_format);
+        if (!item.envelope_digest.empty()) {
+            e["envelope_digest"] = impl_->b64_encode(item.envelope_digest);
+        }
+        if (item.key_check_value_present) {
+            e["key_check_value"] = impl_->b64_encode(std::vector<uint8_t>(
+                item.key_check_value.begin(), item.key_check_value.end()));
+        }
+        arr.push_back(e);
+    }
+    params["items"] = arr;
+
+    auto [ok, status, response_json] = impl_->send_request(
+        static_cast<uint32_t>(ipc::MethodId::IMPORT_WRAPPED_BUSINESS_KEYS_KL1), params.dump());
+    if (!ok) return ErrorCode::CONNECTION_FAILED;
+    out = ImportResult{};
+    out.request_id = request_id;
+    attach = KeyprovResultAttachment{};
+    if (status == 0 || status == static_cast<int32_t>(ErrorCode::BUSINESS_KEY_IMPORT_UNKNOWN) ||
+        status == static_cast<int32_t>(ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN) ||
+        status == static_cast<int32_t>(ErrorCode::KL1_ADMISSION_REJECTED) ||
+        status == static_cast<int32_t>(ErrorCode::KL1_CAPABILITY_EPOCH_MISMATCH)) {
+        try {
+            auto j = nlohmann::json::parse(response_json);
+            import_result_from_json(j, out, [&](const std::string& s) {
+                return impl_->b64_decode(s);
+            });
+            keyprov_attachment_from_json(j, attach, kSecClientBuildId);
+        } catch (const std::exception&) {
+            return ErrorCode::INTERNAL_ERROR;
+        }
+    } else if (!response_json.empty()) {
+        try {
+            auto j = nlohmann::json::parse(response_json);
+            if (j.contains("state")) {
+                import_result_from_json(j, out, [&](const std::string& s) {
+                    return impl_->b64_decode(s);
+                });
+            }
+        } catch (const std::exception&) {
+            // 解析失败：保持 UNKNOWN（fail-closed 由调用方分类）。
+        }
+    }
+    return static_cast<ErrorCode>(status);
+}
+
+ErrorCode SecClient::get_business_key_import_result_kl1(const std::string& request_id,
+                                                        ImportResult& out,
+                                                        KeyprovResultAttachment& attach) {
+    nlohmann::json params;
+    params["request_id"] = request_id;
+    auto [ok, status, response_json] = impl_->send_request(
+        static_cast<uint32_t>(ipc::MethodId::GET_BUSINESS_KEY_IMPORT_RESULT), params.dump());
+    if (!ok) return ErrorCode::CONNECTION_FAILED;
+    out = ImportResult{};
+    out.request_id = request_id;
+    attach = KeyprovResultAttachment{};
+    if (status == 0) {
+        try {
+            auto j = nlohmann::json::parse(response_json);
+            import_result_from_json(j, out, [&](const std::string& s) {
+                return impl_->b64_decode(s);
+            });
+            keyprov_attachment_from_json(j, attach, kSecClientBuildId);
+        } catch (const std::exception&) {
+            return ErrorCode::INTERNAL_ERROR;
+        }
+    } else if (!response_json.empty()) {
+        try {
+            auto j = nlohmann::json::parse(response_json);
+            if (j.contains("state")) {
+                import_result_from_json(j, out, [&](const std::string& s) {
+                    return impl_->b64_decode(s);
+                });
+            }
+        } catch (const std::exception&) {
+            // 解析失败：保持 UNKNOWN。
         }
     }
     return static_cast<ErrorCode>(status);

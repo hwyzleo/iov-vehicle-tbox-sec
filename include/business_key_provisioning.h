@@ -62,6 +62,11 @@ public:
     /// 最后一次成功探测的能力快照（US-022）。
     V2cKeyProvisioningCapability capability() const;
 
+    /// KL1 契约快照（TBOX-SEC-DSN-CR-023 §12.11.1；只读）。
+    /// 与 capability()/查询同锁读取，保证同 epoch 一致；
+    /// epoch 绑定 daemon 与存储恢复世代，重启/恢复/存储更换即更换。
+    KeyprovContractSnapshot contractSnapshot() const;
+
     /// 查询业务密钥件内状态（US-008），slot 与 ledger 交叉校验。
     ErrorCode getStatus(const std::string& business_domain,
                         const std::vector<std::string>& purposes,
@@ -73,8 +78,33 @@ public:
                      const std::vector<WrappedKeyItem>& items,
                      ImportResult& out);
 
+    /// KL1 租约准入导入（TBOX-SEC-DSN-CR-023 §12.11.3；旧 import() 不变）。
+    ///
+    /// 锁内处理顺序（事实优先级）：
+    ///   1. 匹配 COMMITTED → 恢复原结果/proof，旧 E 过期不否定事实；
+    ///   2. STAGED/PROCESSING/UNKNOWN 或可疑残留 → 原精确状态或既有 UNKNOWN/1024，
+    ///      交恢复/对账，不创建第二 operation；
+    ///   3. 确属新 operation 才准入：存储/能力/可信时间不健康 → 1025；
+    ///      epoch 不匹配 → 1030；epoch 匹配但 U≥E → 1029；全部门禁满足才建 journal 启动。
+    ///
+    /// 1029/1030 均不是强 NOT_FOUND：只能证明本次未启动新操作，
+    /// 不能作为“该 rid 历史无副作用”的证据。
+    ErrorCode importKl1(const std::string& request_id,
+                        const std::string& business_domain,
+                        const std::vector<WrappedKeyItem>& items,
+                        const KeyprovImportContext& context,
+                        ImportResult& out,
+                        KeyprovResultAttachment& attach);
+
     /// 按 requestId 查询导入结果（US-021）。
     ErrorCode getImportResult(const std::string& request_id, ImportResult& out);
+
+    /// KL1 结果查询（TBOX-SEC-DSN-CR-023 §12.11.2；只读，同 import 锁）。
+    /// 附同一快照 epoch/contract 与已存在 request 身份/证据摘要；
+    /// NOT_FOUND 仅在强 NF 全部条件成立（存储健康、恢复完成、无残留、非治理）时返回。
+    ErrorCode getImportResultKl1(const std::string& request_id,
+                                 ImportResult& out,
+                                 KeyprovResultAttachment& attach);
 
 private:
     class Impl;

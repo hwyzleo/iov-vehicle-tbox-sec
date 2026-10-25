@@ -10,6 +10,8 @@
 #include <openssl/obj_mac.h>
 #include <openssl/x509v3.h>
 
+#include <ctime>
+
 namespace tbox {
 namespace sec {
 
@@ -163,6 +165,18 @@ DeviceKeyAgreementCapability DeviceKeyAgreementAdapter::probe() const {
     }
     if (cap.leaf_digest_bound) {
         cap.certificate_digest.assign(orig.begin(), orig.end());
+    }
+
+    // KL1 准入：ACTIVE 证书有效期（unix ms；TBOX-SEC-DSN-CR-023 §12.11.3）
+    const ASN1_TIME* nb = X509_get0_notBefore(leaf);
+    const ASN1_TIME* na = X509_get0_notAfter(leaf);
+    struct tm tm_nb{};
+    struct tm tm_na{};
+    if (nb != nullptr && ASN1_TIME_to_tm(nb, &tm_nb) == 1) {
+        cap.active_cert_valid_from_ms = static_cast<int64_t>(timegm(&tm_nb)) * 1000;
+    }
+    if (na != nullptr && ASN1_TIME_to_tm(na, &tm_na) == 1) {
+        cap.active_cert_valid_to_ms = static_cast<int64_t>(timegm(&tm_na)) * 1000;
     }
 
     if (hsm_ != nullptr && !device_key_id_.empty()) {

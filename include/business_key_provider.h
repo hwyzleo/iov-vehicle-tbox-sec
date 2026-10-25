@@ -54,6 +54,10 @@ struct BusinessKeyDeviceBinding {
     bool private_key_can_sign = false;       ///< 同一私钥策略允许 ECDSA sign（Import Attestation）
     std::vector<uint8_t> active_cert_digest; ///< SHA-256(original leaf DER 字节)，用于信封绑定比对
 
+    // ---- TBOX-SEC-DSN-CR-023：KL1 准入需要证书有效期覆盖租约 E（非敏感）----
+    int64_t active_cert_valid_from_ms = 0;   ///< ACTIVE 证书 notBefore（unix ms）
+    int64_t active_cert_valid_to_ms = 0;    ///< ACTIVE 证书 notAfter（unix ms）
+
     // ---- TBOX-SEC-DSN-CR-020 §2.1/§11 修订门禁（逻辑 Profile TBOX_DEVICE_ECDH_ES_P256_V1）----
     bool active_cert_ca_false = false;               ///< 终端实体（BC 缺失或 CA=false）
     bool active_cert_eku_client_auth_only = false;   ///< EKU 仅 clientAuth（无 anyEKU/serverAuth/其他）
@@ -224,6 +228,13 @@ public:
     /// BusinessKeyImportState::NOT_FOUND；true 或无法查询时必须保持 UNKNOWN
     /// （fail-closed，不得为恢复业务扩大 NOT_FOUND）。
     virtual bool hasTransactionResidue(const std::string& request_id_digest) const = 0;
+
+    /// 检测到存储被清空/更换（旧 generation 副作用无法排除）。
+    /// 默认 false；实现可在初始化/加载时发现存储世代变化或目录被重建时返回 true。
+    ///
+    /// true 时服务层必须保持 UNKNOWN/治理语义：epoch 变化不是洗白，
+    /// 禁止扫描空目录即恢复 proven；强 NOT_FOUND 不得成立（CR-023 §12.11.2）。
+    virtual bool storageReplaced() const { return false; }
 
     /// 读取 journal 条目（兼容包装，TBOX-SEC-DSN-CR-021 §2：委托 loadJournalEx）；
     /// 条目不存在返回 false；MAC 失败返回 true 且 out.phase=UNKNOWN（沿用既有语义）。

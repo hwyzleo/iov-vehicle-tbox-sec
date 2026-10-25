@@ -59,6 +59,8 @@ std::string error_code_to_string(ErrorCode code) {
         case ErrorCode::BUSINESS_KEY_NOT_READY: return "BUSINESS_KEY_NOT_READY";
         case ErrorCode::BUSINESS_KEY_PARTIAL_ROLLBACK: return "BUSINESS_KEY_PARTIAL_ROLLBACK";
         case ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN: return "BUSINESS_KEY_OUTCOME_UNKNOWN";
+        case ErrorCode::KL1_ADMISSION_REJECTED: return "KL1_ADMISSION_REJECTED";
+        case ErrorCode::KL1_CAPABILITY_EPOCH_MISMATCH: return "KL1_CAPABILITY_EPOCH_MISMATCH";
         case ErrorCode::ACL_DENIED: return "ACL_DENIED";
         case ErrorCode::CONFIG_ERROR: return "CONFIG_ERROR";
         case ErrorCode::INTERNAL_ERROR: return "INTERNAL_ERROR";
@@ -121,6 +123,10 @@ std::string error_code_to_description(ErrorCode code) {
         case ErrorCode::BUSINESS_KEY_NOT_READY: return "Business key HSM/identity/journal/metadata not ready";
         case ErrorCode::BUSINESS_KEY_PARTIAL_ROLLBACK: return "Business key batch not committed; staging state requires recovery";
         case ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN: return "Business key secure call outcome unknown; reconcile by requestId";
+        case ErrorCode::KL1_ADMISSION_REJECTED:
+            return "KL1 admission rejected: lease expired (U>=E) for a new operation; not started, no side effects; not a strong NOT_FOUND";
+        case ErrorCode::KL1_CAPABILITY_EPOCH_MISMATCH:
+            return "KL1 capability epoch mismatch: caller epoch != current SEC epoch; not started, no side effects; not a strong NOT_FOUND";
         case ErrorCode::ACL_DENIED: return "Caller not authorized for this profile";
         case ErrorCode::CONFIG_ERROR: return "Configuration error";
         case ErrorCode::INTERNAL_ERROR: return "Internal error";

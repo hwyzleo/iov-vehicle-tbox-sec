@@ -335,6 +335,8 @@ if(GTest_FOUND)
         tests/test_business_key_provisioning.cpp
         tests/test_business_key_ipc_handlers.cpp
         tests/test_business_key_integration.cpp
+        tests/test_keyprov_kl1.cpp
+        tests/test_keyprov_kl1_manifest.cpp
     )
     add_executable(TboxSecTests ${TEST_SOURCES})
     target_link_libraries(TboxSecTests PRIVATE TboxSecLib tbox_sec_client GTest::GTest GTest::gmock GTest::Main)

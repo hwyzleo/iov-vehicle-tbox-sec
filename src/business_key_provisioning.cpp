@@ -8,6 +8,7 @@
 #include "sec_log_adapter.h"
 
 #include <openssl/crypto.h>
+#include <openssl/rand.h>
 
 #include <algorithm>
 #include <chrono>
@@ -18,6 +19,10 @@ namespace tbox {
 namespace sec {
 
 namespace {
+
+/// KL1 daemon/SDK 构建标识（可观测；非敏感；与发布单元匹配）。
+constexpr const char* kKeyprovDaemonBuildId = "sec-kl1-v1";
+constexpr const char* kKeyprovSdkBuildId = "sec-client-kl1-v1";
 
 bool contains(const std::vector<std::string>& v, const std::string& s) {
     return std::find(v.begin(), v.end(), s) != v.end();
@@ -78,6 +83,41 @@ struct ImportLogGuard {
     }
 };
 
+/// KL1 capability_epoch 源：绑定 daemon boot nonce 与存储恢复世代。
+/// 重启（新实例）→ 新 boot nonce → 新 epoch；恢复/存储更换 → 世代递增 → 新 epoch。
+class KeyprovEpochSource {
+public:
+    KeyprovEpochSource() {
+        uint32_t n = 0;
+        if (RAND_bytes(reinterpret_cast<unsigned char*>(&n), sizeof(n)) != 1) {
+            n = static_cast<uint32_t>(
+                std::chrono::steady_clock::now().time_since_epoch().count() & 0xFFFFFFFFu);
+        }
+        boot_nonce_ = n;
+    }
+    uint64_t epoch() const {
+        std::vector<uint8_t> buf;
+        canonical::appendUint32be(buf, boot_nonce_);
+        canonical::appendUint64be(buf, generation_);
+        std::vector<uint8_t> h = canonical::sha256(buf);
+        uint64_t e = 0;
+        for (size_t i = 0; i < 8; ++i) e = (e << 8) | h[i];
+        return e;
+    }
+    uint64_t generation() const { return generation_; }
+    void bumpRecovery() { ++generation_; }
+    void bumpStorageReplacement() {
+        ++generation_;
+        governance_ = true;
+    }
+    bool governance() const { return governance_; }
+
+private:
+    uint32_t boot_nonce_ = 0;
+    uint64_t generation_ = 1;
+    bool governance_ = false;
+};
+
 } // namespace
 
 // ============================================================
@@ -94,8 +134,13 @@ public:
 
     mutable std::mutex mtx;
     bool provider_ready = false;   ///< 可供状态查询（enabled && provider/journal 可用）
-    bool import_ready = false;     ///< 接受新信封（能力合取）
+    bool import_ready = false;     ///< 接受新信封（能力合取 + 存储健康 + 非治理）
     V2cKeyProvisioningCapability cap;
+
+    // ---- KL1（TBOX-SEC-DSN-CR-023）----
+    KeyprovEpochSource epoch_src;
+    bool storage_ready_ = false;       ///< journal/ledger 存储健康可读且非治理
+    bool governance_required_ = false; ///< 存储被清空/更换，旧世代副作用无法排除 → UNKNOWN/治理
 
     ErrorCode trusted_now_ms(int64_t& out) {
         if (!trusted_time) return ErrorCode::BUSINESS_KEY_NOT_READY;
@@ -103,6 +148,24 @@ public:
         if (s.trust_state != TimeTrustState::Trusted) return ErrorCode::BUSINESS_KEY_NOT_READY;
         out = std::chrono::duration_cast<std::chrono::milliseconds>(s.utc_now.time_since_epoch())
                   .count();
+        return ErrorCode::SUCCESS;
+    }
+
+    /// KL1 可信时间门禁（TBOX-SEC-DSN-CR-023 §12.11.6 / LC21）：
+    /// TRUSTED 且 uncertainty≤1000ms、freshness≤300000ms、无回拨（Composite 已判定）。
+    /// 返回 U = utc_ms + uncertainty_ms；仅 U<E 可新启动，U==E 必拒绝。
+    ErrorCode kl1_trusted_upper_now(int64_t& out_u) {
+        if (!trusted_time) return ErrorCode::BUSINESS_KEY_NOT_READY;
+        TrustedTimeSample s = trusted_time->now();
+        if (s.trust_state != TimeTrustState::Trusted) return ErrorCode::BUSINESS_KEY_NOT_READY;
+        const auto unc = std::chrono::duration_cast<std::chrono::milliseconds>(s.uncertainty);
+        const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(s.freshness_age);
+        if (unc.count() > 1000) return ErrorCode::BUSINESS_KEY_NOT_READY;   // LC21.uncertainty
+        if (age.count() > 300000) return ErrorCode::BUSINESS_KEY_NOT_READY;  // LC21.stale
+        const auto utc =
+            std::chrono::duration_cast<std::chrono::milliseconds>(s.utc_now.time_since_epoch())
+                .count();
+        out_u = utc + unc.count();
         return ErrorCode::SUCCESS;
     }
 
@@ -121,6 +184,25 @@ public:
                b.active_cert_critical_extensions_allowed &&
                b.active_cert_leaf_digest_bound && b.active_cert_chain_key_match &&
                b.identity_template_sign_derive;
+    }
+
+    /// KL1 契约快照（TBOX-SEC-DSN-CR-023 §12.11.1）。
+    /// 与 capability()/查询同一锁内读取，保证同 epoch 一致；
+    /// epoch 绑定 daemon 与存储恢复世代；重启/恢复/存储更换即更换。
+    KeyprovContractSnapshot compute_snapshot() {
+        KeyprovContractSnapshot s;
+        s.result_contract_version = V2cKeyProvisioningCapability::kContractVersion;
+        s.query_semantics_version = 1;
+        s.capability_epoch = epoch_src.epoch();
+        s.storage_ready = storage_ready_;
+        s.supports_atomic_dual_commit = cap.atomic_dual_purpose_commit_ready;
+        // KL1 要求完整快照握手就绪（导入能力合取 + 存储健康 + 非治理）；
+        // 缺 KL1 admission 能力时新 TSP 阻断，不走旧接口降级导入。
+        s.supports_lease_admission = import_ready && epoch_src.epoch() != 0;
+        s.kl1_profile_version = s.supports_lease_admission ? kKeyprovKl1ProfileVersion : 0;
+        s.daemon_build_id = kKeyprovDaemonBuildId;
+        s.sdk_build_id = kKeyprovSdkBuildId;
+        return s;
     }
 
     V2cKeyProvisioningCapability compute_capability() {
@@ -425,6 +507,155 @@ public:
         return ErrorCode::SUCCESS;
     }
 
+    /// 双用途导入管线（journal 建立 → 解封 → 复核 → 原子提交 → proof → ledger）。
+    /// 调用方已完成全部准入与 envelope 校验；本方法不接触 binding 的明文公钥清理
+    /// （由调用方在返回后 clearPublicKey）。返回 SUCCESS 时 out 已通过
+    /// build_committed_result 填充；其余按既有语义返回（OUTCOME_UNKNOWN/其他错误）。
+    ErrorCode run_pipeline(const std::string& request_id, const std::string& business_domain,
+                           const std::vector<WrappedKeyItem>& items,
+                           const std::vector<ValidatedEnvelope>& validated,
+                           const BusinessKeyDeviceBinding& binding,
+                           const std::string& rid_digest, const std::string& digest,
+                           uint64_t generation, int64_t now, ImportResult& out) {
+        // ---- journal：VALIDATED → PROCESSING ----
+        BusinessKeyJournalEntry entry;
+        entry.request_id_digest = rid_digest;
+        entry.request_digest = digest;
+        entry.phase = BusinessKeyImportPhase::VALIDATED;
+        entry.generation = generation;
+        entry.created_at_ms = now;
+        entry.provider_version_digest = provider->providerVersionDigest();
+        for (size_t i = 0; i < items.size(); ++i) {
+            BusinessKeyStatus st;
+            st.business_domain = business_domain;
+            st.purpose = items[i].purpose;
+            st.business_key_version = items[i].business_key_version;
+            st.state = BusinessKeyState::STAGED;
+            st.key_id = items[i].key_id;  // CR-012 Q3：journal 保存完整 key_id 以重建原 ACK
+            st.key_id_digest = canonical::toHex(canonical::sha256(items[i].key_id));
+            st.algorithm = items[i].algorithm;
+            st.valid_from_ms = items[i].valid_from_ms;
+            st.valid_to_ms = items[i].valid_to_ms;
+            st.envelope_format = items[i].envelope_format;
+            st.envelope_digest = validated[i].envelope_digest;
+            st.key_check_value = items[i].key_check_value;
+            st.key_check_value_present = items[i].key_check_value_present;
+            entry.items.push_back(std::move(st));
+        }
+        entry.phase = BusinessKeyImportPhase::PROCESSING;
+        provider->saveJournal(entry);
+
+        // ---- §8：解封到 staging（双用途同一 generation）----
+        std::vector<std::array<uint8_t, 3>> actual_kcv(items.size());
+        std::string fp_hex = canonical::toHex(binding.active_cert_digest);
+        for (size_t i = 0; i < items.size(); ++i) {
+            std::string hkdf_info =
+                canonical::buildHkdfInfoV1(request_id, business_domain, items[i].purpose,
+                                           items[i].key_id, items[i].business_key_version, fp_hex);
+            std::vector<uint8_t> info_bytes(hkdf_info.begin(), hkdf_info.end());
+            ErrorCode rc = provider->unwrapToStaging(
+                business_domain, items[i], validated[i].params, validated[i].canonical_aad,
+                info_bytes, binding, generation, actual_kcv[i]);
+            if (rc != ErrorCode::SUCCESS) {
+                if (is_outcome_unknown(rc)) {
+                    entry.phase = BusinessKeyImportPhase::OUTCOME_UNKNOWN;
+                    entry.last_error = error_code_to_string(rc);
+                    provider->saveJournal(entry);
+                    out.state = BusinessKeyImportState::UNKNOWN;
+                    return ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN;
+                }
+                provider->rollbackStaging(business_domain, generation);
+                entry.phase = BusinessKeyImportPhase::FAILED;
+                entry.last_error = error_code_to_string(rc);
+                provider->saveJournal(entry);
+                out.state = BusinessKeyImportState::FAILED;
+                return rc;
+            }
+            if (items[i].purpose == kBusinessPurposeUplinkAead)
+                entry.phase = BusinessKeyImportPhase::UPLINK_STAGED;
+            provider->saveJournal(entry);
+        }
+        entry.phase = BusinessKeyImportPhase::BOTH_STAGED;
+        provider->saveJournal(entry);
+
+        // ---- staging 复核 ----
+        for (const auto& item : items) {
+            ErrorCode rc = provider->verifyStaging(business_domain, item.purpose);
+            if (rc != ErrorCode::SUCCESS) {
+                provider->rollbackStaging(business_domain, generation);
+                entry.phase = BusinessKeyImportPhase::FAILED;
+                entry.last_error = error_code_to_string(rc);
+                provider->saveJournal(entry);
+                out.state = BusinessKeyImportState::FAILED;
+                return rc;
+            }
+        }
+
+        // ---- §8 原子提交 ----
+        entry.phase = BusinessKeyImportPhase::COMMITTING;
+        provider->saveJournal(entry);
+        ErrorCode rc = provider->commitBatch(business_domain, generation);
+        if (rc != ErrorCode::SUCCESS) {
+            if (is_outcome_unknown(rc)) {
+                entry.phase = BusinessKeyImportPhase::OUTCOME_UNKNOWN;
+                entry.last_error = error_code_to_string(rc);
+                provider->saveJournal(entry);
+                out.state = BusinessKeyImportState::UNKNOWN;
+                return ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN;
+            }
+            provider->rollbackStaging(business_domain, generation);
+            entry.phase = BusinessKeyImportPhase::FAILED;
+            entry.last_error = error_code_to_string(rc);
+            provider->saveJournal(entry);
+            out.state = BusinessKeyImportState::FAILED;
+            return rc;
+        }
+
+        // ---- §7.3/§US-020：结果元数据 + 逐 item Import Attestation + ledger ----
+        int64_t committed_at = now;
+        trusted_now_ms(committed_at);
+        entry.phase = BusinessKeyImportPhase::SUCCEEDED;
+        entry.committed_at_ms = committed_at;
+        entry.provider_version_digest = provider->providerVersionDigest();
+        entry.binding_certificate_digest = binding.active_cert_digest;
+        entry.proof_algorithm = kImportProofAlgorithmP1363;
+        bool proof_failed = false;
+        for (size_t i = 0; i < items.size(); ++i) {
+            BusinessKeyStatus& st = entry.items[i];
+            st.state = BusinessKeyState::ACTIVE;
+            st.key_check_value = actual_kcv[i];
+            st.key_check_value_present = true;
+            // CR-012 Q3：逐 item 返回绑定证书策略摘要，供 TSP 机械映射 ACK。
+            st.recipient_certificate_digest = entry.binding_certificate_digest;
+
+            std::vector<uint8_t> kcv(st.key_check_value.begin(), st.key_check_value.end());
+            std::vector<uint8_t> proof;
+            std::string palg;
+            ErrorCode prc = provider->generateProof(
+                business_domain, st.purpose, st.business_key_version, request_id, items[i].key_id,
+                st.envelope_digest, kcv, proof, palg);
+            if (prc == ErrorCode::SUCCESS && proof.size() == kImportProofSizeP1363) {
+                st.import_proof = proof;
+                st.proof_algorithm = palg;
+            } else {
+                proof_failed = true;
+            }
+            if (!proof.empty()) OPENSSL_cleanse(proof.data(), proof.size());
+        }
+        if (proof_failed) {
+            // 安全签名调用结果不确定：标记 OUTCOME_UNKNOWN，由启动对账收敛，不返回 IMPORTED ACK。
+            entry.phase = BusinessKeyImportPhase::OUTCOME_UNKNOWN;
+            entry.last_error = "IMPORT_ATTESTATION_FAILED";
+            provider->saveJournal(entry);
+            out.state = BusinessKeyImportState::UNKNOWN;
+            return ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN;
+        }
+        provider->saveJournal(entry);
+        update_ledger(business_domain, entry, generation);
+
+        return build_committed_result(entry, out);
+    }
+
     /// TBOX-SEC-DSN-CR-021 §3：残留事务核对。
     /// provider 侧（staging/commit marker/operation binding，fail-closed）或
     /// SecureMetadataLedger 中任一用途的 request_id_digest 绑定命中时返回 true。
@@ -472,6 +703,91 @@ public:
     }
 
     std::chrono::steady_clock::time_point t0_;
+
+    /// KL1 查询判定（TBOX-SEC-DSN-CR-023 §12.11.2；只读，同 import 锁）。
+    /// attach 非空时填充同一快照（epoch/contract/存储健康）与已有 request 身份/证据摘要。
+    /// NOT_FOUND 仅在强 NF 全部条件成立时返回：存储健康、恢复完成、无残留、非治理。
+    ErrorCode query_result(const std::string& request_id, ImportResult& out,
+                           KeyprovResultAttachment* attach) {
+        out = ImportResult{};
+        out.request_id = request_id;
+        // 注：shutting_down_ 为外层服务成员，由外层入口（getImportResult/getImportResultKl1）先行检查。
+        if (!cfg.enabled || !provider_ready) return ErrorCode::BUSINESS_KEY_NOT_READY;
+        if (request_id.empty()) return ErrorCode::INVALID_PARAMETER;
+        if (request_id.size() > 128) return ErrorCode::INVALID_PARAMETER;
+
+        const std::string rid_digest = rid_digest_of(request_id);
+        t0_ = std::chrono::steady_clock::now();
+        if (attach != nullptr) {
+            attach->snapshot = compute_snapshot();
+            attach->queried_at_ms = 0;
+            trusted_now_ms(attach->queried_at_ms);
+        }
+
+        // 结构化 journal 读取（CR-021 §3）：不再把任意 false 直接解释为不存在。
+        JournalLoadResult lr = provider->loadJournalEx(rid_digest);
+        switch (lr.status) {
+            case JournalLoadStatus::FOUND: {
+                if (!lr.entry) {  // 防御：FOUND 必须携带条目
+                    log_journal_load_outcome(rid_digest, lr.status, "UNKNOWN",
+                                             ErrorCode::STORAGE_CORRUPTION, true);
+                    out.business_domain = kBusinessDomainV2c;
+                    out.state = BusinessKeyImportState::UNKNOWN;
+                    return ErrorCode::SUCCESS;
+                }
+                const BusinessKeyJournalEntry& entry = *lr.entry;
+                if (attach != nullptr) attach->request_identity_digest = entry.request_digest;
+                if (entry.phase == BusinessKeyImportPhase::SUCCEEDED) {
+                    return build_committed_result(entry, out);
+                }
+                // 其余 phase 按权威 phase 派生；OUTCOME_UNKNOWN 必须保持 UNKNOWN。
+                out.business_domain = kBusinessDomainV2c;
+                out.state = import_state_from_phase(entry.phase);
+                out.items = entry.items;
+                out.provider_version_digest = entry.provider_version_digest;
+                return ErrorCode::SUCCESS;
+            }
+            case JournalLoadStatus::NOT_FOUND: {
+                // 残留核对 + 治理：无 staging/commit marker/operation binding/ledger 痕迹
+                // 且存储未被清空/更换时才返回 NOT_FOUND；其余 → UNKNOWN（fail-closed）。
+                out.business_domain = kBusinessDomainV2c;
+                if (governance_required_) {
+                    // 存储被清空/更换且旧世代副作用无法排除：epoch 变化不是洗白，
+                    // 禁止扫描空目录即恢复 proven；不得上报 NOT_FOUND。
+                    log_journal_load_outcome(rid_digest, lr.status, "UNKNOWN",
+                                             ErrorCode::SUCCESS, true);
+                    out.state = BusinessKeyImportState::UNKNOWN;
+                } else if (has_transaction_residue(rid_digest)) {
+                    log_journal_load_outcome(rid_digest, lr.status, "UNKNOWN",
+                                             ErrorCode::SUCCESS, false);
+                    out.state = BusinessKeyImportState::UNKNOWN;
+                } else {
+                    out.state = BusinessKeyImportState::NOT_FOUND;
+                }
+                return ErrorCode::SUCCESS;
+            }
+            case JournalLoadStatus::AUTH_FAILED:
+            case JournalLoadStatus::CORRUPT:
+            case JournalLoadStatus::UNSUPPORTED_VERSION: {
+                // 安全事件 + UNKNOWN；MAC 失败不是“不存在”。
+                log_journal_load_outcome(rid_digest, lr.status, "UNKNOWN",
+                                         lr.provider_error, true);
+                out.business_domain = kBusinessDomainV2c;
+                out.state = BusinessKeyImportState::UNKNOWN;
+                return ErrorCode::SUCCESS;
+            }
+            case JournalLoadStatus::IO_ERROR:
+            default: {
+                // 稳定错误；调用方 fail-closed；存储不健康不得制造 NF。
+                log_journal_load_outcome(rid_digest, lr.status, "UNKNOWN",
+                                         lr.provider_error, true);
+                out.business_domain = kBusinessDomainV2c;
+                out.state = BusinessKeyImportState::UNKNOWN;
+                return lr.provider_error != ErrorCode::SUCCESS ? lr.provider_error
+                                                               : ErrorCode::STORAGE_READ_FAILED;
+            }
+        }
+    }
 };
 
 // ============================================================
@@ -531,9 +847,18 @@ ErrorCode BusinessKeyProvisioningService::initialize() {
     }
     impl_->recover_on_startup();
 
+    // KL1：恢复完成后固化存储世代；检测到存储被清空/更换 → 治理标志
+    // （epoch 变化不是洗白：旧 generation 副作用无法排除时不得上报 NOT_FOUND）。
+    if (impl_->provider->storageReplaced()) {
+        impl_->epoch_src.bumpStorageReplacement();
+        impl_->governance_required_ = true;
+    } else {
+        impl_->epoch_src.bumpRecovery();
+    }
     impl_->provider_ready = impl_->provider->isReady();
+    impl_->storage_ready_ = impl_->provider_ready && !impl_->governance_required_;
     impl_->cap = impl_->compute_capability();
-    impl_->import_ready = impl_->provider_ready && impl_->cap.all();
+    impl_->import_ready = impl_->provider_ready && impl_->cap.all() && impl_->storage_ready_;
 
     if (!impl_->import_ready) {
         SecLogAdapter::business_key().warn(
@@ -553,6 +878,11 @@ bool BusinessKeyProvisioningService::isReady() const {
 V2cKeyProvisioningCapability BusinessKeyProvisioningService::capability() const {
     std::lock_guard<std::mutex> lock(impl_->mtx);
     return impl_->cap;
+}
+
+KeyprovContractSnapshot BusinessKeyProvisioningService::contractSnapshot() const {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    return impl_->compute_snapshot();
 }
 
 // ============================================================
@@ -689,149 +1019,226 @@ ErrorCode BusinessKeyProvisioningService::import(const std::string& request_id,
     int64_t now = 0;
     impl_->trusted_now_ms(now);
 
-    // ---- journal：VALIDATED ----
-    BusinessKeyJournalEntry entry;
-    entry.request_id_digest = rid_digest;
-    entry.request_digest = digest;
-    entry.phase = BusinessKeyImportPhase::VALIDATED;
-    entry.generation = generation;
-    entry.created_at_ms = now;
-    entry.provider_version_digest = impl_->provider->providerVersionDigest();
-    for (size_t i = 0; i < items.size(); ++i) {
-        BusinessKeyStatus st;
-        st.business_domain = business_domain;
-        st.purpose = items[i].purpose;
-        st.business_key_version = items[i].business_key_version;
-        st.state = BusinessKeyState::STAGED;
-        st.key_id = items[i].key_id;  // CR-012 Q3：journal 保存完整 key_id 以重建原 ACK
-        st.key_id_digest = canonical::toHex(canonical::sha256(items[i].key_id));
-        st.algorithm = items[i].algorithm;
-        st.valid_from_ms = items[i].valid_from_ms;
-        st.valid_to_ms = items[i].valid_to_ms;
-        st.envelope_format = items[i].envelope_format;
-        st.envelope_digest = validated[i].envelope_digest;
-        st.key_check_value = items[i].key_check_value;
-        st.key_check_value_present = items[i].key_check_value_present;
-        entry.items.push_back(std::move(st));
-    }
-    entry.phase = BusinessKeyImportPhase::PROCESSING;
-    impl_->provider->saveJournal(entry);
+    // 共享导入管线（journal 建立 → 解封 → 复核 → 原子提交 → proof → ledger）。
+    ErrorCode prc = impl_->run_pipeline(request_id, business_domain, items, validated,
+                                        binding, rid_digest, digest, generation, now, out);
+    binding.clearPublicKey();
+    return prc;
+}
 
-    // ---- §8：解封到 staging（双用途同一 generation）----
-    std::vector<std::array<uint8_t, 3>> actual_kcv(items.size());
-    std::string fp_hex = canonical::toHex(binding.active_cert_digest);
-    for (size_t i = 0; i < items.size(); ++i) {
-        std::string hkdf_info =
-            canonical::buildHkdfInfoV1(request_id, business_domain, items[i].purpose,
-                                       items[i].key_id, items[i].business_key_version, fp_hex);
-        std::vector<uint8_t> info_bytes(hkdf_info.begin(), hkdf_info.end());
-        rc = impl_->provider->unwrapToStaging(
-            business_domain, items[i], validated[i].params, validated[i].canonical_aad,
-            info_bytes, binding, generation, actual_kcv[i]);
-        if (rc != ErrorCode::SUCCESS) {
-            if (is_outcome_unknown(rc)) {
-                entry.phase = BusinessKeyImportPhase::OUTCOME_UNKNOWN;
-                entry.last_error = error_code_to_string(rc);
-                impl_->provider->saveJournal(entry);
-                binding.clearPublicKey();
-                out.state = BusinessKeyImportState::UNKNOWN;
-                return ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN;
-            }
-            impl_->provider->rollbackStaging(business_domain, generation);
-            entry.phase = BusinessKeyImportPhase::FAILED;
-            entry.last_error = error_code_to_string(rc);
-            impl_->provider->saveJournal(entry);
-            binding.clearPublicKey();
-            out.state = BusinessKeyImportState::FAILED;
-            return rc;
-        }
-        if (items[i].purpose == kBusinessPurposeUplinkAead)
-            entry.phase = BusinessKeyImportPhase::UPLINK_STAGED;
-        impl_->provider->saveJournal(entry);
-    }
-    entry.phase = BusinessKeyImportPhase::BOTH_STAGED;
-    impl_->provider->saveJournal(entry);
+// ============================================================
+// KL1 import（TBOX-SEC-DSN-CR-023 §12.11.1/§12.11.3）
+// ============================================================
 
-    // ---- staging 复核 ----
-    for (const auto& item : items) {
-        rc = impl_->provider->verifyStaging(business_domain, item.purpose);
-        if (rc != ErrorCode::SUCCESS) {
-            impl_->provider->rollbackStaging(business_domain, generation);
-            entry.phase = BusinessKeyImportPhase::FAILED;
-            entry.last_error = error_code_to_string(rc);
-            impl_->provider->saveJournal(entry);
-            binding.clearPublicKey();
-            out.state = BusinessKeyImportState::FAILED;
-            return rc;
-        }
+ErrorCode BusinessKeyProvisioningService::importKl1(
+    const std::string& request_id, const std::string& business_domain,
+    const std::vector<WrappedKeyItem>& items, const KeyprovImportContext& context,
+    ImportResult& out, KeyprovResultAttachment& attach) {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    out = ImportResult{};
+    attach = KeyprovResultAttachment{};
+    attach.snapshot = impl_->compute_snapshot();
+    out.request_id = request_id;
+    out.business_domain = business_domain;
+    ImportLogGuard log_guard{rid_digest_of(request_id), out, std::chrono::steady_clock::now()};
+
+    // ---- 0) 服务级门禁（fail-closed；缺 KL1 admission 能力时新 TSP 阻断）----
+    if (shutting_down_.load()) return ErrorCode::BUSINESS_KEY_NOT_READY;
+    if (!impl_->cfg.enabled) return ErrorCode::BUSINESS_KEY_NOT_READY;
+    if (!impl_->import_ready) {
+        out.state = BusinessKeyImportState::FAILED;
+        return ErrorCode::BUSINESS_KEY_NOT_READY;  // 1025：能力/存储/时间不健康
+    }
+    if (!attach.snapshot.supports_lease_admission) {
+        // 快照握手未就绪：不得把旧接口成功当作 KL1 能力，也不得降级调用旧 import。
+        out.state = BusinessKeyImportState::FAILED;
+        return ErrorCode::BUSINESS_KEY_NOT_READY;
+    }
+    if (context.kl1_profile_version != kKeyprovKl1ProfileVersion ||
+        context.capability_epoch == 0) {
+        // profile 未知/缺失、epoch 缺失：一律视为未 probe → 不可用，不是支持。
+        out.state = BusinessKeyImportState::FAILED;
+        return ErrorCode::BUSINESS_KEY_NOT_READY;
     }
 
-    // ---- §8 原子提交 ----
-    entry.phase = BusinessKeyImportPhase::COMMITTING;
-    impl_->provider->saveJournal(entry);
-    rc = impl_->provider->commitBatch(business_domain, generation);
+    const std::string rid_digest = rid_digest_of(request_id);
+
+    // ---- 1) 结构/schema/大小/item 数/requestId（不执行密码操作）----
+    ErrorCode rc = impl_->validate_structure(request_id, business_domain, items);
     if (rc != ErrorCode::SUCCESS) {
-        if (is_outcome_unknown(rc)) {
-            entry.phase = BusinessKeyImportPhase::OUTCOME_UNKNOWN;
-            entry.last_error = error_code_to_string(rc);
-            impl_->provider->saveJournal(entry);
+        out.state = BusinessKeyImportState::FAILED;
+        return rc;  // 1021/1023
+    }
+
+    // ---- 2) 设备解封装身份 + 证书 KU/私钥 derive 门禁（信封校验上下文所需）----
+    BusinessKeyDeviceBinding binding = impl_->probe_binding();
+    if (!impl_->binding_agreement_ok(binding)) {
+        binding.clearPublicKey();
+        out.state = BusinessKeyImportState::FAILED;
+        return ErrorCode::BUSINESS_KEY_NOT_READY;  // 1025
+    }
+
+    // ---- 3) 信封校验（解封前全部完成；任何失败不执行密码操作）----
+    std::vector<ValidatedEnvelope> validated(items.size());
+    for (size_t i = 0; i < items.size(); ++i) {
+        EnvelopeContext ctx;
+        ctx.request_id = request_id;
+        ctx.business_domain = business_domain;
+        ctx.purpose = items[i].purpose;
+        ctx.active_cert_digest = binding.active_cert_digest;
+        ctx.active_cert_p256 = binding.active_cert_p256;
+        ctx.active_cert_key_agreement = binding.active_cert_key_agreement;
+        ctx.active_cert_digital_signature = binding.active_cert_digital_signature;
+        ctx.private_key_can_derive = binding.private_key_can_derive;
+        ctx.private_key_can_sign = binding.private_key_can_sign;
+        ctx.active_cert_ca_false = binding.active_cert_ca_false;
+        ctx.active_cert_eku_client_auth_only = binding.active_cert_eku_client_auth_only;
+        ctx.active_cert_critical_extensions_allowed =
+            binding.active_cert_critical_extensions_allowed;
+        ctx.active_cert_leaf_digest_bound = binding.active_cert_leaf_digest_bound;
+        ctx.active_cert_chain_key_match = binding.active_cert_chain_key_match;
+        ctx.identity_template_sign_derive = binding.identity_template_sign_derive;
+        EnvelopeLimits limits;
+        limits.max_parameters = static_cast<size_t>(impl_->cfg.max_parameters_bytes);
+        limits.max_wrapped_key = static_cast<size_t>(impl_->cfg.max_wrapped_key_bytes);
+        rc = validateEnvelope(items[i], ctx, limits, validated[i]);
+        if (rc != ErrorCode::SUCCESS) {
             binding.clearPublicKey();
-            out.state = BusinessKeyImportState::UNKNOWN;
-            return ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN;
+            out.state = BusinessKeyImportState::FAILED;
+            return rc;
         }
-        impl_->provider->rollbackStaging(business_domain, generation);
-        entry.phase = BusinessKeyImportPhase::FAILED;
-        entry.last_error = error_code_to_string(rc);
-        impl_->provider->saveJournal(entry);
+    }
+
+    const std::string digest =
+        impl_->build_request_digest(request_id, business_domain, items, validated);
+
+    // ---- 4) journal 绑定检查（同 operation 既有事实优先；不同内容同 rid 冲突）----
+    JournalLoadResult lr = impl_->provider->loadJournalEx(rid_digest);
+    switch (lr.status) {
+        case JournalLoadStatus::FOUND: {
+            if (!lr.entry) {
+                out.state = BusinessKeyImportState::UNKNOWN;
+                return ErrorCode::BUSINESS_KEY_IMPORT_UNKNOWN;  // 1024
+            }
+            BusinessKeyJournalEntry entry = *lr.entry;
+            attach.request_identity_digest = entry.request_digest;
+            if (!entry.request_digest.empty() && entry.request_digest != digest) {
+                // 同 rid 不同业务 digest：冲突，不覆盖原证据（§12.11.2/3；LC08）。
+                out.state = BusinessKeyImportState::FAILED;
+                return ErrorCode::BUSINESS_KEY_CONFLICT;  // 1022
+            }
+            if (entry.phase == BusinessKeyImportPhase::SUCCEEDED) {
+                // 已 COMMITTED：恢复原结果/proof；旧 E 过期不否定事实，不重签。
+                return impl_->build_committed_result(entry, out);
+            }
+            if (entry.phase == BusinessKeyImportPhase::FAILED) {
+                out.state = BusinessKeyImportState::FAILED;
+                out.items = entry.items;
+                return ErrorCode::BUSINESS_KEY_IMPORT_UNKNOWN;  // 1024
+            }
+            // STAGED/PROCESSING/OUTCOME_UNKNOWN/RECOVERING：恢复/对账，不建第二 operation。
+            impl_->recover_entry(entry);
+            if (entry.phase == BusinessKeyImportPhase::SUCCEEDED) {
+                return impl_->build_committed_result(entry, out);
+            }
+            out.state = BusinessKeyImportState::FAILED;
+            out.items = entry.items;
+            return ErrorCode::BUSINESS_KEY_PARTIAL_ROLLBACK;  // 1026
+        }
+        case JournalLoadStatus::NOT_FOUND: {
+            if (impl_->has_transaction_residue(rid_digest)) {
+                // 可疑残留：交恢复/对账，不创建第二 operation。
+                out.state = BusinessKeyImportState::UNKNOWN;
+                return ErrorCode::BUSINESS_KEY_IMPORT_UNKNOWN;  // 1024
+            }
+            break;  // 确属新 operation，进入准入。
+        }
+        case JournalLoadStatus::AUTH_FAILED:
+        case JournalLoadStatus::CORRUPT:
+        case JournalLoadStatus::UNSUPPORTED_VERSION:
+            out.state = BusinessKeyImportState::UNKNOWN;
+            return ErrorCode::BUSINESS_KEY_IMPORT_UNKNOWN;  // 1024（不是 NF，不是无副作用）
+        case JournalLoadStatus::IO_ERROR:
+        default:
+            out.state = BusinessKeyImportState::UNKNOWN;
+            return ErrorCode::BUSINESS_KEY_NOT_READY;  // 1025：存储不可读/不健康
+    }
+
+    // ---- 5) 新 operation 准入（事实优先级：1025 → 1030 → 1029 → 1023）----
+    // 可信时间健康（KL1 门禁：TRUSTED、uncertainty≤1000ms、freshness≤300000ms），
+    // U = utc_ms + uncertainty_ms。
+    int64_t U = 0;
+    rc = impl_->kl1_trusted_upper_now(U);
+    if (rc != ErrorCode::SUCCESS) {
+        out.state = BusinessKeyImportState::FAILED;
+        return rc;  // 1025：可信时间不健康（LC21）
+    }
+    // 调用方 probe 所见 epoch 与当前 SEC epoch 一致，否则 1030。
+    if (context.capability_epoch != impl_->epoch_src.epoch()) {
+        attach.snapshot = impl_->compute_snapshot();  // 携带当前 epoch 供诊断
+        out.state = BusinessKeyImportState::FAILED;
+        return ErrorCode::KL1_CAPABILITY_EPOCH_MISMATCH;  // 1030
+    }
+    // 租约未到期：仅 U<E 可新启动，U==E 必拒绝（LC02.0/.1）。
+    if (U >= context.admission_expire_at_ms) {
+        out.state = BusinessKeyImportState::FAILED;
+        return ErrorCode::KL1_ADMISSION_REJECTED;  // 1029
+    }
+    // item 安全有效期须覆盖 E（LC20.item 派生；valid_from≤U 且 valid_to≥E）。
+    for (const auto& item : items) {
+        if (item.valid_from_ms > U || item.valid_to_ms < context.admission_expire_at_ms) {
+            out.state = BusinessKeyImportState::FAILED;
+            return ErrorCode::WRAPPED_KEY_INVALID;  // 1023
+        }
+    }
+    // 证书有效期覆盖 E（LC20.cert 派生）。
+    if (binding.active_cert_valid_from_ms > U ||
+        binding.active_cert_valid_to_ms < context.admission_expire_at_ms) {
+        binding.clearPublicKey();
+        out.state = BusinessKeyImportState::FAILED;
+        return ErrorCode::WRAPPED_KEY_INVALID;  // 1023
+    }
+
+    // ---- 6) 版本单调/有效期/可信时间（与旧导入一致）----
+    rc = impl_->validate_version_and_time(business_domain, items);
+    if (rc != ErrorCode::SUCCESS) {
         binding.clearPublicKey();
         out.state = BusinessKeyImportState::FAILED;
         return rc;
     }
+
+    // ---- 7) 取操作锁后、建立新 journal 前再次校验（排队越界：时间/epoch 在
+    //        校验期间可能已变化）。仍按 1025 → 1030 → 1029 归类。----
+    rc = impl_->kl1_trusted_upper_now(U);
+    if (rc != ErrorCode::SUCCESS) {
+        binding.clearPublicKey();
+        out.state = BusinessKeyImportState::FAILED;
+        return rc;  // 1025
+    }
+    if (context.capability_epoch != impl_->epoch_src.epoch()) {
+        attach.snapshot = impl_->compute_snapshot();
+        binding.clearPublicKey();
+        out.state = BusinessKeyImportState::FAILED;
+        return ErrorCode::KL1_CAPABILITY_EPOCH_MISMATCH;  // 1030
+    }
+    if (U >= context.admission_expire_at_ms) {
+        binding.clearPublicKey();
+        out.state = BusinessKeyImportState::FAILED;
+        return ErrorCode::KL1_ADMISSION_REJECTED;  // 1029
+    }
+
+    const uint64_t generation = impl_->next_generation();
+    int64_t now = 0;
+    impl_->trusted_now_ms(now);
+
+    ErrorCode prc = impl_->run_pipeline(request_id, business_domain, items, validated,
+                                        binding, rid_digest, digest, generation, now, out);
     binding.clearPublicKey();
-
-    // ---- §7.3/§US-020：结果元数据 + 逐 item Import Attestation + ledger ----
-    int64_t committed_at = now;
-    impl_->trusted_now_ms(committed_at);
-    entry.phase = BusinessKeyImportPhase::SUCCEEDED;
-    entry.committed_at_ms = committed_at;
-    entry.provider_version_digest = impl_->provider->providerVersionDigest();
-    entry.binding_certificate_digest = binding.active_cert_digest;
-    entry.proof_algorithm = kImportProofAlgorithmP1363;
-    bool proof_failed = false;
-    for (size_t i = 0; i < items.size(); ++i) {
-        BusinessKeyStatus& st = entry.items[i];
-        st.state = BusinessKeyState::ACTIVE;
-        st.key_check_value = actual_kcv[i];
-        st.key_check_value_present = true;
-        // CR-012 Q3：逐 item 返回绑定证书策略摘要，供 TSP 机械映射 ACK。
-        st.recipient_certificate_digest = entry.binding_certificate_digest;
-
-        std::vector<uint8_t> kcv(st.key_check_value.begin(), st.key_check_value.end());
-        std::vector<uint8_t> proof;
-        std::string palg;
-        ErrorCode prc = impl_->provider->generateProof(
-            business_domain, st.purpose, st.business_key_version, request_id, items[i].key_id,
-            st.envelope_digest, kcv, proof, palg);
-        if (prc == ErrorCode::SUCCESS && proof.size() == kImportProofSizeP1363) {
-            st.import_proof = proof;
-            st.proof_algorithm = palg;
-        } else {
-            proof_failed = true;
-        }
-        if (!proof.empty()) OPENSSL_cleanse(proof.data(), proof.size());
+    if (prc == ErrorCode::SUCCESS) {
+        attach.request_identity_digest = digest;
+        attach.queried_at_ms = now;
     }
-    if (proof_failed) {
-        // 安全签名调用结果不确定：标记 OUTCOME_UNKNOWN，由启动对账收敛，不返回 IMPORTED ACK。
-        entry.phase = BusinessKeyImportPhase::OUTCOME_UNKNOWN;
-        entry.last_error = "IMPORT_ATTESTATION_FAILED";
-        impl_->provider->saveJournal(entry);
-        out.state = BusinessKeyImportState::UNKNOWN;
-        return ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN;
-    }
-    impl_->provider->saveJournal(entry);
-    impl_->update_ledger(business_domain, entry, generation);
-
-    return impl_->build_committed_result(entry, out);
+    return prc;
 }
 
 // ============================================================
@@ -841,73 +1248,16 @@ ErrorCode BusinessKeyProvisioningService::import(const std::string& request_id,
 ErrorCode BusinessKeyProvisioningService::getImportResult(const std::string& request_id,
                                                           ImportResult& out) {
     std::lock_guard<std::mutex> lock(impl_->mtx);
-    out = ImportResult{};
-    out.request_id = request_id;
     if (shutting_down_.load()) return ErrorCode::BUSINESS_KEY_NOT_READY;
-    if (!impl_->cfg.enabled || !impl_->provider_ready)
-        return ErrorCode::BUSINESS_KEY_NOT_READY;
-    if (request_id.empty()) return ErrorCode::INVALID_PARAMETER;
-    if (request_id.size() > 128) return ErrorCode::INVALID_PARAMETER;  // 超长 requestId（安全）
+    return impl_->query_result(request_id, out, nullptr);
+}
 
-    const std::string rid_digest = rid_digest_of(request_id);
-    impl_->t0_ = std::chrono::steady_clock::now();
-
-    // TBOX-SEC-DSN-CR-021 §3：结构化 journal 读取，不再把任意 false 直接解释为不存在。
-    JournalLoadResult lr = impl_->provider->loadJournalEx(rid_digest);
-    switch (lr.status) {
-        case JournalLoadStatus::FOUND: {
-            if (!lr.entry) {  // 防御：FOUND 必须携带条目
-                impl_->log_journal_load_outcome(rid_digest, lr.status, "UNKNOWN",
-                                                ErrorCode::STORAGE_CORRUPTION, true);
-                out.business_domain = kBusinessDomainV2c;
-                out.state = BusinessKeyImportState::UNKNOWN;
-                return ErrorCode::SUCCESS;
-            }
-            const BusinessKeyJournalEntry& entry = *lr.entry;
-            if (entry.phase == BusinessKeyImportPhase::SUCCEEDED) {
-                return impl_->build_committed_result(entry, out);
-            }
-            // 其余 phase 按权威 phase 派生；OUTCOME_UNKNOWN 必须保持 UNKNOWN。
-            out.business_domain = kBusinessDomainV2c;
-            out.state = import_state_from_phase(entry.phase);
-            out.items = entry.items;
-            out.provider_version_digest = entry.provider_version_digest;
-            return ErrorCode::SUCCESS;
-        }
-        case JournalLoadStatus::NOT_FOUND: {
-            // 残留核对：无 staging、无 commit marker、无 operation binding/ledger 痕迹
-            // 时才返回 NOT_FOUND；发现痕迹或无法查询 → UNKNOWN（fail-closed）。
-            out.business_domain = kBusinessDomainV2c;
-            if (impl_->has_transaction_residue(rid_digest)) {
-                impl_->log_journal_load_outcome(rid_digest, lr.status, "UNKNOWN",
-                                                ErrorCode::SUCCESS, false);
-                out.state = BusinessKeyImportState::UNKNOWN;
-            } else {
-                out.state = BusinessKeyImportState::NOT_FOUND;
-            }
-            return ErrorCode::SUCCESS;
-        }
-        case JournalLoadStatus::AUTH_FAILED:
-        case JournalLoadStatus::CORRUPT:
-        case JournalLoadStatus::UNSUPPORTED_VERSION: {
-            // 安全事件 + UNKNOWN；MAC 失败不是“不存在”。
-            impl_->log_journal_load_outcome(rid_digest, lr.status, "UNKNOWN",
-                                            lr.provider_error, true);
-            out.business_domain = kBusinessDomainV2c;
-            out.state = BusinessKeyImportState::UNKNOWN;
-            return ErrorCode::SUCCESS;
-        }
-        case JournalLoadStatus::IO_ERROR:
-        default: {
-            // 稳定错误；调用方 fail-closed。
-            impl_->log_journal_load_outcome(rid_digest, lr.status, "UNKNOWN",
-                                            lr.provider_error, true);
-            out.business_domain = kBusinessDomainV2c;
-            out.state = BusinessKeyImportState::UNKNOWN;
-            return lr.provider_error != ErrorCode::SUCCESS ? lr.provider_error
-                                                           : ErrorCode::STORAGE_READ_FAILED;
-        }
-    }
+ErrorCode BusinessKeyProvisioningService::getImportResultKl1(
+    const std::string& request_id, ImportResult& out, KeyprovResultAttachment& attach) {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    if (shutting_down_.load()) return ErrorCode::BUSINESS_KEY_NOT_READY;
+    attach = KeyprovResultAttachment{};
+    return impl_->query_result(request_id, out, &attach);
 }
 
 } // namespace sec

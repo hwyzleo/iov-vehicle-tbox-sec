@@ -1,0 +1,1035 @@
+{
+  "profile": "KEYPROV-LIFECYCLE-1",
+  "case_set": "keyprov-lifecycle-kl1-v1",
+  "T0": 1800000000000,
+  "parameters": {
+    "response_ttl_ms": 60000,
+    "batch_ms": 300000,
+    "ack_grace_ms": 30000,
+    "skew_ms": 2000,
+    "issue_min_ms": 20000,
+    "import_min_ms": 15000,
+    "request_limit": 8,
+    "request_window_ms": 120000,
+    "readonly_limit": 12,
+    "readonly_window_ms": 300000,
+    "ack_limit": 3,
+    "chain_ids": 3,
+    "chain_window_ms": 600000,
+    "sec_nf_observations": 3,
+    "sec_nf_span_ms": 12000
+  },
+  "scope": "Semantic lifecycle golden only; no fabricated cryptographic vectors or claim of production CI. Pair with existing PAR-009/FW-020/SEC-022 bytes/KCV/proof vectors.",
+  "cases": [
+    {
+      "case_id": "LC01",
+      "input": {
+        "operation": "issue",
+        "now": 1800000090000,
+        "B": 1800000300000
+      },
+      "expected": {
+        "action": "FRESH_RESPONSE",
+        "E": 1800000150000,
+        "provider_calls": 0,
+        "item_changes": 0
+      },
+      "input_hash": "b2e01e1ff0d4549431455bd1f68795fbf5d79d7de528ce1b90852747591b9d8b",
+      "expected_hash": "b328f5b008fd6c1ccd89a1ca7113039786147fc50249fb02550c537bbbeff36e"
+    },
+    {
+      "case_id": "LC02.-1",
+      "input": {
+        "operation": "accept",
+        "U": 1800000059999,
+        "E": 1800000060000
+      },
+      "expected": {
+        "action": "LEASE_TOO_SHORT",
+        "import_calls": 0
+      },
+      "input_hash": "8fc3de3302e513badbfc3fe25b807a3c9dee2d64666e56a81e27f71fe8b90e22",
+      "expected_hash": "81e3cb36cc506491acea4b47aee8a389545912ceedc17161ecb1ea5816edce6c"
+    },
+    {
+      "case_id": "LC02.0",
+      "input": {
+        "operation": "accept",
+        "U": 1800000060000,
+        "E": 1800000060000
+      },
+      "expected": {
+        "action": "RESPONSE_EXPIRED",
+        "import_calls": 0
+      },
+      "input_hash": "9c94a33bea337ecce9fa971e34d36d5c7b1bbb0df3973ece14d8660890be94c9",
+      "expected_hash": "42a771e66f6c16f9169c2f467d3e2d63464c0d8d56abd836293ad9c91a204d10"
+    },
+    {
+      "case_id": "LC02.1",
+      "input": {
+        "operation": "accept",
+        "U": 1800000060001,
+        "E": 1800000060000
+      },
+      "expected": {
+        "action": "RESPONSE_EXPIRED",
+        "import_calls": 0
+      },
+      "input_hash": "c76fd4a8a3a2d573964bb90c12500afb57b59dd9576238b0e499a906fd99b303",
+      "expected_hash": "42a771e66f6c16f9169c2f467d3e2d63464c0d8d56abd836293ad9c91a204d10"
+    },
+    {
+      "case_id": "LC03",
+      "input": {
+        "operation": "issue",
+        "now": 1800000255000,
+        "B": 1800000300000
+      },
+      "expected": {
+        "action": "EXPIRED_NO_ITEMS",
+        "provider_calls": 0,
+        "item_changes": 0
+      },
+      "input_hash": "e539ee73e6514263f8567c33007476029203fb2103f6b3e03ab1345ff4cf766a",
+      "expected_hash": "0f2ac132032a08d7baa23206b2f53f1bb7425be6db59856ff862f7769040f534"
+    },
+    {
+      "case_id": "LC04.-1",
+      "input": {
+        "operation": "ack",
+        "now": 1800000299999,
+        "B": 1800000300000,
+        "state": "ACK_PENDING",
+        "valid_dual_proof": true
+      },
+      "expected": {
+        "action": "ACTIVE",
+        "active_purposes": 2,
+        "new_events": 1
+      },
+      "input_hash": "2e83271f7c328231c0e6167a81b5c4ba22a85de8108179a62de94a61cdef99c3",
+      "expected_hash": "7243fbb45eeb4a588bb4f65567c9c638660ac1ec5573bc97562cd6405104485a"
+    },
+    {
+      "case_id": "LC04.0",
+      "input": {
+        "operation": "ack",
+        "now": 1800000300000,
+        "B": 1800000300000,
+        "state": "ACK_PENDING",
+        "valid_dual_proof": true
+      },
+      "expected": {
+        "action": "FAILED_ACK_TIMEOUT",
+        "active_purposes": 0,
+        "new_events": 0
+      },
+      "input_hash": "9e9b581418161045c886a5dfb9b5bbab56c9381a92d171a6330f74f15f92079a",
+      "expected_hash": "b7bb8b7574283950084a142fec9bad05e8e1625c1dfbbf69d98fb77dc601a68e"
+    },
+    {
+      "case_id": "LC05",
+      "input": {
+        "operation": "ack",
+        "now": 1800000301000,
+        "B": 1800000300000,
+        "state": "ACTIVE",
+        "valid_dual_proof": true
+      },
+      "expected": {
+        "action": "ACTIVE",
+        "active_purposes": 2,
+        "new_events": 0
+      },
+      "input_hash": "54b05706639a31575a14bcaec3afddd9e0bca0478b253bc1a1687cdc61e91716",
+      "expected_hash": "dbc00e87e60245e7bf882be4d4397c59940b78603593bde25e015282750c6e74"
+    },
+    {
+      "case_id": "LC06",
+      "input": {
+        "operation": "accept",
+        "U": 1800000000000,
+        "E": 1800000060000,
+        "terminalized": true
+      },
+      "expected": {
+        "action": "LATE_RESPONSE",
+        "import_calls": 0
+      },
+      "input_hash": "5ff742403bb612dbead9415ffc51f58334c4ac85fe4bd57cf76112d4e4f3d2ae",
+      "expected_hash": "8bdf9e8ae9b9318ff57c03593b13ffa179f7f2e1e9b4893bc42f0700015c3639"
+    },
+    {
+      "case_id": "LC07",
+      "input": {
+        "operation": "dedupe",
+        "same_rid": true,
+        "same_business_digest": true
+      },
+      "expected": {
+        "action": "SAME_BATCH_FRESH_LEASE",
+        "new_material_versions": 0,
+        "provider_calls": 0
+      },
+      "input_hash": "173163c5e6f12dc5b8d948e19bd8768fc195ebf815a3b6910cdad5cc941dcac8",
+      "expected_hash": "1d223def55cf9b7bc72c0422b0678ba0323cc00adf7965421aec290a4e672d83"
+    },
+    {
+      "case_id": "LC08",
+      "input": {
+        "operation": "dedupe",
+        "same_rid": true,
+        "same_business_digest": false
+      },
+      "expected": {
+        "action": "CONFLICT_806095",
+        "new_material_versions": 0,
+        "provider_calls": 0
+      },
+      "input_hash": "62808f28bc43c32c72f977eaa57e7ebf3ad769f2fac2dadcca25a06984533d9b",
+      "expected_hash": "63590b36a31cd472d2caccec36f14d70380f3d610f554f7d9ff42d2768e84c98"
+    },
+    {
+      "case_id": "LC09.count",
+      "input": {
+        "operation": "budget",
+        "phase": "REQUEST",
+        "count": 8,
+        "elapsed": 0
+      },
+      "expected": {
+        "action": "READONLY",
+        "new_sends": 0
+      },
+      "input_hash": "2ba124fce9d449abb05ea4f698ea3c1c4caf2f50e7a4a29054c2f3fcbf4a47cb",
+      "expected_hash": "a4cb9b4b783a3654d2cd07b07bddb2540f96cbf1582e8490e19691100d5617cd"
+    },
+    {
+      "case_id": "LC09.time",
+      "input": {
+        "operation": "budget",
+        "phase": "REQUEST",
+        "count": 0,
+        "elapsed": 120000
+      },
+      "expected": {
+        "action": "READONLY",
+        "new_sends": 0
+      },
+      "input_hash": "9f3f442562118f8324963b61ea1b0e805997a37a9ee1cf838e557b3b293d3e99",
+      "expected_hash": "a4cb9b4b783a3654d2cd07b07bddb2540f96cbf1582e8490e19691100d5617cd"
+    },
+    {
+      "case_id": "LC09.restart",
+      "input": {
+        "operation": "budget",
+        "phase": "REQUEST",
+        "count": 8,
+        "elapsed": 1000
+      },
+      "expected": {
+        "action": "READONLY",
+        "new_sends": 0
+      },
+      "input_hash": "abbc13ee2bf3ad456fc5b0a74e2d5258e0c201f4ea3858f5456634337b12db42",
+      "expected_hash": "a4cb9b4b783a3654d2cd07b07bddb2540f96cbf1582e8490e19691100d5617cd"
+    },
+    {
+      "case_id": "LC10.STATUS.count",
+      "input": {
+        "operation": "budget",
+        "phase": "STATUS",
+        "count": 12,
+        "elapsed": 0
+      },
+      "expected": {
+        "action": "BLOCKED",
+        "new_sends": 0
+      },
+      "input_hash": "2778af0df2507bdcf0406cfcdce04db16468b8141f587f01417d1b8c58469794",
+      "expected_hash": "7ee52e6c4739ee2e265d0e0ce8fe782a9fdd2ade260765e0de5117d2054f3cc7"
+    },
+    {
+      "case_id": "LC10.STATUS.time",
+      "input": {
+        "operation": "budget",
+        "phase": "STATUS",
+        "count": 0,
+        "elapsed": 300000
+      },
+      "expected": {
+        "action": "BLOCKED",
+        "new_sends": 0
+      },
+      "input_hash": "b3d753cd44db5a733c60754a26faa39ba16a80a5916dd1f22e55af0b15ae6ce8",
+      "expected_hash": "7ee52e6c4739ee2e265d0e0ce8fe782a9fdd2ade260765e0de5117d2054f3cc7"
+    },
+    {
+      "case_id": "LC10.SEC.count",
+      "input": {
+        "operation": "budget",
+        "phase": "SEC",
+        "count": 12,
+        "elapsed": 0
+      },
+      "expected": {
+        "action": "BLOCKED",
+        "new_sends": 0
+      },
+      "input_hash": "ccb5f9c0bb74e4d298a55fdd7c8fd6b201c802aeb71e031f13697904f87e49ba",
+      "expected_hash": "7ee52e6c4739ee2e265d0e0ce8fe782a9fdd2ade260765e0de5117d2054f3cc7"
+    },
+    {
+      "case_id": "LC10.SEC.time",
+      "input": {
+        "operation": "budget",
+        "phase": "SEC",
+        "count": 0,
+        "elapsed": 300000
+      },
+      "expected": {
+        "action": "BLOCKED",
+        "new_sends": 0
+      },
+      "input_hash": "f4b6419150fa566468b6778ca99868541867ec93d3fcac51655abc7f586ea74f",
+      "expected_hash": "7ee52e6c4739ee2e265d0e0ce8fe782a9fdd2ade260765e0de5117d2054f3cc7"
+    },
+    {
+      "case_id": "LC11",
+      "input": {
+        "operation": "reconcile",
+        "sec": "CONTRACT_UNKNOWN",
+        "capability": 0,
+        "result_contract": 2,
+        "cloud": "ACK_PENDING"
+      },
+      "expected": {
+        "action": "READONLY",
+        "import_calls": 0,
+        "new_ids": 0,
+        "nf_increment": 0
+      },
+      "input_hash": "baa906839429929075074e8a7fbf79593459392531a2d55ac455c7108279035a",
+      "expected_hash": "e33a3ebda6e87230a5abf4997e5f7ffb5a1a872bc2061ffe3e8c17427562acf8"
+    },
+    {
+      "case_id": "LC12",
+      "input": {
+        "operation": "stabilize",
+        "observations": [
+          {
+            "t": 0,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          },
+          {
+            "t": 6000,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          },
+          {
+            "t": 12000,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          }
+        ],
+        "cloud": "FAILED",
+        "chain_ids": 1,
+        "chain_elapsed": 12000,
+        "successor": null
+      },
+      "expected": {
+        "action": "SUPERSEDE_ONCE",
+        "proven": true,
+        "new_ids": 1
+      },
+      "input_hash": "6a76ed698e71425aec431eeefc39e39c2688d13768aa403c4aa3cbb346b55146",
+      "expected_hash": "36aa3c21f8c679c68cea113ee727323fe0ce700e3d0cde363f3f62cb8ca59790"
+    },
+    {
+      "case_id": "LC12.cas",
+      "input": {
+        "operation": "stabilize",
+        "observations": [
+          {
+            "t": 0,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          },
+          {
+            "t": 6000,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          },
+          {
+            "t": 12000,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          }
+        ],
+        "cloud": "FAILED",
+        "chain_ids": 2,
+        "chain_elapsed": 13000,
+        "successor": "kp-fixed-successor"
+      },
+      "expected": {
+        "action": "RESTORE_SUCCESSOR",
+        "proven": true,
+        "new_ids": 0
+      },
+      "input_hash": "5ca3203ffbda178d8a3bb908637109300b7616e8bdf147b0bdbb4d039e337825",
+      "expected_hash": "a78c44506abbb266626fca444c43ef087f6bc861dc6606474b8d71fd501a44ce"
+    },
+    {
+      "case_id": "LC13.EPOCH",
+      "input": {
+        "operation": "stabilize",
+        "observations": [
+          {
+            "t": 0,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          },
+          {
+            "t": 6000,
+            "epoch": "e2",
+            "kind": "NOT_FOUND"
+          },
+          {
+            "t": 12000,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          }
+        ],
+        "cloud": "FAILED",
+        "chain_ids": 1,
+        "chain_elapsed": 12000,
+        "successor": null
+      },
+      "expected": {
+        "action": "READONLY",
+        "proven": false,
+        "new_ids": 0
+      },
+      "input_hash": "88896d5dbfd67e990d3e14cdb3cf9333fce6028929237c3e492200119ac5e4c3",
+      "expected_hash": "81c44dfda2fd9fac2465babb496f81e75e91b2d1b1922b8dad499f78b0897c08"
+    },
+    {
+      "case_id": "LC13.UNKNOWN",
+      "input": {
+        "operation": "stabilize",
+        "observations": [
+          {
+            "t": 0,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          },
+          {
+            "t": 6000,
+            "epoch": "e1",
+            "kind": "UNKNOWN"
+          },
+          {
+            "t": 12000,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          }
+        ],
+        "cloud": "FAILED",
+        "chain_ids": 1,
+        "chain_elapsed": 12000,
+        "successor": null
+      },
+      "expected": {
+        "action": "READONLY",
+        "proven": false,
+        "new_ids": 0
+      },
+      "input_hash": "8842eff9484e8e6eb3543af5a603910bc5f14f563297dc609d3fdba9f7ee2ef3",
+      "expected_hash": "81c44dfda2fd9fac2465babb496f81e75e91b2d1b1922b8dad499f78b0897c08"
+    },
+    {
+      "case_id": "LC13.STAGED",
+      "input": {
+        "operation": "stabilize",
+        "observations": [
+          {
+            "t": 0,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          },
+          {
+            "t": 6000,
+            "epoch": "e1",
+            "kind": "STAGED"
+          },
+          {
+            "t": 12000,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          }
+        ],
+        "cloud": "FAILED",
+        "chain_ids": 1,
+        "chain_elapsed": 12000,
+        "successor": null
+      },
+      "expected": {
+        "action": "READONLY",
+        "proven": false,
+        "new_ids": 0
+      },
+      "input_hash": "5b4b8d6ee8c9326f7dbbd60a731b717728e690705113bae3c78dd78d2519038a",
+      "expected_hash": "81c44dfda2fd9fac2465babb496f81e75e91b2d1b1922b8dad499f78b0897c08"
+    },
+    {
+      "case_id": "LC14",
+      "input": {
+        "operation": "reconcile",
+        "sec": "COMMITTED",
+        "cloud": "ACK_PENDING",
+        "ack_budget": true,
+        "before_D": true
+      },
+      "expected": {
+        "action": "RESTORE_ORIGINAL_ACK",
+        "import_calls": 0,
+        "new_ids": 0,
+        "nf_increment": 0
+      },
+      "input_hash": "1326fa2f17898b9200dd6e5da50c8ba25301043f844ed11056685f2c59b305f9",
+      "expected_hash": "66c66a0025c419df84e2ec019ff69f46744a49f43a888c6d6a212164606678d5"
+    },
+    {
+      "case_id": "LC15",
+      "input": {
+        "operation": "reconcile",
+        "sec": "COMMITTED",
+        "cloud": "FAILED"
+      },
+      "expected": {
+        "action": "BLOCKED_REMOTE_REPAIR",
+        "import_calls": 0,
+        "new_ids": 0,
+        "nf_increment": 0
+      },
+      "input_hash": "595cd6eb7d8501c84c46803207b93611c13821ecd3cd677fa321ada22847a0dd",
+      "expected_hash": "c3f78cddab483838aa0694b1403478f1d4341ec13bc6ddc68d9a8d0ac7a70135"
+    },
+    {
+      "case_id": "LC16",
+      "input": {
+        "operation": "expired",
+        "proven": true,
+        "cloud": "ACK_PENDING",
+        "freshen_used": 1,
+        "request_budget": true,
+        "deliverable": true
+      },
+      "expected": {
+        "action": "READONLY",
+        "new_requests": 0
+      },
+      "input_hash": "aef2151212cbb1fcc86edd1b94ebdacf97b498d99bf2ff1061ac9111bd2cc8c8",
+      "expected_hash": "3e1b71ce0c313e83445e870702f37b15851bbf86d6ea9e3679cb97dbc48f4849"
+    },
+    {
+      "case_id": "LC16.first",
+      "input": {
+        "operation": "expired",
+        "proven": true,
+        "cloud": "ACK_PENDING",
+        "freshen_used": 0,
+        "request_budget": true,
+        "deliverable": true
+      },
+      "expected": {
+        "action": "FRESHEN_SAME_ID",
+        "new_requests": 1
+      },
+      "input_hash": "55489093e83fc1609a7d1cd8e80bbaa28aabb61b47e61cfbeacbac9746cf81d6",
+      "expected_hash": "7bd0284901f559377e4b667d93f9bc85d69d761417c82106adcd28c3ec6556b3"
+    },
+    {
+      "case_id": "LC17.envelope",
+      "input": {
+        "operation": "transport",
+        "envelope_fresh": false,
+        "payload_fresh": true
+      },
+      "expected": {
+        "action": "REJECT",
+        "import_calls": 0
+      },
+      "input_hash": "2c5b1a6451cb95b41dacd218e5bf5c9142412c76753d5360524a865d4fd9c738",
+      "expected_hash": "0c69c672a7302394e1767dfe96ab80ebe8c764c34bfe2309dc7f2b8ff33d2b13"
+    },
+    {
+      "case_id": "LC17.payload",
+      "input": {
+        "operation": "transport",
+        "envelope_fresh": true,
+        "payload_fresh": false
+      },
+      "expected": {
+        "action": "REJECT",
+        "import_calls": 0
+      },
+      "input_hash": "86d44d696807c3c3d175c1c7c194f2a448b55fd5ab6062e628cc72ee25783ae3",
+      "expected_hash": "0c69c672a7302394e1767dfe96ab80ebe8c764c34bfe2309dc7f2b8ff33d2b13"
+    },
+    {
+      "case_id": "LC17.both",
+      "input": {
+        "operation": "transport",
+        "envelope_fresh": false,
+        "payload_fresh": false
+      },
+      "expected": {
+        "action": "REJECT",
+        "import_calls": 0
+      },
+      "input_hash": "34a43886ac383d12fb0176be8aff23d9f8e16e96cf3bd76ca05c68be5e2ae0e1",
+      "expected_hash": "0c69c672a7302394e1767dfe96ab80ebe8c764c34bfe2309dc7f2b8ff33d2b13"
+    },
+    {
+      "case_id": "LC18",
+      "input": {
+        "operation": "new_attempt",
+        "old_terminal": true,
+        "proven": true,
+        "same_material": true,
+        "same_rid": false
+      },
+      "expected": {
+        "action": "NEW_WRAP_SAME_MATERIAL",
+        "new_material_versions": 0,
+        "new_wrap_operations": 1,
+        "new_rid_bound_aad": true
+      },
+      "input_hash": "228e0cc3b589b064ff2d60d0837ed30c77bbd0a857b9140f638e36abfc844b62",
+      "expected_hash": "25f0aa09e7457d805de91185c5ea2bb493c18430b6d79b3fd33728d501ee7403"
+    },
+    {
+      "case_id": "LC19.ACK_PENDING.-1",
+      "input": {
+        "operation": "ack",
+        "now": 1800000299999,
+        "B": 1800000300000,
+        "state": "ACK_PENDING",
+        "valid_dual_proof": true
+      },
+      "expected": {
+        "action": "ACTIVE",
+        "active_purposes": 2,
+        "new_events": 1
+      },
+      "input_hash": "2e83271f7c328231c0e6167a81b5c4ba22a85de8108179a62de94a61cdef99c3",
+      "expected_hash": "7243fbb45eeb4a588bb4f65567c9c638660ac1ec5573bc97562cd6405104485a"
+    },
+    {
+      "case_id": "LC19.ACK_PENDING.0",
+      "input": {
+        "operation": "ack",
+        "now": 1800000300000,
+        "B": 1800000300000,
+        "state": "ACK_PENDING",
+        "valid_dual_proof": true
+      },
+      "expected": {
+        "action": "FAILED_ACK_TIMEOUT",
+        "active_purposes": 0,
+        "new_events": 0
+      },
+      "input_hash": "9e9b581418161045c886a5dfb9b5bbab56c9381a92d171a6330f74f15f92079a",
+      "expected_hash": "b7bb8b7574283950084a142fec9bad05e8e1625c1dfbbf69d98fb77dc601a68e"
+    },
+    {
+      "case_id": "LC19.FAILED.1",
+      "input": {
+        "operation": "ack",
+        "now": 1800000300001,
+        "B": 1800000300000,
+        "state": "FAILED",
+        "valid_dual_proof": true
+      },
+      "expected": {
+        "action": "FAILED_ACK_TIMEOUT",
+        "active_purposes": 0,
+        "new_events": 0
+      },
+      "input_hash": "11d48fda3ef658bf63322b7121a74cd942b3a88232c2fcc7df895e6b9720e88f",
+      "expected_hash": "b7bb8b7574283950084a142fec9bad05e8e1625c1dfbbf69d98fb77dc601a68e"
+    },
+    {
+      "case_id": "LC20.item",
+      "input": {
+        "operation": "issue",
+        "now": 1800000000000,
+        "B": 1800000300000,
+        "safety_valid_through_E": false
+      },
+      "expected": {
+        "action": "SECURITY_BLOCKED",
+        "provider_calls": 0,
+        "item_changes": 0
+      },
+      "input_hash": "6bf13e3c929a0ac8b7d6d091541c797febbbd1a95f621a27df2f122f5cff2c11",
+      "expected_hash": "38744a5d36ee6d6ab147d0337035e9b9eb0baf2e8ec07ebdbc99e7539ded6fd7"
+    },
+    {
+      "case_id": "LC20.cert",
+      "input": {
+        "operation": "issue",
+        "now": 1800000000000,
+        "B": 1800000300000,
+        "safety_valid_through_E": false
+      },
+      "expected": {
+        "action": "SECURITY_BLOCKED",
+        "provider_calls": 0,
+        "item_changes": 0
+      },
+      "input_hash": "6bf13e3c929a0ac8b7d6d091541c797febbbd1a95f621a27df2f122f5cff2c11",
+      "expected_hash": "38744a5d36ee6d6ab147d0337035e9b9eb0baf2e8ec07ebdbc99e7539ded6fd7"
+    },
+    {
+      "case_id": "LC21.uncertainty",
+      "input": {
+        "operation": "time",
+        "uncertainty": 1001
+      },
+      "expected": {
+        "action": "TIME_UNTRUSTED",
+        "import_calls": 0,
+        "new_leases": 0
+      },
+      "input_hash": "928d2d8c4ede54805891d555c62605fd5dd9ac7c6d5e95a5860bd9ad8e986a65",
+      "expected_hash": "acbe15f0d300dbbd11c9d3ffd77674bdf6106d3f16b45aad5e065c5fec7fab5e"
+    },
+    {
+      "case_id": "LC21.stale",
+      "input": {
+        "operation": "time",
+        "sample_age": 300001
+      },
+      "expected": {
+        "action": "TIME_UNTRUSTED",
+        "import_calls": 0,
+        "new_leases": 0
+      },
+      "input_hash": "faa3f40b175eb82ae4052251405de8a5432bfe0d15c19a7250e4ce438e86eb34",
+      "expected_hash": "acbe15f0d300dbbd11c9d3ffd77674bdf6106d3f16b45aad5e065c5fec7fab5e"
+    },
+    {
+      "case_id": "LC21.rollback",
+      "input": {
+        "operation": "time",
+        "rollback": true
+      },
+      "expected": {
+        "action": "TIME_UNTRUSTED",
+        "import_calls": 0,
+        "new_leases": 0
+      },
+      "input_hash": "158c2b156cbaf82b1fdbbd69a4f83a67ca0c972334b44677a7845203e8f53a5b",
+      "expected_hash": "acbe15f0d300dbbd11c9d3ffd77674bdf6106d3f16b45aad5e065c5fec7fab5e"
+    },
+    {
+      "case_id": "LC21.skew",
+      "input": {
+        "operation": "time",
+        "skew": 2001
+      },
+      "expected": {
+        "action": "TIME_UNTRUSTED",
+        "import_calls": 0,
+        "new_leases": 0
+      },
+      "input_hash": "94a9c3ee05d4bf6773e98cae28d664dde84166d86281bdb32a8a10a23bfac3ae",
+      "expected_hash": "acbe15f0d300dbbd11c9d3ffd77674bdf6106d3f16b45aad5e065c5fec7fab5e"
+    },
+    {
+      "case_id": "LC22.count",
+      "input": {
+        "operation": "chain",
+        "chain_ids": 3,
+        "elapsed": 0
+      },
+      "expected": {
+        "action": "BLOCKED",
+        "new_ids": 0
+      },
+      "input_hash": "6b85dbc1f4449bd3ff521583363cb01e3ac7744a202e2d322d8da8eca2f5d367",
+      "expected_hash": "35ed1e4eccb450e0d65ee624cd99ee293388b2bd9f0e2bb1758302ce0f16002e"
+    },
+    {
+      "case_id": "LC22.time",
+      "input": {
+        "operation": "chain",
+        "chain_ids": 1,
+        "elapsed": 600000
+      },
+      "expected": {
+        "action": "BLOCKED",
+        "new_ids": 0
+      },
+      "input_hash": "d5ef6d171f913adc9e4d93d4234fb994ba8f8866d2da1d15b31f155b20c47a7e",
+      "expected_hash": "35ed1e4eccb450e0d65ee624cd99ee293388b2bd9f0e2bb1758302ce0f16002e"
+    },
+    {
+      "case_id": "LC22.restart",
+      "input": {
+        "operation": "chain",
+        "chain_ids": 3,
+        "elapsed": 1
+      },
+      "expected": {
+        "action": "BLOCKED",
+        "new_ids": 0
+      },
+      "input_hash": "766e1e08367f40b60092d3bcde14e1c960a9c3a788a55df25a073a82d387f1e3",
+      "expected_hash": "35ed1e4eccb450e0d65ee624cd99ee293388b2bd9f0e2bb1758302ce0f16002e"
+    },
+    {
+      "case_id": "LC23",
+      "input": {
+        "operation": "sec_contract",
+        "version_known": false,
+        "state_consistent": false
+      },
+      "expected": {
+        "action": "CONTRACT_UNKNOWN",
+        "proven": false
+      },
+      "input_hash": "789d03a4a88604bf521b6ec32fe428cb6b797518301101e2dc9202ff14d09f5d",
+      "expected_hash": "4d918ae689a0ce4f731e65d7321640f9c6e3850c60907248cba094a894079338"
+    },
+    {
+      "case_id": "LC24.digest",
+      "input": {
+        "operation": "store",
+        "digest_valid": false
+      },
+      "expected": {
+        "action": "STORE_QUARANTINE",
+        "provider_calls": 0
+      },
+      "input_hash": "fe5ab2904ed654509e5f81a427049445881453538aa4e24aad856dda470dd2b5",
+      "expected_hash": "1b9c9769f5b25cf653f9d152c0317817e7482b75bc5dcbe10e6b61de91104d4b"
+    },
+    {
+      "case_id": "LC24.codec",
+      "input": {
+        "operation": "store",
+        "codec_known": false
+      },
+      "expected": {
+        "action": "STORE_QUARANTINE",
+        "provider_calls": 0
+      },
+      "input_hash": "40fdbe9060013ab00b10205052c1761d39f44f9337e541f947ff5ab896fd8234",
+      "expected_hash": "1b9c9769f5b25cf653f9d152c0317817e7482b75bc5dcbe10e6b61de91104d4b"
+    },
+    {
+      "case_id": "LC24.profile",
+      "input": {
+        "operation": "store",
+        "profile_known": false
+      },
+      "expected": {
+        "action": "STORE_QUARANTINE",
+        "provider_calls": 0
+      },
+      "input_hash": "78a6764eaa8a8289d5fe2d2f5073167e450fedae41433fa03608048decf6235b",
+      "expected_hash": "1b9c9769f5b25cf653f9d152c0317817e7482b75bc5dcbe10e6b61de91104d4b"
+    },
+    {
+      "case_id": "LC02.fresh",
+      "input": {
+        "operation": "accept",
+        "U": 1800000000000,
+        "E": 1800000060000
+      },
+      "expected": {
+        "action": "IMPORT",
+        "import_calls": 1
+      },
+      "input_hash": "7f0c69974a0a946ff12adef251af27aa26ada48949863fa0c21fd2d39cc62824",
+      "expected_hash": "b8622fc8185a7d15dbeefab7ef8831439fdf6ec4cbee6ca764c8080322f8edce"
+    },
+    {
+      "case_id": "LC02.min-import",
+      "input": {
+        "operation": "accept",
+        "U": 1800000000000,
+        "E": 1800000015000
+      },
+      "expected": {
+        "action": "IMPORT",
+        "import_calls": 1
+      },
+      "input_hash": "2bf9a77d6c2e6e8ac8ed93c4c7eeab79b9ad5e15897ff8521af95144b79c003c",
+      "expected_hash": "b8622fc8185a7d15dbeefab7ef8831439fdf6ec4cbee6ca764c8080322f8edce"
+    },
+    {
+      "case_id": "LC05.invalid-duplicate",
+      "input": {
+        "operation": "ack",
+        "now": 1800000301000,
+        "B": 1800000300000,
+        "state": "ACTIVE",
+        "valid_dual_proof": false
+      },
+      "expected": {
+        "action": "REJECT_ACK",
+        "active_purposes": 2,
+        "new_events": 0
+      },
+      "input_hash": "cd65ca5ec177d3a493c7d11fe53781c9a33f3d98981ac866016dcb7d4b33ce85",
+      "expected_hash": "5177dc5fd21ab7de0c22e34836d17e27aab8461e84204c397abcf60ee20b4b8f"
+    },
+    {
+      "case_id": "LC09.ack-count",
+      "input": {
+        "operation": "budget",
+        "phase": "ACK",
+        "count": 3,
+        "elapsed": 0,
+        "before_D": true
+      },
+      "expected": {
+        "action": "READONLY",
+        "new_sends": 0
+      },
+      "input_hash": "10f62e37e574925f8c9a92d176d7d65f4ca08a1b43d6ee9c6240199ead5dbb3c",
+      "expected_hash": "a4cb9b4b783a3654d2cd07b07bddb2540f96cbf1582e8490e19691100d5617cd"
+    },
+    {
+      "case_id": "LC09.ack-D",
+      "input": {
+        "operation": "budget",
+        "phase": "ACK",
+        "count": 1,
+        "elapsed": 0,
+        "before_D": false
+      },
+      "expected": {
+        "action": "READONLY",
+        "new_sends": 0
+      },
+      "input_hash": "e2dd448e723f9e22dd81a529ed47c94ba74b3666a432593cc94a5156091e6f8d",
+      "expected_hash": "a4cb9b4b783a3654d2cd07b07bddb2540f96cbf1582e8490e19691100d5617cd"
+    },
+    {
+      "case_id": "LC14.after-D",
+      "input": {
+        "operation": "reconcile",
+        "sec": "COMMITTED",
+        "cloud": "ACK_PENDING",
+        "ack_budget": true,
+        "before_D": false
+      },
+      "expected": {
+        "action": "READONLY",
+        "import_calls": 0,
+        "new_ids": 0,
+        "nf_increment": 0
+      },
+      "input_hash": "363df6e8c7c2fa1bc4a260cba026fe2fdecec3af4671884a90a6691b411a846c",
+      "expected_hash": "e33a3ebda6e87230a5abf4997e5f7ffb5a1a872bc2061ffe3e8c17427562acf8"
+    },
+    {
+      "case_id": "LC12.unspecified-DO_NOT_RETRY",
+      "input": {
+        "operation": "stabilize",
+        "observations": [
+          {
+            "t": 0,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          },
+          {
+            "t": 6000,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          },
+          {
+            "t": 12000,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          }
+        ],
+        "cloud": "UNSPECIFIED",
+        "error_code": 806099,
+        "retryable": false,
+        "error_action": "DO_NOT_RETRY",
+        "chain_ids": 1,
+        "chain_elapsed": 12000,
+        "successor": null
+      },
+      "expected": {
+        "action": "SUPERSEDE_ONCE",
+        "proven": true,
+        "new_ids": 1
+      },
+      "input_hash": "b7a021ede93c72832392014db71827d87513b792d48ad34fd7bc95ebdc8c8e00",
+      "expected_hash": "36aa3c21f8c679c68cea113ee727323fe0ce700e3d0cde363f3f62cb8ca59790"
+    },
+    {
+      "case_id": "LC12.unspecified-RETRY",
+      "input": {
+        "operation": "stabilize",
+        "observations": [
+          {
+            "t": 0,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          },
+          {
+            "t": 6000,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          },
+          {
+            "t": 12000,
+            "epoch": "e1",
+            "kind": "NOT_FOUND"
+          }
+        ],
+        "cloud": "UNSPECIFIED",
+        "error_code": 806099,
+        "retryable": false,
+        "error_action": "RETRY",
+        "chain_ids": 1,
+        "chain_elapsed": 12000,
+        "successor": null
+      },
+      "expected": {
+        "action": "READONLY",
+        "proven": true,
+        "new_ids": 0
+      },
+      "input_hash": "344af8d7f0a9509ffa38d585042cabecce834a41673cad0535c4bbd29ca84f3c",
+      "expected_hash": "03951e7ee0c20146b898db9f58cff868ac92f2cf45522679b5fe8a9c94d373cf"
+    },
+    {
+      "case_id": "LC21.healthy",
+      "input": {
+        "operation": "time",
+        "uncertainty": 1000,
+        "sample_age": 300000,
+        "skew": 2000,
+        "rollback": false
+      },
+      "expected": {
+        "action": "TIME_READY",
+        "import_calls": 0,
+        "new_leases": 0
+      },
+      "input_hash": "da36abb5adb64319277342dcdfe401ed95bc5723393b7e49b82fb1a09d70904b",
+      "expected_hash": "e07f70af6923aa02a0888f7cbaedfc78b14136a844ddc70a5e85bba2d5df886b"
+    }
+  ]
+}

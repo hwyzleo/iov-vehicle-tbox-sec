@@ -155,6 +155,12 @@ std::string SecIpcDispatcher::dispatch(uint32_t method_id,
             case ipc::MethodId::GET_V2C_KEY_PROVISIONING_CAPABILITY:
                 result = handle_get_v2c_key_provisioning_capability(params_json, client_fd);
                 break;
+            case ipc::MethodId::IMPORT_WRAPPED_BUSINESS_KEYS_KL1:
+                result = handle_import_wrapped_business_keys_kl1(params_json, client_fd);
+                break;
+            case ipc::MethodId::GET_KEYPROV_CONTRACT_SNAPSHOT:
+                result = handle_get_keyprov_contract_snapshot(params_json, client_fd);
+                break;
             default:
                 SecLogAdapter::ipc().warn(
                     "sec.ipc.unknown_method",
@@ -626,6 +632,36 @@ nlohmann::json import_result_to_json(const ImportResult& r) {
     return j;
 }
 
+nlohmann::json snapshot_to_json(const KeyprovContractSnapshot& s) {
+    nlohmann::json j;
+    j["result_contract_version"] = s.result_contract_version;
+    j["query_semantics_version"] = s.query_semantics_version;
+    j["capability_epoch"] = s.capability_epoch;
+    j["storage_ready"] = s.storage_ready;
+    j["supports_atomic_dual_commit"] = s.supports_atomic_dual_commit;
+    j["supports_lease_admission"] = s.supports_lease_admission;
+    j["kl1_profile_version"] = s.kl1_profile_version;
+    j["daemon_build_id"] = s.daemon_build_id;
+    j["sdk_build_id"] = s.sdk_build_id;
+    return j;
+}
+
+/// KL1 结果 JSON：既有 import_result 字段 + additive 快照/证据摘要字段。
+/// 旧 client 忽略未知字段；新 client 解析同一快照 epoch/contract/存储健康。
+nlohmann::json import_result_kl1_to_json(const ImportResult& r,
+                                         const KeyprovResultAttachment& a) {
+    nlohmann::json j = import_result_to_json(r);
+    j["capability_epoch"] = a.snapshot.capability_epoch;
+    j["result_contract_version"] = a.snapshot.result_contract_version;
+    j["query_semantics_version"] = a.snapshot.query_semantics_version;
+    j["storage_ready"] = a.snapshot.storage_ready;
+    j["queried_at_ms"] = a.queried_at_ms;
+    if (!a.request_identity_digest.empty()) {
+        j["request_identity_digest"] = a.request_identity_digest;
+    }
+    return j;
+}
+
 } // namespace
 
 std::pair<int32_t, std::string> SecIpcDispatcher::handle_get_business_key_status(
@@ -766,8 +802,11 @@ std::pair<int32_t, std::string> SecIpcDispatcher::handle_get_business_key_import
     }
 
     ImportResult result;
-    ErrorCode rc = business_key_service_->getImportResult(request_id, result);
-    nlohmann::json resp = import_result_to_json(result);
+    KeyprovResultAttachment attach;
+    // KL1 查询：结果附带同一快照 epoch/contract 与已有 request 身份/证据摘要
+    // （additive 字段；旧 client 忽略未知字段，新 client 解析同 epoch 事实）。
+    ErrorCode rc = business_key_service_->getImportResultKl1(request_id, result, attach);
+    nlohmann::json resp = import_result_kl1_to_json(result, attach);
     if (rc != ErrorCode::SUCCESS) resp["success"] = false;
     return {static_cast<int32_t>(rc), resp.dump()};
 }
@@ -793,6 +832,109 @@ std::pair<int32_t, std::string> SecIpcDispatcher::handle_get_v2c_key_provisionin
     // 只读能力快照：不触发密码操作，也不因 shutting_down 而返回错误（诊断可用）。
     V2cKeyProvisioningCapability cap = business_key_service_->capability();
     nlohmann::json resp = capability_to_json(cap);
+    resp["success"] = true;
+    return {static_cast<int32_t>(ErrorCode::SUCCESS), resp.dump()};
+}
+
+std::pair<int32_t, std::string> SecIpcDispatcher::handle_import_wrapped_business_keys_kl1(
+        std::string_view params, int client_fd) {
+    if (!business_key_service_) {
+        nlohmann::json resp;
+        resp["success"] = false;
+        return {static_cast<int32_t>(ErrorCode::NOT_IMPLEMENTED), resp.dump()};
+    }
+    PeerIdentity caller = resolvePeer(client_fd);
+    if (!caller.valid || caller.service_name != business_key_peer_service_) {
+        SecLogAdapter::ipc().warn(
+            "sec.ipc.acl_denied",
+            "业务密钥 KL1 导入 ACL 拒绝",
+            {tbox::fw::log::Field("method_id", tbox::fw::log::FieldValue::makeInt(
+                 static_cast<int>(ipc::MethodId::IMPORT_WRAPPED_BUSINESS_KEYS_KL1))),
+             tbox::fw::log::Field("peer_valid",
+                 tbox::fw::log::FieldValue::makeInt(caller.valid))});
+        return {static_cast<int32_t>(ErrorCode::ACL_DENIED),
+                nlohmann::json({{ "success", false }}).dump()};
+    }
+
+    std::string request_id, domain;
+    KeyprovImportContext context;
+    std::vector<WrappedKeyItem> items;
+    try {
+        auto j = nlohmann::json::parse(params);
+        request_id = j.value("request_id", "");
+        domain = j.value("business_domain", std::string(kBusinessDomainV2c));
+        // KL1 准入上下文（additive：仅新方法携带；不入 material/wire digest/幂等）
+        context.admission_expire_at_ms = j.value("admission_expire_at_ms", 0LL);
+        context.capability_epoch = j.value("capability_epoch", 0ULL);
+        context.kl1_profile_version = j.value("kl1_profile_version", 0u);
+        if (j.contains("items") && j["items"].is_array()) {
+            for (auto& ji : j["items"]) {
+                WrappedKeyItem item;
+                item.purpose = ji.value("purpose", "");
+                item.key_id = ji.value("key_id", "");
+                item.business_key_version = ji.value("business_key_version", 0ULL);
+                item.algorithm = ji.value("algorithm", "");
+                auto wk = b64_decode(ji.value("wrapped_key", ""));
+                item.wrapped_key.assign(wk.data(), wk.size());
+                std::fill(wk.begin(), wk.end(), 0);
+                auto prm = b64_decode(ji.value("parameters", ""));
+                item.parameters.assign(prm.data(), prm.size());
+                std::fill(prm.begin(), prm.end(), 0);
+                item.valid_from_ms = ji.value("valid_from_ms", 0LL);
+                item.valid_to_ms = ji.value("valid_to_ms", 0LL);
+                item.wrapping_suite = ji.value("wrapping_suite", "");
+                item.envelope_format =
+                    string_to_key_envelope_format(ji.value("envelope_format", "UNSPECIFIED"));
+                auto ed = b64_decode(ji.value("envelope_digest", ""));
+                item.envelope_digest.assign(ed.begin(), ed.end());
+                auto kcv = b64_decode(ji.value("key_check_value", ""));
+                if (kcv.size() == 3) {
+                    item.key_check_value = {kcv[0], kcv[1], kcv[2]};
+                    item.key_check_value_present = true;
+                }
+                items.push_back(std::move(item));
+            }
+        }
+    } catch (const nlohmann::json::exception&) {
+        return {FW_SERIALIZATION_FAILED, nlohmann::json({{ "success", false }}).dump()};
+    }
+
+    ImportResult result;
+    KeyprovResultAttachment attach;
+    ErrorCode rc = business_key_service_->importKl1(request_id, domain, items, context, result,
+                                                    attach);
+    // 调用方 buffer 已移交，立即清零
+    for (auto& it : items) {
+        it.wrapped_key.clear();
+        it.parameters.clear();
+    }
+    nlohmann::json resp = import_result_kl1_to_json(result, attach);
+    if (rc != ErrorCode::SUCCESS) resp["success"] = false;
+    return {static_cast<int32_t>(rc), resp.dump()};
+}
+
+std::pair<int32_t, std::string> SecIpcDispatcher::handle_get_keyprov_contract_snapshot(
+        std::string_view /*params*/, int client_fd) {
+    if (!business_key_service_) {
+        nlohmann::json resp;
+        resp["success"] = false;
+        return {static_cast<int32_t>(ErrorCode::NOT_IMPLEMENTED), resp.dump()};
+    }
+    PeerIdentity caller = resolvePeer(client_fd);
+    if (!caller.valid || caller.service_name != business_key_peer_service_) {
+        SecLogAdapter::ipc().warn(
+            "sec.ipc.acl_denied",
+            "KL1 契约快照查询 ACL 拒绝",
+            {tbox::fw::log::Field("method_id", tbox::fw::log::FieldValue::makeInt(
+                 static_cast<int>(ipc::MethodId::GET_KEYPROV_CONTRACT_SNAPSHOT))),
+             tbox::fw::log::Field("peer_valid",
+                 tbox::fw::log::FieldValue::makeInt(caller.valid))});
+        return {static_cast<int32_t>(ErrorCode::ACL_DENIED),
+                nlohmann::json({{ "success", false }}).dump()};
+    }
+    // 只读契约快照：不触发密码操作（诊断可用，不因 shutting_down 返回错误）。
+    KeyprovContractSnapshot snap = business_key_service_->contractSnapshot();
+    nlohmann::json resp = snapshot_to_json(snap);
     resp["success"] = true;
     return {static_cast<int32_t>(ErrorCode::SUCCESS), resp.dump()};
 }

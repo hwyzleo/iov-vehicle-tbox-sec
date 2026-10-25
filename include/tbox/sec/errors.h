@@ -79,6 +79,17 @@ enum class ErrorCode : uint32_t {
     BUSINESS_KEY_PARTIAL_ROLLBACK = 1026, ///< SEC-1026: 批次未提交且存在需恢复的 staging 状态
     BUSINESS_KEY_OUTCOME_UNKNOWN = 1028,  ///< SEC-1028: 安全调用结果未知，需按 requestId 对账
 
+    // KL1 租约准入（TBOX-SEC-DSN-CR-023；SEC-1029/1030 均不是强 NOT_FOUND，
+    // 不得被 TSP 解释为 NO_SIDE_EFFECT_PROVEN 或“该 rid 历史上无副作用”）
+    KL1_ADMISSION_REJECTED = 1029,        ///< SEC-1029: 已确认新 operation、可信时间健康，但入口或锁内重检发现 U≥E
+                                        ///< （租约到期）。仅证明本次调用未启动新操作（未建 journal、未启动密码
+                                        ///< 操作、未创建 staging）。TSP 进入既定过期处置分支；获取新 E 仍受一次
+                                        ///< freshen 与持久预算限制，不能无限续租重试。
+    KL1_CAPABILITY_EPOCH_MISMATCH = 1030, ///< SEC-1030: 已确认新 operation，调用方携带的 capability_epoch 与当前
+                                        ///< SEC epoch 不一致（daemon 重启/恢复/存储更换）。未启动本次新操作。
+                                        ///< TSP 重新 probe 快照、清零跨 epoch NF 稳定化计数、按原 rid 查询并判断
+                                        ///< 能力与有效期；不能仅凭重新 probe 成功就自动重发 import。
+
     // ACL errors（CR-019 让位 1021..1026 给业务密钥错误，ACL 顺延到 1027）
     ACL_DENIED = 1027,                        ///< 调用方未授权访问该 profile
 

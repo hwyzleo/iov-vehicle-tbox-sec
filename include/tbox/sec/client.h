@@ -105,6 +105,24 @@ public:
     /// 不触发密码操作；供 TSP 在发起 Request 前完成 readiness 门禁。
     ErrorCode get_v2c_key_provisioning_capability(V2cKeyProvisioningCapability& out);
 
+    // ---- KL1 契约快照与租约准入（TBOX-SEC-DSN-CR-023；additive 新符号）----
+    /// 只读 KL1 契约快照：typed 原值透传（缺省 = UNAVAILABLE，不是支持）。
+    /// capability_epoch 绑定 daemon/存储世代；重启/恢复/存储更换换 epoch。
+    ErrorCode get_keyprov_contract_snapshot(KeyprovContractSnapshot& out);
+
+    /// KL1 租约准入导入（新符号；旧 import_wrapped_business_keys 不变）。
+    /// SDK 侧 fail-closed：profile/epoch 缺失或未知时直接返回 NOT_READY，
+    /// 不降级调用旧 import；服务端按 1025→1030→1029 归类准入拒绝。
+    ErrorCode import_wrapped_business_keys_kl1(
+        const std::string& request_id, const std::string& business_domain,
+        const std::vector<WrappedKeyItem>& items, const KeyprovImportContext& context,
+        ImportResult& out, KeyprovResultAttachment& attach);
+
+    /// KL1 结果查询（只读；附同一快照 epoch/contract 与已有 request 身份/证据摘要）。
+    ErrorCode get_business_key_import_result_kl1(const std::string& request_id,
+                                                 ImportResult& out,
+                                                 KeyprovResultAttachment& attach);
+
 private:
     class Impl;
     std::unique_ptr<Impl> impl_;

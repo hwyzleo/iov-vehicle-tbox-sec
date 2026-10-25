@@ -39,6 +39,12 @@ enum class MethodId : uint32_t {
     GET_BUSINESS_KEY_IMPORT_RESULT = 20,      ///< 按 requestId 查询导入结果
     // TBOX-TSP-DSN-CR-012 §8 / Q1：只读 V2C keyprov 能力查询（TSP readiness 门禁）
     GET_V2C_KEY_PROVISIONING_CAPABILITY = 21, ///< 查询 V2C keyprov capability（只读）
+
+    // KL1 契约快照与租约导入（TBOX-SEC-DSN-CR-023；additive，旧编号/旧布局不变）。
+    // 方法号 22/23 已按仓库核验登记（framework-ipc 传输层 method_id 为不透明 uint32，
+    // 无全局登记；SEC 自持协议契约为本文件；其他 TBOX 服务无引用）。
+    IMPORT_WRAPPED_BUSINESS_KEYS_KL1 = 22,    ///< KL1 租约准入导入（带 admission_expire_at_ms/epoch/profile）
+    GET_KEYPROV_CONTRACT_SNAPSHOT = 23,       ///< 查询 KL1 契约快照（epoch/contract/存储健康/双用途原子/租约准入；只读）
 };
 
 /// SEC IPC 事件类型（与 framework-ipc EventHeader.event_type 一致）。
