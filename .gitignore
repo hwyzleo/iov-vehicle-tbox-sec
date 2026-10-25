@@ -96,6 +96,12 @@ Thumbs.db
 *.state
 *.json
 
+# TBOX-SEC-DSN-CR-022：keyprov VEH-PROTO fixtures 必须纳入版本控制（锁版、
+# CI 逐字节校验 committed fixtures；manifest 记录本地 proto/DescriptorSet/
+# 工具/逐文件 hash）。
+!tests/fixtures/keyprov_ecdh_es_v1_vector.json
+!tests/fixtures/keyprov_fixture_manifest.json
+
 graphify-out
 docs/superpowers
 

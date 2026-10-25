@@ -127,7 +127,9 @@ public:
         V2cKeyProvisioningCapability c;
         BusinessKeyProviderCapability pc = provider ? provider->capability()
                                                     : BusinessKeyProviderCapability{};
-        // build-time pinned（release/descriptor hash 由 test_keyprov_proto_lock 断言）
+        // 构建期锁版（VEH-PROTO 2026-10-25 修订；本地 proto source hash /
+        // DescriptorSet hash / protoc 35.1 / C++ 生成物 / fixture manifest hash
+        // 由 test_keyprov_proto_lock.cpp 断言；构建期不一致即构建失败，fail-closed）。
         c.proto_release_matched = true;
         c.envelope_format_v1 = true;
         c.p256_ecdh = pc.p256_ecdh;

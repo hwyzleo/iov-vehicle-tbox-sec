@@ -1,13 +1,14 @@
 #pragma once
 
 //
-// 非生产参考实现：ECDH-ES P-256 v1 信封封装（TBOX-SEC-DSN-CR-020 §7/§8）。
+// 非生产参考实现：ECDH-ES P-256 v1 信封封装（TBOX-SEC-DSN-CR-022 §3）。
 //
-// 仅供测试与跨端向量生成使用，等价 FW-SEC Provider 的封装方向；不得成为
+// 仅供测试与本地向量生成使用（等价云端 Provider 的封装方向）；不得成为
 // 量产成功路径（量产侧由云端 Provider 执行封装）。
 //
 // 固定 serverEphemeralPrivateKey / hkdfSalt / nonce 时输出字节级确定，
-// 用于冻结 golden vectors（tests/fixtures/keyprov_ecdh_es_v1_vector.json）。
+// 用于本地 fixtures（tests/fixtures/keyprov_ecdh_es_v1_vector.json 的 builder
+// 段，见 tests/fixtures/keyprov_fixture_manifest.json）。
 //
 
 #include "canonical_encoding.h"

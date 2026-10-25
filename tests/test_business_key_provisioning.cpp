@@ -378,6 +378,9 @@ TEST_F(BusinessKeyTest, Import_TwoItems_ActiveAndProof) {
         EXPECT_EQ(it.envelope_format, KeyEnvelopeFormat::ECDH_ES_P256_V1);
         EXPECT_EQ(it.envelope_digest.size(), 32u);
         EXPECT_TRUE(it.key_check_value_present);
+        // CR-022 §2：ACK 绑定的是从实际 staging key 重算的 KCV（与期望值一致），
+        // 而不是其它摘要值。
+        EXPECT_EQ(it.key_check_value, items[i].key_check_value);
         // 逐 item Import Attestation：64B P1363 low-S，可用设备公钥验签。
         ASSERT_EQ(it.import_proof.size(), kImportProofSizeP1363);
         EXPECT_EQ(it.proof_algorithm, kImportProofAlgorithmP1363);
@@ -488,8 +491,25 @@ TEST_F(BusinessKeyTest, Import_KcvMismatch_Invalid) {
     auto items = make_batch("req-kcv", 1);
     items[0].key_check_value = {0x00, 0x00, 0x00};
     ImportResult r;
+    // CR-022 §2/§5：KCV 不是透传值——修改 Response KCV 必然在 commit 前失败。
     EXPECT_EQ(service_->import("req-kcv", kBusinessDomainV2c, items, r),
               ErrorCode::WRAPPED_KEY_INVALID);
+    EXPECT_EQ(r.state, BusinessKeyImportState::FAILED);
+    // 不留下 staging 残留，不形成任何 ACTIVE 槽。
+    EXPECT_FALSE(provider_->hasPendingStaging());
+    for (const auto& p : {kBusinessPurposeUplinkAead, kBusinessPurposeDownlinkAead}) {
+        BusinessKeySlotInfo slot;
+        EXPECT_EQ(provider_->querySlot(kBusinessDomainV2c, p, slot), ErrorCode::SUCCESS);
+        EXPECT_FALSE(slot.present);
+    }
+    // journal 至多留下 FAILED 阶段，绝无 SUCCEEDED（ACK/proof 不得产生）。
+    for (const auto& e : provider_->listJournal()) {
+        EXPECT_NE(e.phase, BusinessKeyImportPhase::SUCCEEDED);
+    }
+    // 同 requestId 重试不产生 ACK。
+    ImportResult r2;
+    (void)service_->import("req-kcv", kBusinessDomainV2c, items, r2);
+    EXPECT_NE(r2.state, BusinessKeyImportState::COMMITTED);
 }
 
 TEST_F(BusinessKeyTest, Import_CiphertextTamper_Invalid) {

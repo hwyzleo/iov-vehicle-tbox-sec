@@ -121,10 +121,12 @@ struct BusinessKeyStatus {
     std::string algorithm;
     int64_t valid_from_ms = 0;
     int64_t valid_to_ms = 0;
-    // ---- ACK 绑定字段（TBOX-SEC-DSN-CR-020 §7 / §US-020，非敏感）----
+    // ---- ACK 绑定字段（TBOX-SEC-DSN-CR-022 §4 / VEH-PROTO §7.2.2，非敏感）----
     KeyEnvelopeFormat envelope_format = KeyEnvelopeFormat::UNSPECIFIED;
-    std::vector<uint8_t> envelope_digest;      ///< 32B canonical envelope SHA-256
-    std::array<uint8_t, 3> key_check_value{};  ///< 3B KCV = first_3(SHA-256(businessKey))
+    // wireEnvelopeDigest = PAR_PROTO_KEYPROV_ECDH_ES_P256_V1 9 字段 SHA-256；
+    // 不是 FW-SEC 18 字段 coreEnvelopeDigest。
+    std::vector<uint8_t> envelope_digest;      ///< 32B wireEnvelopeDigest
+    std::array<uint8_t, 3> key_check_value{};  ///< 3B 实际 KCV = first_3(SHA-256(businessKey))（非透传）
     bool key_check_value_present = false;
     // ---- 逐 item Import Attestation（§7.3 / US-020）----
     std::vector<uint8_t> import_proof;         ///< 64B ECDSA P-256 P1363 low-S 原文
@@ -149,8 +151,9 @@ struct BusinessKeyStatusSet {
 /// - algorithm：业务密钥算法（受版本化 allowlist 约束）；
 /// - wrapping_suite：版本化封装套件（首期 ECDH_ES_P256_HKDF_SHA256_AES256GCM）；
 /// - envelope_format：首期 KEY_ENVELOPE_FORMAT_ECDH_ES_P256_V1；
-/// - envelope_digest：由请求方按 canonical framing 计算的 32B 摘要（SEC 重算比对）；
-/// - key_check_value：3B KCV（first_3(SHA-256(businessKey))），SEC 在 staging 校验。
+/// - envelope_digest：9 字段 wireEnvelopeDigest（SEC 以原始 wrappedKey/parameters 重算比对；
+///   非 FW coreEnvelopeDigest）；
+/// - key_check_value：3B 期望 KCV；SEC 在 staging 从实际密钥重算并常量时间比较（非透传）。
 struct WrappedKeyItem {
     std::string purpose;
     std::string key_id;

@@ -564,6 +564,21 @@ ErrorCode SecClient::import_wrapped_business_keys(const std::string& request_id,
         } catch (const std::exception&) {
             return ErrorCode::INTERNAL_ERROR;
         }
+    } else if (!response_json.empty()) {
+        // 确定性拒绝（BUSINESS_KEY_UNSUPPORTED/NOT_READY 等）时 SEC IPC 同样返回
+        // 权威 result JSON（含 state=FAILED）；解析后调用方才能正确分类，避免被
+        // 误判为“结果未知可重试”导致无限重发（现场：VMD key_algorithm 不符）。
+        // 非 result 响应（ACL/参数错误仅 {"success":false}）保持默认 UNKNOWN。
+        try {
+            auto j = nlohmann::json::parse(response_json);
+            if (j.contains("state")) {
+                import_result_from_json(j, out, [&](const std::string& s) {
+                    return impl_->b64_decode(s);
+                });
+            }
+        } catch (const std::exception&) {
+            // 解析失败：保持 UNKNOWN（fail-closed 由调用方分类）。
+        }
     }
     return static_cast<ErrorCode>(status);
 }
@@ -585,6 +600,19 @@ ErrorCode SecClient::get_business_key_import_result(const std::string& request_i
             });
         } catch (const std::exception&) {
             return ErrorCode::INTERNAL_ERROR;
+        }
+    } else if (!response_json.empty()) {
+        // 同 import_wrapped_business_keys：确定性错误响应同样携带权威 result，
+        // 尽力解析出 state（失败保持 UNKNOWN，fail-closed 由调用方分类）。
+        try {
+            auto j = nlohmann::json::parse(response_json);
+            if (j.contains("state")) {
+                import_result_from_json(j, out, [&](const std::string& s) {
+                    return impl_->b64_decode(s);
+                });
+            }
+        } catch (const std::exception&) {
+            // 解析失败：保持 UNKNOWN。
         }
     }
     return static_cast<ErrorCode>(status);

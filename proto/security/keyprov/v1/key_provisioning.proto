@@ -1,20 +1,19 @@
 // =============================================================================
-// TBOX-SEC 受控副本：security.keyprov.v1 key provisioning（SEC 消费子集）
+// TBOX-SEC 受控同步副本：security.keyprov.v1 key provisioning（SEC 消费子集）
 //
-// 锁版元信息（TBOX-SEC-DSN-CR-020 §14 / PAR-PROTO-DSN-CR-007）：
-//   PAR-PROTO release : PAR-PROTO-DSN-CR-007 (2026-10-18)
-//   source            : security/keyprov/v1/key_provisioning.proto
-//   generator         : protoc (libprotoc) 35.1
-//   descriptor sha256 : 由 test_keyprov_proto_lock.cpp 计算并断言（见该文件常量）
+// 锁版元信息（TBOX-SEC-DSN-CR-022 §5/§6 / VEH-PROTO §7.1）：
+//   VEH-PROTO 修订  : VEH-PROTO 2026-10-25（同步 PAR-PROTO-DSN-CR-009）
+//   PAR-PROTO release: PAR-PROTO-DSN-CR-009（仅治理基线，非构建依赖）
+//   source          : security/keyprov/v1/key_provisioning.proto
+//   generator       : protoc (libprotoc) 35.1
+//   descriptor sha256: 由 test_keyprov_proto_lock.cpp 计算并断言（见该文件常量）
+//   fixture manifest: tests/fixtures/keyprov_fixture_manifest.json（逐文件 hash）
 //
-// 约束：
-//   - 本文件是 PAR-PROTO 已发布定义的受控同步副本，禁止本地重编号已发布字段；
+// 约束（VEH-PROTO §7.1/§7.2.2）：
+//   - TBOX-SEC 在自身仓库维护与 PAR-PROTO canonical release 一致的受控同步副本，
+//     禁止本地重编号已发布字段、改变类型/presence/枚举语义或手写字段 1~12 wire codec；
 //   - TBOX-SEC 只解析 EcdhEsP256EnvelopeParametersV1（确定性子消息）与相关枚举；
-//   - 禁止手写字段 1~12 的 Protobuf wire codec，必须使用本文件生成的代码。
-//
-// 待交叉确认（open item，见 specs/v2c-ecdh-es-keyprov/design.md §13）：
-//   KeyPurpose / WrappingSuite 的具体数值来自 PAR-PROTO CR-006，本仓尚未取得
-//   CR-006 原文，暂按 1 基自然序冻结，待 PAR-PROTO 原文对齐后修正并更新锁版。
+//   - 生成代码不得手工修改；任何本地同步都必须显式评审并更新锁版与 fixture manifest。
 // =============================================================================
 
 syntax = "proto3";
@@ -24,28 +23,70 @@ package security.keyprov.v1;
 option java_multiple_files = true;
 option java_package = "net.hwyz.iov.security.keyprov.v1";
 
-// 信封格式（PAR-PROTO-DSN-CR-007 §3）。
+// ---- CR-009 V2C wire canonical registry（VEH-PROTO §7.2.2 同步冻结）----
+// WIRE_PROFILE = PAR_PROTO_KEYPROV_ECDH_ES_P256_V1
+// wireDigestInput = segment(envelopeFormat)
+//                 || segment(UTF8(requestId))
+//                 || segment(UTF8(businessDomain))
+//                 || segment(unsignedVarint(purpose))
+//                 || segment(UTF8(keyId))
+//                 || segment(uint64be(businessKeyVersion))
+//                 || segment(unsignedVarint(wrappingSuite))
+//                 || segment(wrappedKey)
+//                 || segment(originalDeterministicParametersBytes)
+// wireEnvelopeDigest = SHA-256(wireDigestInput)
+// segment(x) = uint32be(len(x)) || x；共且仅有 9 个顶层 segment。
+// 禁止 enum name()/ordinal()、十进制 version、JSON、Base64/hex 文本或 parse 后
+// 重编码 parameters；wrappedKey/parameters 使用收到的原始 bytes（canonical 校验
+// 通过后不得替换）。envelope_digest 字段本身不进入摘要。
+// WrappedKeyItem.envelope_digest 只承载 wireEnvelopeDigest；FW-SEC 18 字段
+// coreEnvelopeDigest 为内部事实，不得进入 wire/ACK/proof。
+//
+// AAD_PROFILE = PAR_PROTO_KEYPROV_AAD_V1（10 段，顺序固定；nonce 不进入 AAD）:
+//   canonicalAad = segment(envelopeFormat)              // unsigned varint
+//               || segment(wrappingSuite)               // unsigned varint，登记值 2
+//               || segment(purpose)                     // unsigned varint
+//               || segment(uint64be(businessKeyVersion))
+//               || segment(uint64be(rootKeyVersion))
+//               || segment(recipientCertificateDigest)  // 原始 32 bytes，非 hex/文本
+//               || segment(UTF8(requestId))
+//               || segment(UTF8(businessDomain))
+//               || segment(UTF8(keyId))
+//               || segment(UTF8(derivationVersion))
+// aadDigest = SHA-256(canonicalAad)。云端 AES-GCM 加密实际使用的 AAD 必须与
+// canonical_aad 逐字节相同；TBOX-SEC 从 outer context 重建 AAD 并与承载值和
+// aad_digest 常量时间比较，随后使用同一 AAD 执行 GCM 解封。
+//
+// businessKeyVersion 有效范围 1..2^63-1，编码固定 8 字节 unsigned big-endian。
+// =============================================================================
+
+// 信封格式（PAR-PROTO-DSN-CR-007 §3 / CR-009）。
 enum KeyEnvelopeFormat {
   KEY_ENVELOPE_FORMAT_UNSPECIFIED = 0;
   KEY_ENVELOPE_FORMAT_ECDH_ES_P256_V1 = 1;
 }
 
-// 封装套件（CR-006 定义；数值待 PAR-PROTO 原文对齐）。
+// 封装套件（PAR-PROTO-DSN-CR-009 §2：ECDH_ES_P256_HKDF_SHA256_AES256GCM 登记值 = 2）。
 enum WrappingSuite {
   WRAPPING_SUITE_UNSPECIFIED = 0;
-  WRAPPING_SUITE_ECDH_ES_P256_HKDF_SHA256_AES256GCM = 1;
+  WRAPPING_SUITE_ECDH_ES_P256_HKDF_SHA256_AES256GCM = 2;
 }
 
-// 业务密钥用途（CR-006 定义；数值待 PAR-PROTO 原文对齐）。
+// 业务密钥用途（PAR-PROTO-DSN-CR-009 §2：UPLINK=1、DOWNLINK=2，0 保留且生产拒绝）。
 enum KeyPurpose {
   KEY_PURPOSE_UNSPECIFIED = 0;
   KEY_PURPOSE_UPLINK_AEAD = 1;
   KEY_PURPOSE_DOWNLINK_AEAD = 2;
 }
 
-// ECDH-ES P-256 v1 信封参数（PAR-PROTO-DSN-CR-007 §3；字段号/类型已冻结）。
+// ECDH-ES P-256 v1 信封参数（PAR-PROTO-DSN-CR-007 §3/§7；字段号/类型已冻结）。
 //
 // `parameters` wire type 保持 bytes，内容为本消息的 deterministic serialization。
+// 消费者解析后必须先拒绝 unknown fields，再通过
+// google::protobuf::io::CodedOutputStream::SetSerializationDeterministic(true)
+// 与 SerializeToCodedStream 显式 deterministic reserialize，并与收到的原始
+// bytes 逐字节比较（普通 SerializeToString 不得作为确定性契约校验）。
+// wire digest / 幂等摘要始终使用收到且已通过 canonical 校验的原始 parameters bytes。
 message EcdhEsP256EnvelopeParametersV1 {
   uint32 format_version = 1;                 // MUST equal 1
   bytes server_ephemeral_public_key = 2;     // P-256 SEC1 uncompressed, 65 bytes
@@ -53,7 +94,7 @@ message EcdhEsP256EnvelopeParametersV1 {
   string hkdf_context_version = 4;           // "v1"
   bytes nonce = 5;                           // AES-GCM nonce, 12 bytes
   bytes authentication_tag = 6;              // 16 bytes
-  bytes canonical_aad = 7;                   // FW-SEC EnvelopeAadV1 canonical bytes
+  bytes canonical_aad = 7;                   // PAR_PROTO_KEYPROV_AAD_V1 canonical bytes（10 段 registry）
   bytes aad_digest = 8;                      // SHA-256(canonical_aad), 32 bytes
   uint64 root_key_version = 9;
   string derivation_version = 10;

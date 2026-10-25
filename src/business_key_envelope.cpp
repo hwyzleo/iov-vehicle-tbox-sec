@@ -1,9 +1,12 @@
 //
-// EnvelopeValidator + ECDH-ES v1 参数解析实现（TBOX-SEC-DSN-CR-020 §5/§6/§7）。
+// EnvelopeValidator + ECDH-ES v1 参数解析实现（TBOX-SEC-DSN-CR-022 §2/§3）。
 //
 #include "business_key_envelope.h"
 
 #include "proto/security/keyprov/v1/key_provisioning.pb.h"
+
+#include <google/protobuf/io/coded_stream.h>
+#include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 
 #include <openssl/bn.h>
 #include <openssl/ec.h>
@@ -20,14 +23,6 @@ namespace kp = ::security::keyprov::v1;
 
 using canonical::constantTimeEqual;
 using canonical::sha256;
-
-bool isHexLowerNonEmpty(const std::string& s) {
-    if (s.empty()) return false;
-    for (char c : s) {
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
-    }
-    return true;
-}
 
 } // namespace
 
@@ -75,9 +70,18 @@ ErrorCode parseEcdhEsP256Parameters(const uint8_t* data, std::size_t n,
     kp::EcdhEsP256EnvelopeParametersV1 msg;
     if (!msg.ParseFromArray(data, static_cast<int>(n))) return ErrorCode::WRAPPED_KEY_INVALID;
 
-    // 规范形式回写校验：parameters 必须是 deterministic serialization。
+    // VEH-PROTO §7.2.2（3）：安全关键 parameters 拒绝 unknown fields（fail-closed）。
+    if (msg.GetReflection()->GetUnknownFields(msg).field_count() != 0)
+        return ErrorCode::WRAPPED_KEY_INVALID;
+
+    // VEH-PROTO §7.2.2（4）/ DSN-CR-022 §3：显式 deterministic reserialize 并与
+    // 收到字节逐字节比较。普通 SerializeToString 不得作为确定性契约校验。
     std::string reserialized;
-    if (!msg.SerializeToString(&reserialized)) return ErrorCode::WRAPPED_KEY_INVALID;
+    google::protobuf::io::StringOutputStream sos(&reserialized);
+    google::protobuf::io::CodedOutputStream cos(&sos);
+    cos.SetSerializationDeterministic(true);
+    if (!msg.SerializeToCodedStream(&cos)) return ErrorCode::WRAPPED_KEY_INVALID;
+    cos.Trim();  // 收敛 StringOutputStream 尾部未写入字节
     if (reserialized.size() != n ||
         std::memcmp(reserialized.data(), data, n) != 0) {
         return ErrorCode::WRAPPED_KEY_INVALID;
@@ -105,8 +109,9 @@ std::vector<uint8_t> rebuildEnvelopeAad(const std::string& request_id,
                                         const std::string& business_domain,
                                         const WrappedKeyItem& item,
                                         const EcdhEsP256EnvelopeParameters& params) {
+    // PAR_PROTO_KEYPROV_AAD_V1：由可信 outer context 重建（CR-022 §2/§3）。
     canonical::EnvelopeAadInput aad;
-    aad.envelope_version = "v1";
+    aad.envelope_format = static_cast<uint64_t>(item.envelope_format);
     uint64_t suite_val = 0;
     wrappingSuiteEnumValue(item.wrapping_suite, suite_val);
     aad.wrapping_suite = suite_val;
@@ -119,8 +124,8 @@ std::vector<uint8_t> rebuildEnvelopeAad(const std::string& request_id,
     aad.business_key_version = item.business_key_version;
     aad.root_key_version = params.root_key_version;
     aad.derivation_version = params.derivation_version;
-    aad.recipient_certificate_fingerprint = params.recipient_certificate_digest;
-    return canonical::buildEnvelopeAadV1(aad);
+    aad.recipient_certificate_digest = params.recipient_certificate_digest;
+    return canonical::buildParProtoAadV1(aad);
 }
 
 ErrorCode validateEnvelope(const WrappedKeyItem& item,
@@ -193,7 +198,7 @@ ErrorCode validateEnvelope(const WrappedKeyItem& item,
     di.wrapping_suite = suite_val;
     di.wrapped_key.assign(item.wrapped_key.data(), item.wrapped_key.data() + item.wrapped_key.size());
     di.parameters.assign(item.parameters.data(), item.parameters.data() + item.parameters.size());
-    std::vector<uint8_t> computed = canonical::computeEnvelopeDigest(di);
+    std::vector<uint8_t> computed = canonical::buildWireEnvelopeDigestV1(di);
     if (item.envelope_digest.size() != computed.size() ||
         !constantTimeEqual(item.envelope_digest, computed))
         return ErrorCode::WRAPPED_KEY_INVALID;
@@ -209,7 +214,9 @@ ErrorCode validateEnvelope(const WrappedKeyItem& item,
     out.params = std::move(params);
     out.canonical_aad = std::move(aad);
     out.envelope_digest = std::move(computed);
-    // KCV 由 provider 在 staging 计算并校验；此处仅透传期望值（供 provider 比较）。
+    // CR-022 §2：KCV 不是透传值——由 provider 在 HSM/eSE 内从实际 staging key
+    // 重算 actualKcv 并与 item.key_check_value 常量时间比较；此处仅输出期望值
+    // 供 provider 比较，绝不可把收到的 KCV 直接写入 journal/ACK。
     out.key_check_value = item.key_check_value;
     return ErrorCode::SUCCESS;
 }

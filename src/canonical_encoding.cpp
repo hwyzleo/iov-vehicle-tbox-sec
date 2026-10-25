@@ -1,5 +1,5 @@
 //
-// CanonicalEncodingV1 实现（TBOX-SEC-DSN-CR-020 §7）。
+// CanonicalEncodingV1 实现（TBOX-SEC-DSN-CR-022 §3 / VEH-PROTO §7.2.2）。
 //
 #include "canonical_encoding.h"
 
@@ -108,7 +108,8 @@ void appendUint64beSegment(std::vector<uint8_t>& out, uint64_t v) {
 
 } // namespace
 
-std::vector<uint8_t> computeEnvelopeDigest(const EnvelopeDigestInput& in) {
+std::vector<uint8_t> buildWireEnvelopeDigestV1(const EnvelopeDigestInput& in) {
+    // PAR_PROTO_KEYPROV_ECDH_ES_P256_V1：共且仅有 9 个顶层 segment。
     std::vector<uint8_t> buf;
     appendEnumSegment(buf, in.envelope_format);
     appendString(buf, in.request_id);
@@ -122,18 +123,19 @@ std::vector<uint8_t> computeEnvelopeDigest(const EnvelopeDigestInput& in) {
     return sha256(buf);
 }
 
-std::vector<uint8_t> buildEnvelopeAadV1(const EnvelopeAadInput& in) {
+std::vector<uint8_t> buildParProtoAadV1(const EnvelopeAadInput& in) {
+    // PAR_PROTO_KEYPROV_AAD_V1：固定 10 段（uint32be 长度前缀）；nonce 不进入 AAD。
     std::vector<uint8_t> buf;
-    appendString(buf, in.envelope_version);
+    appendEnumSegment(buf, in.envelope_format);
     appendEnumSegment(buf, in.wrapping_suite);
-    appendString(buf, in.request_id);
-    appendString(buf, in.business_domain);
     appendEnumSegment(buf, in.purpose);
-    appendString(buf, in.key_id);
     appendUint64beSegment(buf, in.business_key_version);
     appendUint64beSegment(buf, in.root_key_version);
+    appendBytes(buf, in.recipient_certificate_digest);
+    appendString(buf, in.request_id);
+    appendString(buf, in.business_domain);
+    appendString(buf, in.key_id);
     appendString(buf, in.derivation_version);
-    appendBytes(buf, in.recipient_certificate_fingerprint);
     return buf;
 }
 

@@ -1,0 +1,23 @@
+{
+  "veh_proto_revision": "VEH-PROTO 2026-10-25（PAR-PROTO-DSN-CR-009 同步）",
+  "par_proto_release": "PAR-PROTO-DSN-CR-009",
+  "local_proto": {
+    "file": "proto/security/keyprov/v1/key_provisioning.proto",
+    "sha256": "7b1ae83cd38eab7566fd0b7726da64d018f4026c50ae4f02fa62f439a3b19243"
+  },
+  "descriptor": {
+    "sha256": "7640c318c1d1e9a53b7e91e3649f1b894bb3b8694940e82855b5417b828aff97",
+    "protoc_version": "35.1"
+  },
+  "generator_tool": {
+    "file": "tests/fixtures/gen_keyprov_ecdh_es_v1_vector.py",
+    "sha256": "6e12b92c2e002df603c08f8cbe0f8dc2ca0d1261255f1fa527acde8b14d14791"
+  },
+  "files": {
+    "keyprov_ecdh_es_v1_vector.json": {
+      "sha256": "ca7654c0fbf70e97437cbd08a594e764015fd223dd8d37693f750ac0e081d0bb",
+      "bytes": 44872
+    }
+  },
+  "note": "任一项变化必须显式评审并重新生成；manifest 内容 hash 由 test_keyprov_proto_lock.cpp 锁定。"
+}

@@ -1,57 +1,43 @@
 #!/usr/bin/env python3
-"""独立参考实现：生成 tests/fixtures/keyprov_ecdh_es_v1_vector.json。
+"""TBOX-SEC 本地 VEH-PROTO fixtures 再生工具（TBOX-SEC-DSN-CR-022 §5）。
 
-用途（TBOX-SEC-DSN-CR-020 §13 / US-017/018/020）：
-  * 以固定、非生产 P-256 私钥夹具离线计算 ECDH/HKDF/AES-GCM 与 canonical
-    framing（AAD/envelopeDigest/KCV/proofInput）的期望值；
-  * 以 RFC 6979 确定性 ECDSA（P-256/SHA-256、IEEE-P1363 low-S 64B）计算设备私钥
-    导入证明（import_proof）的 golden 期望值；
-  * 作为 C++ `buildEcdhEsP256EnvelopeV1` / 导入证明校验的跨实现 golden vector
-    断言源，避免 C++ 侧自证。
+生成 tests/fixtures/keyprov_ecdh_es_v1_vector.json（含跨端 primary/boundary/
+negative 与 SEC 本地 builder 段），并支持 --check 逐字节比对 committed fixtures。
 
-重要：本脚本手写 `EcdhEsP256EnvelopeParametersV1` 的 deterministic protobuf bytes，
-而非依赖 protoc/Python runtime 版本；字段号/类型与 proto/security/keyprov/v1 冻结定义一致，
-其本身即对 wire 布局的独立复核。C++ 侧仍通过生成代码解析（禁止手写 wire codec）。
+本工具仅是 SEC 仓库测试工具：
+  * 输入与编码规则严格对应 VEH-PROTO（10 段 PAR_PROTO_KEYPROV_AAD_V1、
+    9 字段 wireEnvelopeDigest、wrappingSuite 登记值 2、uint64be/businessKeyVersion
+    边界、deterministic parameters bytes）；
+  * 不得被视为新的协议 SSOT，也不得在量产运行时参与编码；
+  * fixture manifest（keyprov_fixture_manifest.json）由 scripts/
+    regenerate_keyprov_fixtures.sh 汇总本地 proto/DescriptorSet/工具 hash 生成。
 
-依赖：cryptography。运行：python3 tests/fixtures/gen_keyprov_ecdh_es_v1_vector.py
+primary 段固定输入（TBOX-SEC-DSN-CR-022 §5 跨端对账）：
+  requestId=req-kp-0009, businessDomain=V2C_COMM, keyId=biz-key-up-0009,
+  purpose=1, businessKeyVersion=3, wrappingSuite=2, rootKeyVersion=7,
+  derivationVersion=openiov|v2c|v1, recipientCertificateDigest=0x61*32。
+primary 段与 boundary 段期望字节必须与 VMD/Java（同一 PAR-PROTO CR-009
+canonical 语义）逐字节一致；该比对是发布证据，不构成对 PAR-PROTO 仓库依赖。
+
+依赖：cryptography（仅 builder 段真实 ECDH/HKDF/AES-GCM 与 RFC6979 签名用）。
+运行：
+  python3 tests/fixtures/gen_keyprov_ecdh_es_v1_vector.py            # 生成（写文件）
+  python3 tests/fixtures/gen_keyprov_ecdh_es_v1_vector.py --check    # 再生后与 committed 逐字节比对
 """
 
+import argparse
 import hashlib
 import hmac
 import json
 import os
+import sys
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-# ---- 固定非生产夹具 ----
-DEVICE_PRIV = bytes.fromhex(
-    "c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721")
-EPH_PRIV = bytes.fromhex(
-    "7d7dc5f71eb29ddaf80d6214632eeae03d9058af1fb6d22ed80badb62bc1a534")
-HKDF_SALT = bytes.fromhex(
-    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
-NONCE = bytes.fromhex("aabbccddeeff001122334455")
-BUSINESS_KEY = bytes.fromhex(
-    "603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4")
-RECIPIENT_CERT_DIGEST = bytes.fromhex(
-    "aa" * 32)
-
-REQUEST_ID = "req-golden-0001"
-BUSINESS_DOMAIN = "V2C_COMM"
-PURPOSE_NAME = "UPLINK_AEAD"
-PURPOSE_ENUM = 1
-KEY_ID = "kid-golden-uplink"
-BUSINESS_KEY_VERSION = 1
-ROOT_KEY_VERSION = 1
-DERIVATION_VERSION = "v1"
-OPERATION_ID = "op-golden-0001"
-HKDF_CONTEXT_VERSION = "v1"
-WRAPPING_SUITE_ENUM = 1
-ENVELOPE_FORMAT_ENUM = 1
-
+# ===================== framing primitives（VEH-PROTO §7.2.2） =================
 
 def u32be(v):
     return v.to_bytes(4, "big")
@@ -83,84 +69,142 @@ def u64be_seg(v: int) -> bytes:
     return seg(v.to_bytes(8, "big"))
 
 
+def sha256(b: bytes) -> bytes:
+    return hashlib.sha256(b).digest()
+
+
+# ===================== deterministic protobuf encoding =======================
+
 def proto_bytes(field: int, wire: int, value: bytes) -> bytes:
     return varint((field << 3) | wire) + value
 
 
 def pb_bytes(field: int, value: bytes) -> bytes:
-    """protobuf 长度分隔字段：tag + varint(len) + value（非 canonical u32be 长度）。"""
     return proto_bytes(field, 2, varint(len(value)) + value)
 
 
-def encode_params(p) -> bytes:
-    """确定性 protobuf（字段号升序；proto3 省略默认值）。"""
-    out = bytearray()
-    out += proto_bytes(1, 0, varint(p["format_version"]))
-    out += pb_bytes(2, p["server_ephemeral_public_key"])
-    out += pb_bytes(3, p["hkdf_salt"])
-    out += pb_bytes(4, p["hkdf_context_version"].encode("utf-8"))
-    out += pb_bytes(5, p["nonce"])
-    out += pb_bytes(6, p["authentication_tag"])
-    out += pb_bytes(7, p["canonical_aad"])
-    out += pb_bytes(8, p["aad_digest"])
-    out += proto_bytes(9, 0, varint(p["root_key_version"]))
-    out += pb_bytes(10, p["derivation_version"].encode("utf-8"))
-    out += pb_bytes(11, p["recipient_certificate_digest"])
-    out += pb_bytes(12, p["operation_id"].encode("utf-8"))
-    return bytes(out)
+def pb_varint(field: int, value: int) -> bytes:
+    return proto_bytes(field, 0, varint(value))
 
 
-def build_aad_v1(recipient_fp: bytes) -> bytes:
+# ===================== CR-009 / VEH-PROTO canonical constants ================
+
+WIRE_PROFILE = "PAR_PROTO_KEYPROV_ECDH_ES_P256_V1"
+AAD_PROFILE = "PAR_PROTO_KEYPROV_AAD_V1"
+PROOF_DOMAIN = "openiov|keyprov-ack|v1"
+WRAP_INFO_DOMAIN = "openiov|keyprov-wrap|v1"
+PROOF_ALGORITHM = "ECDSA_P256_SHA256_P1363"
+
+# ---- 跨端固定 primary input（TBOX-SEC-DSN-CR-022 §5）----
+PRIMARY = {
+    "request_id": "req-kp-0009",
+    "business_domain": "V2C_COMM",
+    "key_id": "biz-key-up-0009",
+    "purpose": 1,                       # KEY_PURPOSE_UPLINK_AEAD
+    "business_key_version": 3,
+    "envelope_format": 1,               # KEY_ENVELOPE_FORMAT_ECDH_ES_P256_V1
+    "wrapping_suite": 2,                # ECDH_ES_P256_HKDF_SHA256_AES256GCM（登记值）
+    "root_key_version": 7,
+    "derivation_version": "openiov|v2c|v1",
+    "operation_id": "op-kp-0009",
+    "recipient_certificate_digest": b"\x61" * 32,
+    # ---- 跨端 wire-contract 固定密码学输入（与 VMD/Java 一致；非真实密钥材料）----
+    "server_ephemeral_public_key": bytes.fromhex(
+        "04" + "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296"
+        + "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"),  # P-256 G
+    "hkdf_salt": b"\x21" * 32,
+    "nonce": b"\x31" * 12,
+    "authentication_tag": b"\x41" * 16,
+    "wrapped_key": b"\x71" * 64,
+    "business_key": b"\x81" * 32,       # UPLINK business key（KCV 推导演示）
+    "key_algorithm": "AES-256",
+    "hkdf_context_version": "v1",
+}
+DOWNLINK_KEY_ID = "biz-key-down-0009"
+DOWNLINK_BUSINESS_KEY = b"\x91" * 32
+
+
+# ===================== canonical builders（VEH-PROTO §7.2.2） ================
+
+def build_aad_v1(efmt: int, suite: int, purpose: int, biz_ver: int, root_ver: int,
+                 cert_digest: bytes, request_id: str, domain: str, key_id: str,
+                 derivation: str) -> bytes:
+    """PAR_PROTO_KEYPROV_AAD_V1：固定 10 段；nonce 不进入 AAD。"""
     return (
-        seg(b"v1")
-        + enum_seg(WRAPPING_SUITE_ENUM)
-        + seg(REQUEST_ID.encode("utf-8"))
-        + seg(BUSINESS_DOMAIN.encode("utf-8"))
-        + enum_seg(PURPOSE_ENUM)
-        + seg(KEY_ID.encode("utf-8"))
-        + u64be_seg(BUSINESS_KEY_VERSION)
-        + u64be_seg(ROOT_KEY_VERSION)
-        + seg(DERIVATION_VERSION.encode("utf-8"))
-        + seg(recipient_fp)
+        enum_seg(efmt)
+        + enum_seg(suite)
+        + enum_seg(purpose)
+        + u64be_seg(biz_ver)
+        + u64be_seg(root_ver)
+        + seg(cert_digest)
+        + seg(request_id.encode("utf-8"))
+        + seg(domain.encode("utf-8"))
+        + seg(key_id.encode("utf-8"))
+        + seg(derivation.encode("utf-8"))
     )
 
 
-def envelope_digest(wrapped_key: bytes, parameters: bytes) -> bytes:
-    buf = (
-        enum_seg(ENVELOPE_FORMAT_ENUM)
-        + seg(REQUEST_ID.encode("utf-8"))
-        + seg(BUSINESS_DOMAIN.encode("utf-8"))
-        + enum_seg(PURPOSE_ENUM)
-        + seg(KEY_ID.encode("utf-8"))
-        + u64be_seg(BUSINESS_KEY_VERSION)
-        + enum_seg(WRAPPING_SUITE_ENUM)
+def wire_digest_input(efmt: int, request_id: str, domain: str, purpose: int,
+                      key_id: str, biz_ver: int, suite: int, wrapped_key: bytes,
+                      parameters: bytes) -> bytes:
+    """PAR_PROTO_KEYPROV_ECDH_ES_P256_V1：共且仅有 9 个顶层 segment。"""
+    return (
+        enum_seg(efmt)
+        + seg(request_id.encode("utf-8"))
+        + seg(domain.encode("utf-8"))
+        + enum_seg(purpose)
+        + seg(key_id.encode("utf-8"))
+        + u64be_seg(biz_ver)
+        + enum_seg(suite)
         + seg(wrapped_key)
         + seg(parameters)
     )
-    return hashlib.sha256(buf).digest()
 
 
-def proof_input(envelope_dgst: bytes, kcv: bytes) -> bytes:
+def proof_input_v1(request_id: str, domain: str, purpose: int, key_id: str,
+                   biz_ver: int, envelope_digest: bytes, kcv: bytes) -> bytes:
+    """CR-008 proofInputV1：八段扁平编码。"""
     return (
-        seg(b"openiov|keyprov-ack|v1")
-        + seg(REQUEST_ID.encode("utf-8"))
-        + seg(BUSINESS_DOMAIN.encode("utf-8"))
-        + enum_seg(PURPOSE_ENUM)
-        + seg(hashlib.sha256(KEY_ID.encode("utf-8")).digest())
-        + u64be_seg(BUSINESS_KEY_VERSION)
-        + seg(envelope_dgst)
+        seg(PROOF_DOMAIN.encode("utf-8"))
+        + seg(request_id.encode("utf-8"))
+        + seg(domain.encode("utf-8"))
+        + enum_seg(purpose)
+        + seg(sha256(key_id.encode("utf-8")))
+        + u64be_seg(biz_ver)
+        + seg(envelope_digest)
         + seg(kcv)
     )
 
 
-def hkdf_info(recipient_fp: bytes) -> bytes:
+def hkdf_info(request_id: str, domain: str, purpose_name: str, key_id: str,
+              biz_ver: int, recipient_fp: bytes) -> bytes:
     return (
-        f"openiov|keyprov-wrap|v1|{REQUEST_ID}|{BUSINESS_DOMAIN}|{PURPOSE_NAME}|"
-        f"{KEY_ID}|{BUSINESS_KEY_VERSION}|{recipient_fp.hex()}"
+        f"{WRAP_INFO_DOMAIN}|{request_id}|{domain}|{purpose_name}|{key_id}|"
+        f"{biz_ver}|{recipient_fp.hex()}"
     ).encode("utf-8")
 
 
-# ---- P-256 (SEC 2 / FIPS 186-4) 常数 ----
+def encode_params(fmt_ver, eph_pub, salt, hkdf_ctx, nonce, tag, canonical_aad,
+                  aad_digest, root_ver, derivation, cert_digest, operation_id) -> bytes:
+    """deterministic protobuf（字段号升序；所有字段均有值，无默认值省略）。"""
+    out = bytearray()
+    out += pb_varint(1, fmt_ver)
+    out += pb_bytes(2, eph_pub)
+    out += pb_bytes(3, salt)
+    out += pb_bytes(4, hkdf_ctx.encode("utf-8"))
+    out += pb_bytes(5, nonce)
+    out += pb_bytes(6, tag)
+    out += pb_bytes(7, canonical_aad)
+    out += pb_bytes(8, aad_digest)
+    out += pb_varint(9, root_ver)
+    out += pb_bytes(10, derivation.encode("utf-8"))
+    out += pb_bytes(11, cert_digest)
+    out += pb_bytes(12, operation_id.encode("utf-8"))
+    return bytes(out)
+
+
+# ===================== P-256 / RFC 6979（builder 段签名用） ==================
+
 P256_P = 0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF
 P256_A = P256_P - 3
 P256_B = 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B
@@ -201,7 +245,6 @@ def _point_mul(k: int, point):
 
 
 def _rfc6979_candidates(x: int, h1: bytes, hlen: int = 32):
-    """RFC 6979 §3.2 确定性 k 生成器（HMAC-SHA256 DRBG）。"""
     qlen = P256_N.bit_length()
 
     def bits2int(b: bytes) -> int:
@@ -236,7 +279,6 @@ def _rfc6979_candidates(x: int, h1: bytes, hlen: int = 32):
 
 
 def ecdsa_p1363_low_s(priv_int: int, msg: bytes) -> bytes:
-    """RFC 6979 确定性 ECDSA P-256/SHA-256，输出 IEEE-P1363 low-S 64B。"""
     digest = hashlib.sha256(msg).digest()
     z = int.from_bytes(digest, "big")
     for k in _rfc6979_candidates(priv_int, digest):
@@ -255,54 +297,78 @@ def ecdsa_p1363_low_s(priv_int: int, msg: bytes) -> bytes:
     raise AssertionError("unreachable")
 
 
-def main():
-    device_priv = ec.derive_private_key(int.from_bytes(DEVICE_PRIV, "big"),
+# ===================== builder 段（真实 ECDH/HKDF/AES-GCM，固定密钥） ========
+
+BUILDER_INPUTS = {
+    "device_private_key": bytes.fromhex(
+        "c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721"),
+    "server_ephemeral_private_key": bytes.fromhex(
+        "7d7dc5f71eb29ddaf80d6214632eeae03d9058af1fb6d22ed80badb62bc1a534"),
+    "hkdf_salt": bytes.fromhex(
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
+    "nonce": bytes.fromhex("aabbccddeeff001122334455"),
+    "business_key": bytes.fromhex(
+        "603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4"),
+    "recipient_certificate_digest": b"\xaa" * 32,
+    "request_id": "req-golden-0001",
+    "business_domain": "V2C_COMM",
+    "purpose_name": "UPLINK_AEAD",
+    "key_id": "kid-golden-uplink",
+    "business_key_version": 1,
+    "root_key_version": 1,
+    "derivation_version": "v1",
+    "operation_id": "op-golden-0001",
+    "hkdf_context_version": "v1",
+    "wrapping_suite": "ECDH_ES_P256_HKDF_SHA256_AES256GCM",
+    "key_algorithm": "AES-256",
+}
+
+
+def builder_section():
+    """独立参考实现的封装方向 golden：固定密钥的真实 ECDH/HKDF/AES-GCM。"""
+    in_ = BUILDER_INPUTS
+    device_priv = ec.derive_private_key(int.from_bytes(in_["device_private_key"], "big"),
                                         ec.SECP256R1())
     device_pub = device_priv.public_key().public_bytes(
-        serialization.Encoding.X962,
-        serialization.PublicFormat.UncompressedPoint)
-
-    eph_priv = ec.derive_private_key(int.from_bytes(EPH_PRIV, "big"), ec.SECP256R1())
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+    eph_priv = ec.derive_private_key(int.from_bytes(in_["server_ephemeral_private_key"], "big"),
+                                     ec.SECP256R1())
     eph_pub = eph_priv.public_key().public_bytes(
-        serialization.Encoding.X962,
-        serialization.PublicFormat.UncompressedPoint)
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
 
-    recipient_fp = RECIPIENT_CERT_DIGEST
-    canonical_aad = build_aad_v1(recipient_fp)
-    aad_digest = hashlib.sha256(canonical_aad).digest()
-    info = hkdf_info(recipient_fp)
+    purpose = 1  # UPLINK_AEAD
+    suite = 2
+    canonical_aad = build_aad_v1(
+        1, suite, purpose, in_["business_key_version"], in_["root_key_version"],
+        in_["recipient_certificate_digest"], in_["request_id"], in_["business_domain"],
+        in_["key_id"], in_["derivation_version"])
+    aad_digest = sha256(canonical_aad)
+    info = hkdf_info(in_["request_id"], in_["business_domain"], in_["purpose_name"],
+                     in_["key_id"], in_["business_key_version"],
+                     in_["recipient_certificate_digest"])
 
     shared = eph_priv.exchange(ec.ECDH(), device_priv.public_key())
-    kek = HKDF(algorithm=hashes.SHA256(), length=32, salt=HKDF_SALT,
+    kek = HKDF(algorithm=hashes.SHA256(), length=32, salt=in_["hkdf_salt"],
                info=info).derive(shared)
 
-    ct_tag = AESGCM(kek).encrypt(NONCE, BUSINESS_KEY, canonical_aad)
+    ct_tag = AESGCM(kek).encrypt(in_["nonce"], in_["business_key"], canonical_aad)
     ciphertext, tag = ct_tag[:-16], ct_tag[-16:]
 
-    params = encode_params({
-        "format_version": 1,
-        "server_ephemeral_public_key": eph_pub,
-        "hkdf_salt": HKDF_SALT,
-        "hkdf_context_version": HKDF_CONTEXT_VERSION,
-        "nonce": NONCE,
-        "authentication_tag": tag,
-        "canonical_aad": canonical_aad,
-        "aad_digest": aad_digest,
-        "root_key_version": ROOT_KEY_VERSION,
-        "derivation_version": DERIVATION_VERSION,
-        "recipient_certificate_digest": recipient_fp,
-        "operation_id": OPERATION_ID,
-    })
+    parameters = encode_params(1, eph_pub, in_["hkdf_salt"], in_["hkdf_context_version"],
+                               in_["nonce"], tag, canonical_aad, aad_digest,
+                               in_["root_key_version"], in_["derivation_version"],
+                               in_["recipient_certificate_digest"], in_["operation_id"])
 
-    env_dgst = envelope_digest(ciphertext, params)
-    kcv = hashlib.sha256(BUSINESS_KEY).digest()[:3]
-    pinput = proof_input(env_dgst, kcv)
+    wdi = wire_digest_input(1, in_["request_id"], in_["business_domain"], purpose,
+                            in_["key_id"], in_["business_key_version"], suite,
+                            ciphertext, parameters)
+    env_dgst = sha256(wdi)
+    kcv = sha256(in_["business_key"])[:3]
+    pinput = proof_input_v1(in_["request_id"], in_["business_domain"], purpose,
+                            in_["key_id"], in_["business_key_version"], env_dgst, kcv)
+    proof = ecdsa_p1363_low_s(int.from_bytes(in_["device_private_key"], "big"), pinput)
 
-    # 设备私钥对 proofInput 的 AES/ECDSA 导入证明（DSN-CR-020 §5/§7.3）：
-    # ECDSA P-256 / SHA-256、IEEE-P1363 定长 64B（r||s）、low-S 规范化。
-    proof = ecdsa_p1363_low_s(int.from_bytes(DEVICE_PRIV, "big"), pinput)
-
-    # 自检：将 P1363 转 DER 后用 cryptography 独立验证，确保 golden proof 可用。
+    # 自检：用 cryptography 独立验签。
     r_int = int.from_bytes(proof[:32], "big")
     s_int = int.from_bytes(proof[32:], "big")
     device_priv.public_key().verify(
@@ -312,27 +378,26 @@ def main():
     )
     assert s_int <= P256_N // 2, "proof must be low-S"
 
-    vector = {
-        "_comment": "非生产 golden vector；由 gen_keyprov_ecdh_es_v1_vector.py 生成",
+    return {
         "inputs": {
-            "device_private_key": DEVICE_PRIV.hex(),
+            "device_private_key": in_["device_private_key"].hex(),
             "device_public_key": device_pub.hex(),
-            "server_ephemeral_private_key": EPH_PRIV.hex(),
-            "hkdf_salt": HKDF_SALT.hex(),
-            "nonce": NONCE.hex(),
-            "business_key": BUSINESS_KEY.hex(),
-            "recipient_certificate_digest": recipient_fp.hex(),
-            "request_id": REQUEST_ID,
-            "business_domain": BUSINESS_DOMAIN,
-            "purpose": PURPOSE_NAME,
-            "key_id": KEY_ID,
-            "business_key_version": BUSINESS_KEY_VERSION,
-            "root_key_version": ROOT_KEY_VERSION,
-            "derivation_version": DERIVATION_VERSION,
-            "operation_id": OPERATION_ID,
-            "hkdf_context_version": HKDF_CONTEXT_VERSION,
-            "wrapping_suite": "ECDH_ES_P256_HKDF_SHA256_AES256GCM",
-            "key_algorithm": "AES-256",
+            "server_ephemeral_private_key": in_["server_ephemeral_private_key"].hex(),
+            "hkdf_salt": in_["hkdf_salt"].hex(),
+            "nonce": in_["nonce"].hex(),
+            "business_key": in_["business_key"].hex(),
+            "recipient_certificate_digest": in_["recipient_certificate_digest"].hex(),
+            "request_id": in_["request_id"],
+            "business_domain": in_["business_domain"],
+            "purpose": in_["purpose_name"],
+            "key_id": in_["key_id"],
+            "business_key_version": in_["business_key_version"],
+            "root_key_version": in_["root_key_version"],
+            "derivation_version": in_["derivation_version"],
+            "operation_id": in_["operation_id"],
+            "hkdf_context_version": in_["hkdf_context_version"],
+            "wrapping_suite": in_["wrapping_suite"],
+            "key_algorithm": in_["key_algorithm"],
         },
         "expected": {
             "server_ephemeral_public_key": eph_pub.hex(),
@@ -343,21 +408,285 @@ def main():
             "kek": kek.hex(),
             "wrapped_key": ciphertext.hex(),
             "authentication_tag": tag.hex(),
-            "parameters": params.hex(),
+            "parameters": parameters.hex(),
             "envelope_digest": env_dgst.hex(),
             "key_check_value": kcv.hex(),
             "proof_input": pinput.hex(),
             "import_proof": proof.hex(),
-            "proof_algorithm": "ECDSA_P256_SHA256_P1363",
+            "proof_algorithm": PROOF_ALGORITHM,
         },
     }
 
-    out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "keyprov_ecdh_es_v1_vector.json")
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(vector, f, indent=2, sort_keys=True)
-        f.write("\n")
-    print("wrote", out_path)
+
+# ===================== negative vectors ======================================
+
+def _mutate_aad_cases(aad: bytes):
+    """逐段单字节篡改 AAD（每段首个 value byte 翻转）。"""
+    cases = []
+    names = ["envelopeFormat", "wrappingSuite", "purpose", "businessKeyVersion",
+             "rootKeyVersion", "recipientCertificateDigest", "requestId",
+             "businessDomain", "keyId", "derivationVersion"]
+    off = 0
+    for i in range(10):
+        ln = int.from_bytes(aad[off:off + 4], "big")
+        val_start = off + 4
+        m = bytearray(aad)
+        m[val_start] ^= 0xFF
+        cases.append({
+            "segment_index": i,
+            "segment": names[i],
+            "mutated_canonical_aad_hex": bytes(m).hex(),
+            "mutated_aad_digest_hex": sha256(bytes(m)).hex(),
+        })
+        off = val_start + ln
+    return cases
+
+
+def _mutate_wire_cases(wdi: bytes):
+    """逐段单字节篡改 wire digest input。"""
+    cases = []
+    names = ["envelopeFormat", "requestId", "businessDomain", "purpose", "keyId",
+             "businessKeyVersion", "wrappingSuite", "wrappedKey", "parameters"]
+    off = 0
+    for i in range(9):
+        ln = int.from_bytes(wdi[off:off + 4], "big")
+        val_start = off + 4
+        m = bytearray(wdi)
+        m[val_start] ^= 0xFF
+        cases.append({
+            "segment_index": i,
+            "segment": names[i],
+            "mutated_wire_digest_input_hex": bytes(m).hex(),
+            "mutated_wire_envelope_digest_hex": sha256(bytes(m)).hex(),
+        })
+        off = val_start + ln
+    return cases
+
+
+def _params_from_primary(p: dict, canonical_aad: bytes, aad_digest: bytes) -> bytes:
+    return encode_params(1, p["server_ephemeral_public_key"], p["hkdf_salt"],
+                         p["hkdf_context_version"], p["nonce"], p["authentication_tag"],
+                         canonical_aad, aad_digest, p["root_key_version"],
+                         p["derivation_version"], p["recipient_certificate_digest"],
+                         p["operation_id"])
+
+
+def negative_section(primary, canonical_aad, aad_digest, params, wdi, env_dgst):
+    p = primary
+
+    def mutate_params(**kw):
+        return encode_params(kw.get("fmt_ver", 1), kw.get("eph", p["server_ephemeral_public_key"]),
+                             kw.get("salt", p["hkdf_salt"]), kw.get("ctx", p["hkdf_context_version"]),
+                             kw.get("nonce", p["nonce"]), kw.get("tag", p["authentication_tag"]),
+                             kw.get("aad", canonical_aad), kw.get("aad_dg", aad_digest),
+                             kw.get("root", p["root_key_version"]),
+                             kw.get("deriv", p["derivation_version"]),
+                             kw.get("cert", p["recipient_certificate_digest"]),
+                             kw.get("op", p["operation_id"]))
+
+    illegal_lengths = [
+        {"name": "hkdf_salt_31", "parameters_hex": mutate_params(salt=b"\x21" * 31).hex()},
+        {"name": "nonce_11", "parameters_hex": mutate_params(nonce=b"\x31" * 11).hex()},
+        {"name": "auth_tag_15", "parameters_hex": mutate_params(tag=b"\x41" * 15).hex()},
+        {"name": "cert_digest_31", "parameters_hex": mutate_params(cert=b"\x61" * 31).hex()},
+        {"name": "aad_digest_31", "parameters_hex": mutate_params(aad_dg=b"\x11" * 31).hex()},
+    ]
+
+    unknown_format = mutate_params(fmt_ver=777)
+
+    # unknown field 99 appended（varint 12345）
+    unknown_field_params = params + varint(99 << 3) + varint(12345)
+    digest_over_unknown = sha256(
+        wire_digest_input(1, p["request_id"], p["business_domain"], p["purpose"],
+                          p["key_id"], p["business_key_version"], p["wrapping_suite"],
+                          p["wrapped_key"], unknown_field_params))
+
+    # 语义相同但字段乱序的重编码（非 deterministic）→ digest 不同
+    reencoded = (
+        pb_bytes(12, p["operation_id"].encode("utf-8"))
+        + pb_bytes(11, p["recipient_certificate_digest"])
+        + pb_bytes(10, p["derivation_version"].encode("utf-8"))
+        + pb_varint(9, p["root_key_version"])
+        + pb_bytes(8, aad_digest)
+        + pb_bytes(7, canonical_aad)
+        + pb_bytes(6, p["authentication_tag"])
+        + pb_bytes(5, p["nonce"])
+        + pb_bytes(4, p["hkdf_context_version"].encode("utf-8"))
+        + pb_bytes(3, p["hkdf_salt"])
+        + pb_bytes(2, p["server_ephemeral_public_key"])
+        + pb_varint(1, 1)
+    )
+    digest_over_reencoded = sha256(
+        wire_digest_input(1, p["request_id"], p["business_domain"], p["purpose"],
+                          p["key_id"], p["business_key_version"], p["wrapping_suite"],
+                          p["wrapped_key"], reencoded))
+
+    return {
+        "parameters_illegal_lengths": illegal_lengths,
+        "parameters_unknown_field": {
+            "parameters_hex": unknown_field_params.hex(),
+            "authoritative_wire_envelope_digest_hex": env_dgst.hex(),
+            "digest_over_unknown_field_bytes_hex": digest_over_unknown.hex(),
+        },
+        "parameters_reencoded": {
+            "original_parameters_hex": params.hex(),
+            "reencoded_parameters_hex": reencoded.hex(),
+            "authoritative_wire_envelope_digest_hex": env_dgst.hex(),
+            "digest_over_reencoded_hex": digest_over_reencoded.hex(),
+        },
+        "parameters_unknown_format_version": {
+            "parameters_hex": unknown_format.hex(),
+        },
+        "tamper_canonical_aad": {
+            "authoritative_canonical_aad_hex": canonical_aad.hex(),
+            "authoritative_aad_digest_hex": aad_digest.hex(),
+            "cases": _mutate_aad_cases(canonical_aad),
+        },
+        "tamper_wire_digest_input": {
+            "authoritative_wire_envelope_digest_hex": env_dgst.hex(),
+            "cases": _mutate_wire_cases(wdi),
+        },
+    }
+
+
+# ===================== main ==================================================
+
+def build_fixture():
+    p = PRIMARY
+
+    canonical_aad = build_aad_v1(
+        p["envelope_format"], p["wrapping_suite"], p["purpose"], p["business_key_version"],
+        p["root_key_version"], p["recipient_certificate_digest"], p["request_id"],
+        p["business_domain"], p["key_id"], p["derivation_version"])
+    aad_digest = sha256(canonical_aad)
+    params = _params_from_primary(p, canonical_aad, aad_digest)
+    wdi = wire_digest_input(
+        p["envelope_format"], p["request_id"], p["business_domain"], p["purpose"],
+        p["key_id"], p["business_key_version"], p["wrapping_suite"], p["wrapped_key"],
+        params)
+    env_dgst = sha256(wdi)
+    kcv = sha256(p["business_key"])[:3]
+    pinput = proof_input_v1(
+        p["request_id"], p["business_domain"], p["purpose"], p["key_id"],
+        p["business_key_version"], env_dgst, kcv)
+
+    # boundary：businessKeyVersion 1/127/128/255/256/2^32/2^63-1，purpose 1/2
+    versions = [1, 127, 128, 255, 256, 1 << 32, (1 << 63) - 1]
+    vnames = ["v1", "v127", "v128", "v255", "v256", "v2e32", "v2e63m1"]
+    boundary = []
+    for ver, name in zip(versions, vnames):
+        wd = wire_digest_input(p["envelope_format"], p["request_id"], p["business_domain"],
+                               p["purpose"], p["key_id"], ver, p["wrapping_suite"],
+                               p["wrapped_key"], params)
+        boundary.append({
+            "name": name, "purpose": p["purpose"], "business_key_version": ver,
+            "wire_digest_input_hex": wd.hex(), "wire_envelope_digest_hex": sha256(wd).hex(),
+        })
+    wd_down = wire_digest_input(p["envelope_format"], p["request_id"], p["business_domain"],
+                                2, DOWNLINK_KEY_ID, p["business_key_version"],
+                                p["wrapping_suite"], p["wrapped_key"], params)
+    boundary.append({
+        "name": "purpose_downlink", "purpose": 2, "key_id": DOWNLINK_KEY_ID,
+        "business_key_version": p["business_key_version"],
+        "wire_digest_input_hex": wd_down.hex(), "wire_envelope_digest_hex": sha256(wd_down).hex(),
+    })
+
+    fixture = {
+        "_comment": "TBOX-SEC 本地 VEH-PROTO fixtures；由 gen_keyprov_ecdh_es_v1_vector.py 再生，"
+                    "不得手工修改（keyprov_fixture_manifest.json 锁定逐文件 hash）。",
+        "veh_proto_revision": "VEH-PROTO 2026-10-25（PAR-PROTO-DSN-CR-009 同步）",
+        "profile": {
+            "wire": WIRE_PROFILE,
+            "aad": AAD_PROFILE,
+            "wire_segments": 9,
+            "aad_segments": 10,
+            "wire_field_order": ["envelopeFormat", "requestId", "businessDomain", "purpose",
+                                 "keyId", "businessKeyVersion", "wrappingSuite", "wrappedKey",
+                                 "parameters"],
+            "aad_field_order": ["envelopeFormat", "wrappingSuite", "purpose",
+                                "businessKeyVersion", "rootKeyVersion",
+                                "recipientCertificateDigest", "requestId", "businessDomain",
+                                "keyId", "derivationVersion"],
+        },
+        "primary": {
+            "request_id": p["request_id"],
+            "business_domain": p["business_domain"],
+            "key_id": p["key_id"],
+            "purpose": p["purpose"],
+            "business_key_version": p["business_key_version"],
+            "envelope_format": p["envelope_format"],
+            "wrapping_suite": p["wrapping_suite"],
+            "root_key_version": p["root_key_version"],
+            "derivation_version": p["derivation_version"],
+            "operation_id": p["operation_id"],
+            "recipient_certificate_digest_hex": p["recipient_certificate_digest"].hex(),
+            "crypto": {
+                "server_ephemeral_public_key_hex": p["server_ephemeral_public_key"].hex(),
+                "hkdf_salt_hex": p["hkdf_salt"].hex(),
+                "nonce_hex": p["nonce"].hex(),
+                "authentication_tag_hex": p["authentication_tag"].hex(),
+                "wrapped_key_hex": p["wrapped_key"].hex(),
+                "business_key_hex": p["business_key"].hex(),
+                "key_algorithm": p["key_algorithm"],
+                "hkdf_context_version": p["hkdf_context_version"],
+            },
+            "expected": {
+                "canonical_aad": canonical_aad.hex(),
+                "aad_digest": aad_digest.hex(),
+                "parameters": params.hex(),
+                "wire_digest_input": wdi.hex(),
+                "wire_envelope_digest": env_dgst.hex(),
+                "key_check_value": kcv.hex(),
+                "proof_input": pinput.hex(),
+                "hkdf_info": hkdf_info(p["request_id"], p["business_domain"], "UPLINK_AEAD",
+                                       p["key_id"], p["business_key_version"],
+                                       p["recipient_certificate_digest"]).decode("utf-8"),
+                "downlink_key_check_value": sha256(DOWNLINK_BUSINESS_KEY)[:3].hex(),
+            },
+        },
+        "boundary_vectors": boundary,
+        "varint_boundary": {
+            "unsigned_varint_127_hex": varint(127).hex(),
+            "unsigned_varint_128_hex": varint(128).hex(),
+            "uint64be_127_hex": (127).to_bytes(8, "big").hex(),
+            "uint64be_128_hex": (128).to_bytes(8, "big").hex(),
+            "note": "127 编码为 1 字节 varint / 8 字节 uint64be；128 编码为 2 字节 varint "
+                    "但仍为 8 字节 uint64be（阻断 protobuf varint 误用）",
+        },
+        "negative": negative_section(p, canonical_aad, aad_digest, params, wdi, env_dgst),
+        "builder": builder_section(),
+    }
+    return fixture
+
+
+def main():
+    ap = argparse.ArgumentParser(description="TBOX-SEC keyprov VEH-PROTO fixtures regenerator")
+    ap.add_argument("--check", action="store_true",
+                    help="再生到内存并与 committed fixtures 逐字节比对；不一致返回非 0")
+    ap.add_argument("--out", default=None, help="写入路径（默认 tests/fixtures/keyprov_ecdh_es_v1_vector.json）")
+    args = ap.parse_args()
+
+    fixture = build_fixture()
+    out_bytes = (json.dumps(fixture, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    target = args.out or os.path.join(here, "keyprov_ecdh_es_v1_vector.json")
+
+    if args.check:
+        if not os.path.exists(target):
+            print("ERROR: committed fixture missing:", target, file=sys.stderr)
+            sys.exit(1)
+        committed = open(target, "rb").read()
+        if committed != out_bytes:
+            print("ERROR: regenerated fixture differs from committed", target,
+                  file=sys.stderr)
+            sys.exit(1)
+        print("OK: regenerated fixture byte-identical to committed", target)
+        return
+
+    with open(target, "wb") as f:
+        f.write(out_bytes)
+    print("wrote", target, f"({len(out_bytes)} bytes)")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,13 @@
 //
-// 非生产参考实现：ECDH-ES P-256 v1 信封封装（TBOX-SEC-DSN-CR-020 §7/§8）。
+// 非生产参考实现：ECDH-ES P-256 v1 信封封装（TBOX-SEC-DSN-CR-022 §3）。
 //
 #include "keyprov_envelope_builder.h"
 
 #include "business_key_envelope.h"
 #include "proto/security/keyprov/v1/key_provisioning.pb.h"
+
+#include <google/protobuf/io/coded_stream.h>
+#include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 
 #include <openssl/bn.h>
 #include <openssl/crypto.h>
@@ -189,9 +192,9 @@ ErrorCode buildEcdhEsP256EnvelopeV1(const KeyprovEnvelopeInput& in, KeyprovEnvel
         return ErrorCode::INVALID_PARAMETER;
     }
 
-    // canonical AAD（FW-SEC EnvelopeAadV1 的 TBOX-SEC 解释）
+    // PAR_PROTO_KEYPROV_AAD_V1：固定 10 段 canonical AAD（nonce 不进入 AAD）
     canonical::EnvelopeAadInput aad_in;
-    aad_in.envelope_version = "v1";
+    aad_in.envelope_format = static_cast<uint64_t>(KeyEnvelopeFormat::ECDH_ES_P256_V1);
     aad_in.wrapping_suite = suite_val;
     aad_in.request_id = in.request_id;
     aad_in.business_domain = in.business_domain;
@@ -200,8 +203,8 @@ ErrorCode buildEcdhEsP256EnvelopeV1(const KeyprovEnvelopeInput& in, KeyprovEnvel
     aad_in.business_key_version = in.business_key_version;
     aad_in.root_key_version = in.root_key_version;
     aad_in.derivation_version = in.derivation_version;
-    aad_in.recipient_certificate_fingerprint = in.recipient_certificate_digest;
-    std::vector<uint8_t> canonical_aad = canonical::buildEnvelopeAadV1(aad_in);
+    aad_in.recipient_certificate_digest = in.recipient_certificate_digest;
+    std::vector<uint8_t> canonical_aad = canonical::buildParProtoAadV1(aad_in);
     out.canonical_aad = canonical_aad;
     out.aad_digest = canonical::computeAadDigest(canonical_aad);
 
@@ -233,7 +236,8 @@ ErrorCode buildEcdhEsP256EnvelopeV1(const KeyprovEnvelopeInput& in, KeyprovEnvel
     out.authentication_tag = tag;
     out.key_check_value = canonical::computeKcv(in.business_key);
 
-    // deterministic protobuf parameters
+    // deterministic protobuf parameters（VEH-PROTO §7.2.2（1）：生产者显式启用
+    // deterministic serialization，普通 SerializeToString 不作为确定性契约）。
     kp::EcdhEsP256EnvelopeParametersV1 msg;
     msg.set_format_version(1);
     msg.set_server_ephemeral_public_key(eph_pub.data(), eph_pub.size());
@@ -249,10 +253,14 @@ ErrorCode buildEcdhEsP256EnvelopeV1(const KeyprovEnvelopeInput& in, KeyprovEnvel
                                          in.recipient_certificate_digest.size());
     msg.set_operation_id(in.operation_id);
     std::string params_bytes;
-    if (!msg.SerializeToString(&params_bytes)) return ErrorCode::INTERNAL_ERROR;
+    google::protobuf::io::StringOutputStream sos(&params_bytes);
+    google::protobuf::io::CodedOutputStream cos(&sos);
+    cos.SetSerializationDeterministic(true);
+    if (!msg.SerializeToCodedStream(&cos)) return ErrorCode::INTERNAL_ERROR;
+    cos.Trim();  // 收敛 StringOutputStream 尾部未写入字节
     out.parameters.assign(params_bytes.begin(), params_bytes.end());
 
-    // envelopeDigest（以原始 wrappedKey + parameters）
+    // wireEnvelopeDigest（9 段；以原始 wrappedKey + parameters bytes）
     canonical::EnvelopeDigestInput di;
     di.envelope_format = static_cast<uint64_t>(KeyEnvelopeFormat::ECDH_ES_P256_V1);
     di.request_id = in.request_id;
@@ -263,7 +271,7 @@ ErrorCode buildEcdhEsP256EnvelopeV1(const KeyprovEnvelopeInput& in, KeyprovEnvel
     di.wrapping_suite = suite_val;
     di.wrapped_key = out.wrapped_key;
     di.parameters = out.parameters;
-    out.envelope_digest = canonical::computeEnvelopeDigest(di);
+    out.envelope_digest = canonical::buildWireEnvelopeDigestV1(di);
 
     // proofInput
     canonical::ProofInput pi;

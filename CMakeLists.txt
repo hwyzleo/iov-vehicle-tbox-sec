@@ -341,7 +341,8 @@ if(GTest_FOUND)
     # TBOX-SEC-DSN-CR-013: 传入 checker 二进制绝对路径供子进程测试
     target_compile_definitions(TboxSecTests PRIVATE
         SEC_CONFIG_CHECKER_BIN="${CMAKE_CURRENT_BINARY_DIR}/sec_config_checker"
-        SEC_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+        SEC_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+        SEC_PROTO_SOURCE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/proto/security/keyprov/v1/key_provisioning.proto")
     add_test(NAME TboxSecTests COMMAND TboxSecTests)
 endif()
 

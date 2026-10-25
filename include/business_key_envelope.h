@@ -1,13 +1,19 @@
 #pragma once
 
 //
-// EnvelopeValidator + ECDH-ES v1 参数解析（TBOX-SEC-DSN-CR-020 §5/§6/§7）。
+// EnvelopeValidator + ECDH-ES v1 参数解析（TBOX-SEC-DSN-CR-022 §2/§3；
+// VEH-PROTO §7.2.2）。
 //
 // `parameters` 为 EcdhEsP256EnvelopeParametersV1 的 deterministic Protobuf bytes；
 // 解析使用 proto/security/keyprov/v1/key_provisioning.proto 生成的代码，
-// 禁止手写字段 1~12 的 wire codec。
+// 禁止手写字段 1~12 的 wire codec。解析后先拒绝 unknown fields，再以显式
+// deterministic reserialize（CodedOutputStream::SetSerializationDeterministic(true)
+// + SerializeToCodedStream）与原始 bytes 逐字节比较；普通 SerializeToString
+// 不得作为确定性契约校验。wire digest 始终使用收到且通过 canonical 校验的
+// 原始 parameters bytes，不得以重序列化结果替换。
 //
-// 本模块只做校验与解析，不执行任何密码操作。
+// 本模块只做校验与解析，不执行任何密码操作；KCV 由 provider 从 staging 实际
+// 密钥重算（非透传）。
 //
 
 #include "canonical_encoding.h"
@@ -31,7 +37,7 @@ struct EcdhEsP256EnvelopeParameters {
     std::string hkdf_context_version;                   ///< "v1"
     std::vector<uint8_t> nonce;                         ///< 12B
     std::vector<uint8_t> authentication_tag;            ///< 16B
-    std::vector<uint8_t> canonical_aad;                 ///< <= 1KiB
+    std::vector<uint8_t> canonical_aad;                 ///< PAR_PROTO_KEYPROV_AAD_V1 10 段 bytes
     std::vector<uint8_t> aad_digest;                    ///< 32B
     uint64_t root_key_version = 0;
     std::string derivation_version;
@@ -76,24 +82,27 @@ struct ValidatedEnvelope {
 
 /// 用途字符串 -> KeyPurpose enum value；未知返回 false。
 bool purposeEnumValue(const std::string& purpose, uint64_t& out);
-/// 套件字符串 -> WrappingSuite enum value；未知返回 false。
+/// 套件字符串 -> WrappingSuite enum value（登记值 2）；未知返回 false。
 bool wrappingSuiteEnumValue(const std::string& suite, uint64_t& out);
 
-/// 解析 deterministic Protobuf parameters（生成代码 + 规范形式回写校验）。
-/// 失败：WRAPPED_KEY_INVALID（不可解析 / 非规范 bytes / format_version 非 1）。
+/// 解析 deterministic Protobuf parameters（生成代码 + unknown-field 拒绝 +
+/// 显式 deterministic reserialize 回写校验）。
+/// 失败：WRAPPED_KEY_INVALID（不可解析 / 含 unknown fields / 非 canonical
+/// bytes / format_version 非 1）。
 ErrorCode parseEcdhEsP256Parameters(const uint8_t* data, std::size_t n,
                                     EcdhEsP256EnvelopeParameters& out);
 
 /// P-256 SEC1 uncompressed 点校验：恰 65B、首字节 0x04、在曲线上、非无穷点。
 bool isValidP256UncompressedPoint(const std::vector<uint8_t>& point);
 
-/// 解封前校验流水线（DSN §6 步骤 2~8）。任何失败均不执行密码操作。
+/// 解封前校验流水线（CR-022 §2 步骤 2~8）。任何失败均不执行密码操作。
 ErrorCode validateEnvelope(const WrappedKeyItem& item,
                            const EnvelopeContext& ctx,
                            const EnvelopeLimits& limits,
                            ValidatedEnvelope& out);
 
-/// 依据外层上下文重建 canonical AAD（供 provider 与测试复用）。
+/// 依据外层上下文重建 canonical AAD（PAR_PROTO_KEYPROV_AAD_V1，10 段；
+/// nonce 不进入 AAD；供 provider 与测试复用）。
 std::vector<uint8_t> rebuildEnvelopeAad(const std::string& request_id,
                                         const std::string& business_domain,
                                         const WrappedKeyItem& item,

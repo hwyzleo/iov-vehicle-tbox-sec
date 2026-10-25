@@ -1,8 +1,10 @@
 //
-// CanonicalEncodingV1 单元测试（TBOX-SEC-DSN-CR-020 §6/§7 / US-018/020）。
+// CanonicalEncodingV1 单元测试（TBOX-SEC-DSN-CR-022 §3/§5；VEH-PROTO §7.2.2）。
 //
-// 含 golden vector 交叉校验：期望值由独立 Python 参考实现
-// （tests/fixtures/gen_keyprov_ecdh_es_v1_vector.py）生成，C++ 侧不得自证。
+// golden 交叉校验：期望值由本地 Python 再生工具
+// （tests/fixtures/gen_keyprov_ecdh_es_v1_vector.py）生成，C++ 侧不得自证；
+// primary/boundary 段与 VMD/Java（同一 PAR-PROTO CR-009 canonical 语义）
+// 逐字节一致（跨端对账，见 tests/fixtures/keyprov_fixture_manifest.json）。
 //
 #include <gtest/gtest.h>
 
@@ -84,7 +86,6 @@ TEST(CanonicalEncoding, Uint64BeAlwaysEightBytes) {
     for (uint64_t v : values) {
         std::vector<uint8_t> b = canonical::uint64beBytes(v);
         EXPECT_EQ(b.size(), 8u);
-        // 大端序
         uint64_t back = 0;
         for (uint8_t x : b) back = (back << 8) | x;
         EXPECT_EQ(back, v);
@@ -109,51 +110,53 @@ TEST(CanonicalEncoding, LengthPrefixedUint32Be) {
     std::vector<uint8_t> b;
     canonical::appendString(b, "v1");
     ASSERT_EQ(b.size(), 6u);
-    EXPECT_EQ(b[3], 2u);  // 长度前缀 = 2
+    EXPECT_EQ(b[3], 2u);
     EXPECT_EQ(b[4], 'v');
     EXPECT_EQ(b[5], '1');
 }
 
-TEST(CanonicalEncoding, GoldenAadAndDigestsMatchPythonReference) {
+// CR-022 §5：固定 primary input（与 VMD/Java 逐字节一致）的 canonical 输出。
+TEST(CanonicalEncoding, GoldenParProtoAadAndWireDigestMatchReference) {
     auto fx = load_fixture();
-    auto in = fx["inputs"];
-    auto ex = fx["expected"];
+    auto p = fx["primary"];
+    auto ex = p["expected"];
 
     canonical::EnvelopeAadInput aad;
-    aad.envelope_version = "v1";
     uint64_t suite_val = 0;
-    ASSERT_TRUE(wrappingSuiteEnumValue(in["wrapping_suite"].get<std::string>(), suite_val));
-    aad.wrapping_suite = suite_val;
-    aad.request_id = in["request_id"].get<std::string>();
-    aad.business_domain = in["business_domain"].get<std::string>();
+    ASSERT_TRUE(wrappingSuiteEnumValue("ECDH_ES_P256_HKDF_SHA256_AES256GCM", suite_val));
+    EXPECT_EQ(suite_val, 2u);  // VEH-PROTO §7.2.2：wrappingSuite 登记值 = 2
     uint64_t purpose_val = 0;
-    ASSERT_TRUE(purposeEnumValue(in["purpose"].get<std::string>(), purpose_val));
+    ASSERT_TRUE(purposeEnumValue("UPLINK_AEAD", purpose_val));
+    aad.envelope_format = p["envelope_format"].get<uint64_t>();
+    aad.wrapping_suite = suite_val;
+    aad.request_id = p["request_id"].get<std::string>();
+    aad.business_domain = p["business_domain"].get<std::string>();
     aad.purpose = purpose_val;
-    aad.key_id = in["key_id"].get<std::string>();
-    aad.business_key_version = in["business_key_version"].get<uint64_t>();
-    aad.root_key_version = in["root_key_version"].get<uint64_t>();
-    aad.derivation_version = in["derivation_version"].get<std::string>();
-    aad.recipient_certificate_fingerprint = hx(in["recipient_certificate_digest"]);
+    aad.key_id = p["key_id"].get<std::string>();
+    aad.business_key_version = p["business_key_version"].get<uint64_t>();
+    aad.root_key_version = p["root_key_version"].get<uint64_t>();
+    aad.derivation_version = p["derivation_version"].get<std::string>();
+    aad.recipient_certificate_digest = hx(p["recipient_certificate_digest_hex"]);
 
-    std::vector<uint8_t> aad_bytes = canonical::buildEnvelopeAadV1(aad);
+    std::vector<uint8_t> aad_bytes = canonical::buildParProtoAadV1(aad);
     EXPECT_EQ(canonical::toHex(aad_bytes), ex["canonical_aad"].get<std::string>());
     EXPECT_EQ(canonical::toHex(canonical::computeAadDigest(aad_bytes)),
               ex["aad_digest"].get<std::string>());
 
     canonical::EnvelopeDigestInput di;
-    di.envelope_format = static_cast<uint64_t>(KeyEnvelopeFormat::ECDH_ES_P256_V1);
+    di.envelope_format = p["envelope_format"].get<uint64_t>();
     di.request_id = aad.request_id;
     di.business_domain = aad.business_domain;
     di.purpose = purpose_val;
     di.key_id = aad.key_id;
     di.business_key_version = aad.business_key_version;
     di.wrapping_suite = suite_val;
-    di.wrapped_key = hx(ex["wrapped_key"]);
+    di.wrapped_key = hx(p["crypto"]["wrapped_key_hex"]);
     di.parameters = hx(ex["parameters"]);
-    EXPECT_EQ(canonical::toHex(canonical::computeEnvelopeDigest(di)),
-              ex["envelope_digest"].get<std::string>());
+    EXPECT_EQ(canonical::toHex(canonical::buildWireEnvelopeDigestV1(di)),
+              ex["wire_envelope_digest"].get<std::string>());
 
-    std::array<uint8_t, 3> kcv = canonical::computeKcv(hx(in["business_key"]));
+    std::array<uint8_t, 3> kcv = canonical::computeKcv(hx(p["crypto"]["business_key_hex"]));
     EXPECT_EQ(canonical::toHex(std::vector<uint8_t>(kcv.begin(), kcv.end())),
               ex["key_check_value"].get<std::string>());
 
@@ -163,24 +166,70 @@ TEST(CanonicalEncoding, GoldenAadAndDigestsMatchPythonReference) {
     pi.purpose = purpose_val;
     pi.key_id = aad.key_id;
     pi.business_key_version = aad.business_key_version;
-    pi.envelope_digest = hx(ex["envelope_digest"]);
+    pi.envelope_digest = hx(ex["wire_envelope_digest"]);
     pi.key_check_value = hx(ex["key_check_value"]);
     EXPECT_EQ(canonical::toHex(canonical::buildProofInput(pi)),
               ex["proof_input"].get<std::string>());
 
     EXPECT_EQ(canonical::buildHkdfInfoV1(aad.request_id, aad.business_domain,
-                                         in["purpose"].get<std::string>(), aad.key_id,
+                                         "UPLINK_AEAD", aad.key_id,
                                          aad.business_key_version,
-                                         canonical::toHex(aad.recipient_certificate_fingerprint)),
+                                         canonical::toHex(aad.recipient_certificate_digest)),
               ex["hkdf_info"].get<std::string>());
 }
 
-// 设备私钥导入证明（DSN-CR-020 §5/§7.3）golden vector：Python/RFC 6979 参考实现
-// 签名，C++ 侧仅以设备公钥独立验签，不得自证。
+// CR-022 §5：businessKeyVersion 1/127/128/255/256/2^32/2^63-1 固定 8 字节大端，
+// wire digest 与跨端 boundary 向量一致；127/128 内容段均为 8 字节。
+TEST(CanonicalEncoding, WireDigestBoundaryVersionsMatchCrossEnd) {
+    auto fx = load_fixture();
+    auto p = fx["primary"];
+
+    uint64_t suite_val = 0;
+    ASSERT_TRUE(wrappingSuiteEnumValue("ECDH_ES_P256_HKDF_SHA256_AES256GCM", suite_val));
+    uint64_t purpose_val = 0;
+    ASSERT_TRUE(purposeEnumValue("UPLINK_AEAD", purpose_val));
+
+    for (const auto& b : fx["boundary_vectors"]) {
+        const uint64_t ver = b["business_key_version"].get<uint64_t>();
+        canonical::EnvelopeDigestInput di;
+        di.envelope_format = p["envelope_format"].get<uint64_t>();
+        di.request_id = p["request_id"].get<std::string>();
+        di.business_domain = p["business_domain"].get<std::string>();
+        di.purpose = b["purpose"].get<uint64_t>();
+        di.key_id = b.contains("key_id") ? b["key_id"].get<std::string>()
+                                         : p["key_id"].get<std::string>();
+        di.business_key_version = ver;
+        di.wrapping_suite = suite_val;
+        di.wrapped_key = hx(p["crypto"]["wrapped_key_hex"]);
+        di.parameters = hx(p["expected"]["parameters"]);
+        EXPECT_EQ(canonical::toHex(canonical::buildWireEnvelopeDigestV1(di)),
+                  b["wire_envelope_digest_hex"].get<std::string>())
+            << "boundary vector " << b["name"].get<std::string>();
+        EXPECT_EQ(canonical::uint64beBytes(ver).size(), 8u);
+    }
+}
+
+TEST(CanonicalEncoding, VarintAndUint64BeBoundaryHex) {
+    auto fx = load_fixture();
+    auto vb = fx["varint_boundary"];
+    std::vector<uint8_t> v127, v128;
+    canonical::appendEnumVarint(v127, 127);
+    canonical::appendEnumVarint(v128, 128);
+    EXPECT_EQ(canonical::toHex(v127), vb["unsigned_varint_127_hex"].get<std::string>());
+    EXPECT_EQ(canonical::toHex(v128), vb["unsigned_varint_128_hex"].get<std::string>());
+    EXPECT_EQ(canonical::toHex(canonical::uint64beBytes(127)),
+              vb["uint64be_127_hex"].get<std::string>());
+    EXPECT_EQ(canonical::toHex(canonical::uint64beBytes(128)),
+              vb["uint64be_128_hex"].get<std::string>());
+}
+
+// 设备私钥导入证明 golden：Python/RFC 6979 参考实现签名，C++ 侧仅以设备公钥
+// 独立验签，不得自证（DSN-CR-022 §5：proof 只由 SEC 在 commit 后签名）。
 TEST(CanonicalEncoding, GoldenImportProofP1363Verifies) {
     auto fx = load_fixture();
-    auto in = fx["inputs"];
-    auto ex = fx["expected"];
+    auto b = fx["builder"];
+    auto in = b["inputs"];
+    auto ex = b["expected"];
 
     EXPECT_EQ(ex["proof_algorithm"].get<std::string>(),
               std::string(kImportProofAlgorithmP1363));
@@ -192,17 +241,14 @@ TEST(CanonicalEncoding, GoldenImportProofP1363Verifies) {
     ASSERT_EQ(proof.size(), kImportProofSizeP1363);
     EXPECT_TRUE(verify_p1363_proof(device_pub, pinput, proof));
 
-    // 篡改 proofInput → 验签失败。
     std::vector<uint8_t> tampered_input = pinput;
     tampered_input[0] ^= 0xff;
     EXPECT_FALSE(verify_p1363_proof(device_pub, tampered_input, proof));
 
-    // 篡改签名 → 验签失败。
     std::vector<uint8_t> tampered = proof;
     tampered[0] ^= 0xff;
     EXPECT_FALSE(verify_p1363_proof(device_pub, pinput, tampered));
 
-    // 非 low-S（s' = n - s）→ 拒绝。
     EC_GROUP* group = EC_GROUP_new_by_curve_name(NID_X9_62_prime256v1);
     ASSERT_NE(group, nullptr);
     const BIGNUM* order = EC_GROUP_get0_order(group);
@@ -216,7 +262,6 @@ TEST(CanonicalEncoding, GoldenImportProofP1363Verifies) {
     BN_free(s_high);
     EC_GROUP_free(group);
 
-    // DER 编码（非定长 64B P1363）→ 拒绝。
     ECDSA_SIG* sig = ECDSA_SIG_new();
     ECDSA_SIG_set0(sig, BN_bin2bn(proof.data(), 32, nullptr),
                    BN_bin2bn(proof.data() + 32, 32, nullptr));
@@ -227,4 +272,38 @@ TEST(CanonicalEncoding, GoldenImportProofP1363Verifies) {
     EXPECT_FALSE(verify_p1363_proof(device_pub, pinput, der_proof));
     OPENSSL_free(der);
     ECDSA_SIG_free(sig);
+}
+
+// CR-022 §5：即使 FW coreEnvelopeDigest（18 字段内部摘要）不同，SEC 仍只按
+// wire 规则工作——SEC canonical 计算不涉及 FW 私有输入。
+TEST(CanonicalEncoding, WireDigestIndependentOfFwCoreCanonical) {
+    auto fx = load_fixture();
+    auto p = fx["primary"];
+
+    uint64_t suite_val = 0;
+    ASSERT_TRUE(wrappingSuiteEnumValue("ECDH_ES_P256_HKDF_SHA256_AES256GCM", suite_val));
+    uint64_t purpose_val = 0;
+    ASSERT_TRUE(purposeEnumValue("UPLINK_AEAD", purpose_val));
+
+    canonical::EnvelopeDigestInput di;
+    di.envelope_format = p["envelope_format"].get<uint64_t>();
+    di.request_id = p["request_id"].get<std::string>();
+    di.business_domain = p["business_domain"].get<std::string>();
+    di.purpose = purpose_val;
+    di.key_id = p["key_id"].get<std::string>();
+    di.business_key_version = p["business_key_version"].get<uint64_t>();
+    di.wrapping_suite = suite_val;
+    di.wrapped_key = hx(p["crypto"]["wrapped_key_hex"]);
+    di.parameters = hx(p["expected"]["parameters"]);
+    std::vector<uint8_t> wire = canonical::buildWireEnvelopeDigestV1(di);
+
+    // 模拟 FW 私有 18 字段 canonical 的不同输入（字段顺序/内容均与 PAR-PROTO
+    // 无关），其摘要必然与 wireEnvelopeDigest 不同——但 SEC 校验从不计算它。
+    std::vector<uint8_t> fw_core_input;
+    canonical::appendString(fw_core_input, p["request_id"].get<std::string>());
+    canonical::appendEnumVarint(fw_core_input, purpose_val);
+    canonical::appendBytes(fw_core_input, di.wrapped_key);
+    std::vector<uint8_t> fw_core = canonical::sha256(fw_core_input);
+    EXPECT_NE(canonical::toHex(fw_core), canonical::toHex(wire));
+    EXPECT_EQ(canonical::toHex(wire), p["expected"]["wire_envelope_digest"].get<std::string>());
 }

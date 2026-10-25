@@ -264,6 +264,30 @@ TEST_F(BusinessKeyIntegrationTest, ImportResult_NotFound_FreshNoResidue) {
     EXPECT_EQ(r.state, BusinessKeyImportState::NOT_FOUND);
 }
 
+// 确定性拒绝（validate_structure 校验失败）时 client 必须解析权威 result：
+// status=BUSINESS_KEY_UNSUPPORTED（非 0）同样携带 state=FAILED，调用方据此
+// 分类为 fail-closed，而不是被误判为“结果未知可重试”（现场：key_algorithm 不符
+// 导致 30s 无限重发）。
+TEST_F(BusinessKeyIntegrationTest, DeterministicReject_ParsesFailedState) {
+    SecClient client(socket_path_);
+    ASSERT_TRUE(client.connect());
+
+    // 构造算法为 "AES"（非协议 canonical AES-256）的批次 → validate_structure 拒绝
+    auto items = make_batch("det-rej-1", 1);
+    for (auto& it : items) {
+        it.algorithm = "AES";
+    }
+    ImportResult result;
+    ASSERT_EQ(client.import_wrapped_business_keys("det-rej-1", kBusinessDomainV2c, items, result),
+              ErrorCode::BUSINESS_KEY_UNSUPPORTED);
+    // 修复后：错误 status 也解析响应体，state=FAILED 可见（此前保持 UNKNOWN）
+    EXPECT_EQ(result.state, BusinessKeyImportState::FAILED);
+    // 未受理：不得留下 journal / 副作用
+    ImportResult queried;
+    ASSERT_EQ(client.get_business_key_import_result("det-rej-1", queried), ErrorCode::SUCCESS);
+    EXPECT_EQ(queried.state, BusinessKeyImportState::NOT_FOUND);
+}
+
 // TBOX-SEC-DSN-CR-021 §4：client parser 兼容矩阵（数值+稳定字符串 additive 编码）。
 // 用固定响应的 stub server 验证：旧 SEC（无 state_code）、未知数值、数值/字符串冲突、
 // 缺失 state 均映射 UNKNOWN；已知 NOT_FOUND 正常映射。
