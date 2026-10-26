@@ -910,6 +910,18 @@ std::pair<int32_t, std::string> SecIpcDispatcher::handle_import_wrapped_business
         it.wrapped_key.clear();
         it.parameters.clear();
     }
+    // 诊断：IPC 收到的原始 base64 长度（区分 TSP 未发送 vs SEC 解码失败）
+    std::vector<std::pair<std::string, std::string>> raw_b64;
+    try {
+        auto j = nlohmann::json::parse(params);
+        if (j.contains("items") && j["items"].is_array()) {
+            for (auto& ji : j["items"]) {
+                raw_b64.emplace_back(ji.value("wrapped_key", ""),
+                                     ji.value("parameters", ""));
+            }
+        }
+    } catch (const nlohmann::json::exception&) {
+    }
     // 导入结果审计（ipc logger 固定写盘；business_key logger 仅作补充）：
     // 记录 rc/state/requestId 摘要/epoch/租约/有效期，便于定位车端导入拒绝原因
     // （现场：TSP 只看到 import_failed，无法区分 1021/1023/1029/1030 与信封/有效期拒绝）。
@@ -950,7 +962,11 @@ std::pair<int32_t, std::string> SecIpcDispatcher::handle_import_wrapped_business
                 " wk=" + std::to_string(it.wrapped_key.size()) +
                 " prm=" + std::to_string(it.parameters.size()) +
                 " ed=" + std::to_string(it.envelope_digest.size()) +
-                " kcv=" + (it.key_check_value_present ? "yes" : "no");
+                " kcv=" + (it.key_check_value_present ? "yes" : "no") +
+                " b64wk=" + (i < raw_b64.size() ? std::to_string(raw_b64[i].first.size())
+                                                 : "n/a") +
+                " b64prm=" + (i < raw_b64.size() ? std::to_string(raw_b64[i].second.size())
+                                                  : "n/a");
             SecLogAdapter::ipc().info(
                 "sec.ipc.import_kl1_item", "KL1 导入 item", {
                     tbox::fw::log::Field("request_id_digest",
