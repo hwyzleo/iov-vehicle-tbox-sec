@@ -3,6 +3,7 @@
 //
 #include "business_key_envelope.h"
 
+#include "sec_log_adapter.h"
 #include "proto/security/keyprov/v1/key_provisioning.pb.h"
 
 #include <google/protobuf/io/coded_stream.h>
@@ -132,38 +133,54 @@ ErrorCode validateEnvelope(const WrappedKeyItem& item,
                            const EnvelopeContext& ctx,
                            const EnvelopeLimits& limits,
                            ValidatedEnvelope& out) {
+    // 诊断：定位 1023 WRAPPED_KEY_INVALID 的具体检查点（现场持续失败）
+    auto fail = [&](const char* stage, ErrorCode code) {
+        SecLogAdapter::business_key().warn(
+            "sec.business_key.envelope_reject", "信封校验拒绝", {
+                tbox::fw::log::Field("stage", tbox::fw::log::FieldValue::makeString(stage)),
+                tbox::fw::log::Field("purpose", tbox::fw::log::FieldValue::makeString(item.purpose)),
+                tbox::fw::log::Field("key_id", tbox::fw::log::FieldValue::makeString(item.key_id)),
+                tbox::fw::log::Field("wk_size", tbox::fw::log::FieldValue::makeInt(
+                    static_cast<int64_t>(item.wrapped_key.size()))),
+                tbox::fw::log::Field("prm_size", tbox::fw::log::FieldValue::makeInt(
+                    static_cast<int64_t>(item.parameters.size()))),
+                tbox::fw::log::Field("ed_size", tbox::fw::log::FieldValue::makeInt(
+                    static_cast<int64_t>(item.envelope_digest.size())))
+            });
+        return code;
+    };
     // §6.2 format / suite / 算法 allowlist（首期仅 ECDH_ES_P256_V1）
     if (item.envelope_format != KeyEnvelopeFormat::ECDH_ES_P256_V1)
-        return ErrorCode::BUSINESS_KEY_UNSUPPORTED;
+        return fail("envelope_format", ErrorCode::BUSINESS_KEY_UNSUPPORTED);
     uint64_t suite_val = 0;
     if (!wrappingSuiteEnumValue(item.wrapping_suite, suite_val))
-        return ErrorCode::BUSINESS_KEY_UNSUPPORTED;
-    if (item.algorithm != kDefaultKeyAlgorithm) return ErrorCode::BUSINESS_KEY_UNSUPPORTED;
+        return fail("wrapping_suite", ErrorCode::BUSINESS_KEY_UNSUPPORTED);
+    if (item.algorithm != kDefaultKeyAlgorithm) return fail("algorithm", ErrorCode::BUSINESS_KEY_UNSUPPORTED);
 
     // §6.3 parameters 解析 + 长度上限
-    if (item.parameters.empty()) return ErrorCode::WRAPPED_KEY_INVALID;
-    if (item.parameters.size() > limits.max_parameters) return ErrorCode::WRAPPED_KEY_INVALID;
+    if (item.parameters.empty()) return fail("parameters_empty", ErrorCode::WRAPPED_KEY_INVALID);
+    if (item.parameters.size() > limits.max_parameters) return fail("parameters_too_large", ErrorCode::WRAPPED_KEY_INVALID);
     EcdhEsP256EnvelopeParameters params;
     ErrorCode rc = parseEcdhEsP256Parameters(item.parameters.data(), item.parameters.size(), params);
-    if (rc != ErrorCode::SUCCESS) return rc;
-    if (params.format_version != 1) return ErrorCode::WRAPPED_KEY_INVALID;
+    if (rc != ErrorCode::SUCCESS) return fail("parameters_parse", rc);
+    if (params.format_version != 1) return fail("format_version", ErrorCode::WRAPPED_KEY_INVALID);
     if (params.hkdf_context_version != kDefaultHkdfContextVersion)
-        return ErrorCode::BUSINESS_KEY_UNSUPPORTED;
+        return fail("hkdf_context_version", ErrorCode::BUSINESS_KEY_UNSUPPORTED);
 
     // 长度上限（PAR-PROTO §7）
     if (item.wrapped_key.empty() || item.wrapped_key.size() > limits.max_wrapped_key)
-        return ErrorCode::WRAPPED_KEY_INVALID;
+        return fail("wrapped_key_empty_or_large", ErrorCode::WRAPPED_KEY_INVALID);
     if (params.canonical_aad.size() > limits.max_canonical_aad)
-        return ErrorCode::WRAPPED_KEY_INVALID;
-    if (params.hkdf_salt.size() != 32) return ErrorCode::WRAPPED_KEY_INVALID;
-    if (params.nonce.size() != 12) return ErrorCode::WRAPPED_KEY_INVALID;
-    if (params.authentication_tag.size() != 16) return ErrorCode::WRAPPED_KEY_INVALID;
-    if (params.aad_digest.size() != 32) return ErrorCode::WRAPPED_KEY_INVALID;
-    if (params.recipient_certificate_digest.size() != 32) return ErrorCode::WRAPPED_KEY_INVALID;
+        return fail("canonical_aad_too_large", ErrorCode::WRAPPED_KEY_INVALID);
+    if (params.hkdf_salt.size() != 32) return fail("hkdf_salt_len", ErrorCode::WRAPPED_KEY_INVALID);
+    if (params.nonce.size() != 12) return fail("nonce_len", ErrorCode::WRAPPED_KEY_INVALID);
+    if (params.authentication_tag.size() != 16) return fail("auth_tag_len", ErrorCode::WRAPPED_KEY_INVALID);
+    if (params.aad_digest.size() != 32) return fail("aad_digest_len", ErrorCode::WRAPPED_KEY_INVALID);
+    if (params.recipient_certificate_digest.size() != 32) return fail("recipient_cert_digest_len", ErrorCode::WRAPPED_KEY_INVALID);
 
     // §6.4 临时公钥校验
     if (!isValidP256UncompressedPoint(params.server_ephemeral_public_key))
-        return ErrorCode::WRAPPED_KEY_INVALID;
+        return fail("server_ephemeral_point", ErrorCode::WRAPPED_KEY_INVALID);
 
     // §6.5 证书能力门禁（ACTIVE 证书 P-256 + keyAgreement + digitalSignature + 私钥 sign/derive
     // + CR-020 §2.1 逻辑 Profile 合取：CA=false、clientAuth-only、关键扩展 allowlist、
@@ -175,15 +192,15 @@ ErrorCode validateEnvelope(const WrappedKeyItem& item,
         !ctx.active_cert_critical_extensions_allowed ||
         !ctx.active_cert_leaf_digest_bound || !ctx.active_cert_chain_key_match ||
         !ctx.identity_template_sign_derive)
-        return ErrorCode::BUSINESS_KEY_NOT_READY;
+        return fail("cert_capability_gate", ErrorCode::BUSINESS_KEY_NOT_READY);
     if (ctx.active_cert_digest.size() != params.recipient_certificate_digest.size() ||
         !constantTimeEqual(ctx.active_cert_digest, params.recipient_certificate_digest))
-        return ErrorCode::WRAPPED_KEY_INVALID;
+        return fail("cert_digest_mismatch", ErrorCode::WRAPPED_KEY_INVALID);
 
     // §6.6 AAD 重建与比对
     std::vector<uint8_t> aad = rebuildEnvelopeAad(ctx.request_id, ctx.business_domain, item, params);
-    if (!constantTimeEqual(aad, params.canonical_aad)) return ErrorCode::WRAPPED_KEY_INVALID;
-    if (!constantTimeEqual(sha256(aad), params.aad_digest)) return ErrorCode::WRAPPED_KEY_INVALID;
+    if (!constantTimeEqual(aad, params.canonical_aad)) return fail("aad_mismatch", ErrorCode::WRAPPED_KEY_INVALID);
+    if (!constantTimeEqual(sha256(aad), params.aad_digest)) return fail("aad_digest_mismatch", ErrorCode::WRAPPED_KEY_INVALID);
 
     // §6.7 envelopeDigest 重算（以收到的原始 wrappedKey + parameters）
     canonical::EnvelopeDigestInput di;
@@ -191,7 +208,7 @@ ErrorCode validateEnvelope(const WrappedKeyItem& item,
     di.request_id = ctx.request_id;
     di.business_domain = ctx.business_domain;
     uint64_t purpose_val = 0;
-    if (!purposeEnumValue(item.purpose, purpose_val)) return ErrorCode::BUSINESS_KEY_UNSUPPORTED;
+    if (!purposeEnumValue(item.purpose, purpose_val)) return fail("purpose_enum", ErrorCode::BUSINESS_KEY_UNSUPPORTED);
     di.purpose = purpose_val;
     di.key_id = item.key_id;
     di.business_key_version = item.business_key_version;
@@ -201,15 +218,15 @@ ErrorCode validateEnvelope(const WrappedKeyItem& item,
     std::vector<uint8_t> computed = canonical::buildWireEnvelopeDigestV1(di);
     if (item.envelope_digest.size() != computed.size() ||
         !constantTimeEqual(item.envelope_digest, computed))
-        return ErrorCode::WRAPPED_KEY_INVALID;
+        return fail("wire_digest_mismatch", ErrorCode::WRAPPED_KEY_INVALID);
 
     // §6.8 版本/operationId
     if (item.business_key_version == 0 ||
         item.business_key_version > ((1ULL << 63) - 1))
-        return ErrorCode::WRAPPED_KEY_INVALID;
-    if (params.root_key_version == 0) return ErrorCode::WRAPPED_KEY_INVALID;
-    if (params.derivation_version.empty()) return ErrorCode::WRAPPED_KEY_INVALID;
-    if (params.operation_id.empty()) return ErrorCode::WRAPPED_KEY_INVALID;
+        return fail("business_key_version", ErrorCode::WRAPPED_KEY_INVALID);
+    if (params.root_key_version == 0) return fail("root_key_version", ErrorCode::WRAPPED_KEY_INVALID);
+    if (params.derivation_version.empty()) return fail("derivation_version_empty", ErrorCode::WRAPPED_KEY_INVALID);
+    if (params.operation_id.empty()) return fail("operation_id_empty", ErrorCode::WRAPPED_KEY_INVALID);
 
     out.params = std::move(params);
     out.canonical_aad = std::move(aad);
