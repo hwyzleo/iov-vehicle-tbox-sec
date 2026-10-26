@@ -145,7 +145,13 @@ ErrorCode validateEnvelope(const WrappedKeyItem& item,
                 tbox::fw::log::Field("prm_size", tbox::fw::log::FieldValue::makeInt(
                     static_cast<int64_t>(item.parameters.size()))),
                 tbox::fw::log::Field("ed_size", tbox::fw::log::FieldValue::makeInt(
-                    static_cast<int64_t>(item.envelope_digest.size())))
+                    static_cast<int64_t>(item.envelope_digest.size()))),
+                tbox::fw::log::Field("request_id", tbox::fw::log::FieldValue::makeString(ctx.request_id)),
+                tbox::fw::log::Field("domain", tbox::fw::log::FieldValue::makeString(ctx.business_domain)),
+                tbox::fw::log::Field("root_key_version", tbox::fw::log::FieldValue::makeInt(
+                    static_cast<int64_t>(item.business_key_version))),
+                tbox::fw::log::Field("aad_len", tbox::fw::log::FieldValue::makeInt(
+                    static_cast<int64_t>(item.parameters.size())))
             });
         return code;
     };
@@ -199,7 +205,40 @@ ErrorCode validateEnvelope(const WrappedKeyItem& item,
 
     // §6.6 AAD 重建与比对
     std::vector<uint8_t> aad = rebuildEnvelopeAad(ctx.request_id, ctx.business_domain, item, params);
-    if (!constantTimeEqual(aad, params.canonical_aad)) return fail("aad_mismatch", ErrorCode::WRAPPED_KEY_INVALID);
+    if (!constantTimeEqual(aad, params.canonical_aad)) {
+        auto hex_of = [](const std::vector<uint8_t>& v) -> std::string {
+            static const char* kHex = "0123456789abcdef";
+            std::string s;
+            for (size_t i = 0; i < v.size() && i < 48; ++i) {
+                s += kHex[(v[i] >> 4) & 0xF];
+                s += kHex[v[i] & 0xF];
+            }
+            return s;
+        };
+        SecLogAdapter::business_key().warn(
+            "sec.business_key.aad_mismatch_detail", "AAD 重建不一致", {
+                tbox::fw::log::Field("purpose", tbox::fw::log::FieldValue::makeString(item.purpose)),
+                tbox::fw::log::Field("request_id", tbox::fw::log::FieldValue::makeString(ctx.request_id)),
+                tbox::fw::log::Field("domain", tbox::fw::log::FieldValue::makeString(ctx.business_domain)),
+                tbox::fw::log::Field("key_id", tbox::fw::log::FieldValue::makeString(item.key_id)),
+                tbox::fw::log::Field("business_key_version", tbox::fw::log::FieldValue::makeInt(
+                    static_cast<int64_t>(item.business_key_version))),
+                tbox::fw::log::Field("root_key_version", tbox::fw::log::FieldValue::makeInt(
+                    static_cast<int64_t>(params.root_key_version))),
+                tbox::fw::log::Field("derivation_version", tbox::fw::log::FieldValue::makeString(
+                    params.derivation_version)),
+                tbox::fw::log::Field("cert_digest", tbox::fw::log::FieldValue::makeString(
+                    hex_of(params.recipient_certificate_digest))),
+                tbox::fw::log::Field("rebuilt_aad_len", tbox::fw::log::FieldValue::makeInt(
+                    static_cast<int64_t>(aad.size()))),
+                tbox::fw::log::Field("rebuilt_aad_head", tbox::fw::log::FieldValue::makeString(hex_of(aad))),
+                tbox::fw::log::Field("canonical_aad_len", tbox::fw::log::FieldValue::makeInt(
+                    static_cast<int64_t>(params.canonical_aad.size()))),
+                tbox::fw::log::Field("canonical_aad_head", tbox::fw::log::FieldValue::makeString(
+                    hex_of(params.canonical_aad)))
+            });
+        return fail("aad_mismatch", ErrorCode::WRAPPED_KEY_INVALID);
+    }
     if (!constantTimeEqual(sha256(aad), params.aad_digest)) return fail("aad_digest_mismatch", ErrorCode::WRAPPED_KEY_INVALID);
 
     // §6.7 envelopeDigest 重算（以收到的原始 wrappedKey + parameters）
