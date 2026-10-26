@@ -5,7 +5,9 @@
 #include "tls_credential_provider.h"
 #include "peer_credential.h"
 #include "business_key_provisioning.h"
+#include "canonical_encoding.h"
 #include "tbox/sec/types.h"
+#include "tbox/sec/errors.h"
 #include "tbox/sec/business_key.h"
 #include "utils.h"
 #include <nlohmann/json.hpp>
@@ -907,6 +909,31 @@ std::pair<int32_t, std::string> SecIpcDispatcher::handle_import_wrapped_business
     for (auto& it : items) {
         it.wrapped_key.clear();
         it.parameters.clear();
+    }
+    // 导入结果审计（ipc logger 固定写盘；business_key logger 仅作补充）：
+    // 记录 rc/state/requestId 摘要/epoch/租约/有效期，便于定位车端导入拒绝原因
+    // （现场：TSP 只看到 import_failed，无法区分 1021/1023/1029/1030 与信封/有效期拒绝）。
+    {
+        const auto import_start = std::chrono::steady_clock::now();
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - import_start).count();
+        SecLogAdapter::ipc().info(
+            "sec.ipc.import_kl1_result", "KL1 导入结果", {
+                tbox::fw::log::Field("request_id_digest",
+                    tbox::fw::log::FieldValue::makeString(
+                        canonical::toHex(canonical::sha256(request_id)))),
+                tbox::fw::log::Field("rc", tbox::fw::log::FieldValue::makeInt(
+                    static_cast<int64_t>(static_cast<uint32_t>(rc)))),
+                tbox::fw::log::Field("error", tbox::fw::log::FieldValue::makeString(
+                    error_code_to_string(rc))),
+                tbox::fw::log::Field("state", tbox::fw::log::FieldValue::makeString(
+                    business_key_import_state_to_string(result.state))),
+                tbox::fw::log::Field("admission_expire_at_ms", tbox::fw::log::FieldValue::makeInt(
+                    context.admission_expire_at_ms)),
+                tbox::fw::log::Field("capability_epoch", tbox::fw::log::FieldValue::makeInt(
+                    static_cast<int64_t>(context.capability_epoch))),
+                tbox::fw::log::Field("duration_ms", tbox::fw::log::FieldValue::makeInt(ms))
+            });
     }
     nlohmann::json resp = import_result_kl1_to_json(result, attach);
     if (rc != ErrorCode::SUCCESS) resp["success"] = false;
