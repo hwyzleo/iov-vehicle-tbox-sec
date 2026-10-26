@@ -932,8 +932,35 @@ std::pair<int32_t, std::string> SecIpcDispatcher::handle_import_wrapped_business
                     context.admission_expire_at_ms)),
                 tbox::fw::log::Field("capability_epoch", tbox::fw::log::FieldValue::makeInt(
                     static_cast<int64_t>(context.capability_epoch))),
+                tbox::fw::log::Field("item_count", tbox::fw::log::FieldValue::makeInt(
+                    static_cast<int64_t>(items.size()))),
                 tbox::fw::log::Field("duration_ms", tbox::fw::log::FieldValue::makeInt(ms))
             });
+        // item 级明细：有效期/digest/KCV/大小，定位 1023 WRAPPED_KEY_INVALID 的检查点
+        for (size_t i = 0; i < items.size(); ++i) {
+            const auto& it = items[i];
+            std::string detail = "purpose=" + it.purpose +
+                " key_id=" + it.key_id +
+                " ver=" + std::to_string(it.business_key_version) +
+                " alg=" + it.algorithm +
+                " env=" + key_envelope_format_to_string(it.envelope_format) +
+                " suite=" + it.wrapping_suite +
+                " vf=" + std::to_string(it.valid_from_ms) +
+                " vt=" + std::to_string(it.valid_to_ms) +
+                " wk=" + std::to_string(it.wrapped_key.size()) +
+                " prm=" + std::to_string(it.parameters.size()) +
+                " ed=" + std::to_string(it.envelope_digest.size()) +
+                " kcv=" + (it.key_check_value_present ? "yes" : "no");
+            SecLogAdapter::ipc().info(
+                "sec.ipc.import_kl1_item", "KL1 导入 item", {
+                    tbox::fw::log::Field("request_id_digest",
+                        tbox::fw::log::FieldValue::makeString(
+                            canonical::toHex(canonical::sha256(request_id)))),
+                    tbox::fw::log::Field("index", tbox::fw::log::FieldValue::makeInt(
+                        static_cast<int64_t>(i))),
+                    tbox::fw::log::Field("detail", tbox::fw::log::FieldValue::makeString(detail))
+                });
+        }
     }
     nlohmann::json resp = import_result_kl1_to_json(result, attach);
     if (rc != ErrorCode::SUCCESS) resp["success"] = false;
