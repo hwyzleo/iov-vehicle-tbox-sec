@@ -71,10 +71,18 @@ const std::set<std::string> kSecKeys = {"ipc", "tls", "trusted_time",
 const std::set<std::string> kSecIpcKeys = {"socket_path"};
 const std::set<std::string> kSecTlsKeys = {"dev_peer_service", "profiles"};
 const std::set<std::string> kSecTrustedTimeKeys = {
-    "provider", "platform", "hardware_rtc", "rollback_tolerance_ms"
+    "provider", "platform", "hardware_rtc", "rollback_tolerance_ms",
+    "peer_allowlist"  // TBOX-SEC-DSN-CR-024：可信时间 IPC/SDK peer allowlist
 };
 const std::set<std::string> kTrustedTimePlatformKeys = {
-    "enabled", "max_freshness_ms", "max_uncertainty_ms"
+    "enabled", "max_freshness_ms", "max_uncertainty_ms",
+    // TBOX-SEC-DSN-CR-024：TIME client / 监测 / 短租约 / 认证绑定
+    "monitor_enabled", "time_client", "monitor_refresh_interval_ms",
+    "lease_max_ms", "cache_max_age_ms", "auth"
+};
+const std::set<std::string> kTrustedTimeClientKeys = {"socket_path", "timeout_ms"};
+const std::set<std::string> kTrustedTimeAuthKeys = {
+    "require_evidence", "policy_versions", "approved_sources"
 };
 const std::set<std::string> kTrustedTimeRtcKeys = {"enabled", "require_provisioned"};
 // TBOX-SEC-DSN-CR-019: V2C 业务密钥开通治理项（非秘密）
@@ -419,6 +427,23 @@ private:
                           1000, 86400000);
             checkIntField(platform, "sec.trusted_time.platform.max_uncertainty_ms",
                           0, 60000);
+            // TBOX-SEC-DSN-CR-024：TIME client / 监测 / 租约 / 认证绑定
+            checkIntField(platform, "sec.trusted_time.platform.monitor_refresh_interval_ms",
+                          100, 1000);
+            checkIntField(platform, "sec.trusted_time.platform.lease_max_ms", 100, 1000);
+            checkIntField(platform, "sec.trusted_time.platform.cache_max_age_ms", 100, 1000);
+            YAML::Node tc = platform["time_client"];
+            if (tc && tc.IsMap()) {
+                checkUnknownFields(tc, kTrustedTimeClientKeys,
+                                   "sec.trusted_time.platform.time_client");
+                checkIntField(tc, "sec.trusted_time.platform.time_client.timeout_ms",
+                              50, 5000);
+            }
+            YAML::Node auth = platform["auth"];
+            if (auth && auth.IsMap()) {
+                checkUnknownFields(auth, kTrustedTimeAuthKeys,
+                                   "sec.trusted_time.platform.auth");
+            }
         }
 
         YAML::Node rtc = tt["hardware_rtc"];

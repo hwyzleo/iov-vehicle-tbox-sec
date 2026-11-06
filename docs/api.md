@@ -157,6 +157,54 @@ Execute routines.
 
 1022/1023/1025 复用既有语义（同 rid 不同 digest 冲突 / item·cert 有效期覆盖 E / 能力·时间·存储不健康）。
 
+## 只读可信时间（TBOX-SEC-DSN-CR-024；additive）
+
+### IPC 方法号与事件（已冻结登记：24/25 + EventId 2）
+
+| MethodId | 方法 | 说明 |
+|---|---|---|
+| 24 | `GET_TRUSTED_TIME` | 只读可信时间查询（请求 `request_token`=上次 `sec_daemon_epoch`；响应 `envelope`=TrustedTimeEnvelope；Unknown/Untrusted 是可查询业务状态，不伪装为 IPC 错误） |
+| 25 | `SUBSCRIBE_TRUSTED_TIME_CHANGED` | 订阅可信时间变化事件（握手响应 = 当前 envelope 基线；随后推送 EventId 2） |
+
+| EventId | 事件 | 载荷 |
+|---|---|---|
+| 2 | `TRUSTED_TIME_CHANGED` | `{envelope}`（信任/来源/代次/对齐/关键 reason 变化才推；高频数值不逐次广播） |
+
+TIME 与 SEC 为不同服务命名空间，方法号不要求一致；MQTT 旧分析候选 MethodId=24/EventId=2 仅在本仓实际登记后生效。
+
+### dev/test `provider: fake` 与只读 IPC（CR-024 修订）
+
+- 生产（`environment.is_production=true`）**只**走 `provider=composite` → TIME client →
+  adapter → composite → monitor；生产无 fake、无 accept_unverified、无 bypass。
+- 仅当 `sec.trusted_time.provider=fake` **且**非生产时，组合根改装配
+  `FakeTrustedTimeSnapshotSource`（同一 `TrustedTimeSnapshotSource` 契约、同一方法 24/25、
+  同一 ACL allowlist），样本由 `FakeTrustedTimeProvider`（`track_wall_clock=true`，按查询时刻
+  取当前墙钟）提供；envelope 语义：`trust_state=trusted`、`source=fake_test`、
+  `reason=fake_test`、`auth_status=unverified`（不伪造认证证据）、
+  `remaining_validity_ms≤lease_max`、`system_clock_aligned=true`。
+- 目的：dev/test 车端（如 Orin dev kit）在没有认证时间源时仍可验证 MQTT 时间门禁的正向链路，
+  避免方法 24/25 恒返回 `NOT_IMPLEMENTED`（SEC-8004）导致 MQTT 永久 `TIME_WAIT`。
+
+### SDK 新符号（旧函数不变）
+
+- `get_trusted_time(request_token, TrustedTimeEnvelope&)` / `get_trusted_time(TrustedTimeEnvelope&)`：只读可重试；
+- `subscribe_trusted_time_changed(cb)`：RAII 句柄，先订阅再查询对账。
+
+### envelope 参考时刻与租约（跨进程契约）
+
+- `remaining_validity_ms` 为 SEC 序列化时刻剩余租约（SEC 已扣 TIME→SEC 一跳 RTT/缓存年龄）；
+  消费方（MQTT）再扣自身 SEC→本进程 RTT 与本地缓存年龄，只扣一次；
+- `utc_epoch_ms`/`freshness_age_ms`/`uncertainty_ms` 为 SEC 序列化时刻有效值（UTC 已按年龄推进、uncertainty 已含漂移增长）。
+
+### 可信时间错误码（1031..1034；业务状态在 envelope，与传输错误分离）
+
+| 码 | 符号 | 触发 |
+|---|---|---|
+| 1031 | `TRUSTED_TIME_UNAVAILABLE` | 时间服务不可达/未启动 |
+| 1032 | `TRUSTED_TIME_TIMEOUT` | 查询超时 |
+| 1033 | `TRUSTED_TIME_UNSUPPORTED` | 契约版本/能力不支持（未知安全必需能力整体拒绝） |
+| 1034 | `TRUSTED_TIME_MALFORMED` | 响应畸形/迟到（请求 token 拒绝，error_class="stale"）/无法解析 |
+
 ### 锁内处理顺序（事实优先级）
 
 1. 匹配 COMMITTED → 恢复原结果/proof（旧 E 过期不否定事实，不重签）；

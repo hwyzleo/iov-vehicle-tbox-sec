@@ -50,6 +50,11 @@ public:
     void doCleanup() { cleanup(); }
     int doExecute() { return execute(); }
     void doRequestShutdown() { requestShutdown(); }
+    // CR-024 修订：白盒观测可信时间只读快照源（生产 monitor / dev-test fake）
+    TrustedTimeSnapshotSource* timeSource() const { return SecApplication::timeSource(); }
+    static bool fakeAllowed(const std::string& provider, bool is_production) {
+        return SecApplication::allowDevTestFakeTime(provider, is_production);
+    }
 protected:
     // 注入 MockProvService，避免单测依赖真实 PROV daemon
     std::shared_ptr<ProvServiceInterface> createProvClient(const std::string&) override {
@@ -59,7 +64,9 @@ protected:
 
 std::string makeConfig(const std::string& dir,
                        const std::string& store_root,
-                       const std::string& socket_path) {
+                       const std::string& socket_path,
+                       const std::string& sec_extra = "",
+                       const std::string& top_extra = "") {
     std::filesystem::create_directories(std::string(dir) + "/conf.d");
     {
         std::ofstream f(std::string(dir) + "/common.yaml");
@@ -73,11 +80,13 @@ std::string makeConfig(const std::string& dir,
     {
         std::ofstream f(std::string(dir) + "/conf.d/sec.yaml");
         f << "sec:\n  ipc:\n    socket_path: \"" << socket_path << "\"\n"
+          << sec_extra
           << "hsm:\n  type: \"soft_file\"\n"
           << "key_provisioning:\n  mode: \"soft_file\"\n"
           << "soft_key:\n  path: \"" << store_root << "\"\n"
           << "cloud:\n  endpoint: \"https://test.example.com\"\n"
           << "  timeout_ms: 1000\n  retry_count: 1\n  retry_delay_ms: 100\n";
+        if (!top_extra.empty()) f << top_extra;
     }
     return dir;
 }
@@ -227,6 +236,57 @@ TEST_F(SecApplicationTest, ExecuteReturnsAfterShutdownRequest) {
     EXPECT_EQ(rc, 0);
     // 默认 poll 100ms + 触发延迟 150ms，应在 1s 内返回（不依赖 EINTR）
     EXPECT_LT(elapsed, 1000);
+
+    app.doCleanup();
+}
+
+// ============================================================
+// CR-024 修订：dev/test fake 只读快照源装配与生产隔离
+// ============================================================
+
+// 唯一判定入口：仅「显式 provider=fake 且非生产」允许，无 accept_unverified/bypass
+TEST_F(SecApplicationTest, FakeTimeProfilePredicate) {
+    EXPECT_TRUE(TestableSecApplication::fakeAllowed("fake", false));
+    EXPECT_FALSE(TestableSecApplication::fakeAllowed("fake", true));
+    EXPECT_FALSE(TestableSecApplication::fakeAllowed("composite", false));
+    EXPECT_FALSE(TestableSecApplication::fakeAllowed("", false));
+}
+
+// dev/test fake profile：IPC 方法 24 的读入口不再是 NOT_IMPLEMENTED(SEC-8004)
+TEST_F(SecApplicationTest, DevTestFakeProfileExposesReadOnlyIpcSource) {
+    makeConfig(test_dir_, store_dir_, socket_path_,
+               "  trusted_time:\n    provider: \"fake\"\n",
+               "environment:\n  is_production: false\n");
+    TestableSecApplication app;
+    ASSERT_TRUE(app.doLoadConfig(test_dir_));
+    ASSERT_TRUE(app.doInitialize());
+
+    TrustedTimeSnapshotSource* src = app.timeSource();
+    ASSERT_NE(src, nullptr);
+    EXPECT_NE(dynamic_cast<FakeTrustedTimeSnapshotSource*>(src), nullptr);
+
+    const auto env = src->get(0).to_envelope();
+    EXPECT_EQ(env.valid, true);
+    EXPECT_EQ(env.contract_complete, true);
+    EXPECT_EQ(env.trust_state, "trusted");
+    EXPECT_EQ(env.source, "fake_test");
+    EXPECT_GT(env.remaining_validity_ms, 0);
+
+    app.doCleanup();
+    EXPECT_FALSE(std::filesystem::exists(socket_path_));
+}
+
+// 缺省 composite profile：不得装配 fake 源（生产/通用路径保持 monitor）
+TEST_F(SecApplicationTest, CompositeProfileDoesNotUseFakeSource) {
+    makeConfig(test_dir_, store_dir_, socket_path_);
+    TestableSecApplication app;
+    ASSERT_TRUE(app.doLoadConfig(test_dir_));
+    ASSERT_TRUE(app.doInitialize());
+
+    TrustedTimeSnapshotSource* src = app.timeSource();
+    ASSERT_NE(src, nullptr);
+    EXPECT_EQ(dynamic_cast<FakeTrustedTimeSnapshotSource*>(src), nullptr);
+    EXPECT_NE(dynamic_cast<TrustedTimeMonitor*>(src), nullptr);
 
     app.doCleanup();
 }

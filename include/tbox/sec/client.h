@@ -8,6 +8,7 @@
 #include "tbox/sec/types.h"
 #include "tbox/sec/errors.h"
 #include "tbox/sec/business_key.h"
+#include "tbox/sec/time.h"
 
 namespace tbox {
 namespace sec {
@@ -29,6 +30,25 @@ private:
     struct Impl;
     std::shared_ptr<Impl> impl_;
     explicit TlsCredentialSubscription(std::shared_ptr<Impl> impl);
+};
+
+/// 可信时间变化事件订阅句柄（RAII，析构自动取消；TBOX-SEC-DSN-CR-024）
+class TrustedTimeSubscription {
+public:
+    TrustedTimeSubscription() = default;
+    ~TrustedTimeSubscription();
+    TrustedTimeSubscription(TrustedTimeSubscription&&) noexcept;
+    TrustedTimeSubscription& operator=(TrustedTimeSubscription&&) noexcept;
+    TrustedTimeSubscription(const TrustedTimeSubscription&) = delete;
+    TrustedTimeSubscription& operator=(const TrustedTimeSubscription&) = delete;
+
+    void cancel();
+    bool isActive() const;
+private:
+    friend class SecClient;
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
+    explicit TrustedTimeSubscription(std::shared_ptr<Impl> impl);
 };
 
 /// SEC 客户端 facade
@@ -122,6 +142,22 @@ public:
     ErrorCode get_business_key_import_result_kl1(const std::string& request_id,
                                                  ImportResult& out,
                                                  KeyprovResultAttachment& attach);
+
+    // ---- 只读可信时间（TBOX-SEC-DSN-CR-024）----
+    /// 查询可信时间（只读，可重试）。
+    /// 返回 SUCCESS 表示传输+契约层成功；Unknown/Untrusted 是**可查询业务状态**，
+    /// 经 out.trust_state / out.reason / out.valid 表达，不伪装为 IPC 错误。
+    /// 传输/契约层错误返回 TRUSTED_TIME_* 错误码（out.error_class 说明分类）。
+    /// request_token 传上次响应的 out.sec_daemon_epoch（首次传 0）；
+    /// SEC 重启/停机后旧 token 会被拒绝（error_class="stale"，TRUSTED_TIME_MALFORMED）。
+    ErrorCode get_trusted_time(uint64_t request_token, TrustedTimeEnvelope& out);
+    /// 便捷重载：无 token（首次/无状态）。
+    ErrorCode get_trusted_time(TrustedTimeEnvelope& out);
+
+    /// 订阅可信时间变化事件（独立连接，RAII 句柄，析构自动取消）。
+    /// 事件只在信任/来源/代次/对齐/关键 reason 变化时推送。
+    TrustedTimeSubscription subscribe_trusted_time_changed(
+        std::function<void(const TrustedTimeEnvelope&)> callback);
 
 private:
     class Impl;

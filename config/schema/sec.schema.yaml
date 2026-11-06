@@ -41,10 +41,10 @@ sec:
     type: map
     required: false
     description: >
-      TBOX-SEC-DSN-CR-017：可信时间配置。production 仅允许 provider=composite
-      （平台同步时间 → 硬件 RTC，fail-closed）；dev/test 可显式 provider=fake。
-      平台时间服务/硬件 RTC 真实后端未落地前（阻塞项）证书注入 fail-closed，
-      绝不回退墙钟。
+      TBOX-SEC-DSN-CR-017 / TBOX-SEC-DSN-CR-024：可信时间配置。production 仅允许
+      provider=composite（TIME client → PlatformTimeAdapter → Composite → Monitor，
+      fail-closed）；dev/test 可显式 provider=fake。未认证 NTP 仍拒绝；真实认证
+      来源（NTS/RTC 证据）落地前生产安全离线是预期。
     item_schema:
       provider:
         type: string
@@ -54,6 +54,11 @@ sec:
         profile_restriction:
           production: composite_only   # production 只允许 composite，fake/system_clock 拒绝
           test: fake_allowed
+      peer_allowlist:
+        type: string_list
+        required: false
+        default: [tbox-mqtt.service]
+        description: "可信时间 IPC/SDK 的 peer allowlist（systemd unit；身份无法确认拒绝）"
       platform:
         type: map
         required: false
@@ -69,6 +74,61 @@ sec:
             required: false
             default: 2000
             range: [0, 60000]
+          monitor_enabled:
+            type: bool
+            required: false
+            default: true
+            description: "自主监测开关（生产必须 true）"
+          time_client:
+            type: map
+            required: false
+            description: "TIME client（TBOX-SEC-DSN-CR-024）：生产经 TIME 已发布 SDK 消费"
+            item_schema:
+              socket_path:
+                type: string
+                required: false
+                default: "/tmp/tbox-time.sock"
+              timeout_ms:
+                type: int
+                required: false
+                default: 500
+                range: [50, 5000]
+          monitor_refresh_interval_ms:
+            type: int
+            required: false
+            default: 500
+            range: [100, 1000]
+            description: "正常监测/提前刷新间隔（与 MQTT-018 ≤1000ms 租约目标一致）"
+          lease_max_ms:
+            type: int
+            required: false
+            default: 1000
+            range: [100, 1000]
+            description: "SEC 授权租约上限（短租约）"
+          cache_max_age_ms:
+            type: int
+            required: false
+            default: 1000
+            range: [100, 1000]
+            description: "缓存上限（消费方再扣自身一跳）"
+          auth:
+            type: map
+            required: false
+            description: "认证证据绑定：verified 必须绑定已批准策略/证据/来源，不只看 auth_status"
+            item_schema:
+              require_evidence:
+                type: bool
+                required: false
+                default: true
+              policy_versions:
+                type: string_list
+                required: false
+                default: ["1"]
+              approved_sources:
+                type: string_list
+                required: false
+                default: []
+                description: "已批准认证来源（空 = 无已批准来源，生产安全离线是预期）"
       hardware_rtc:
         type: map
         required: false

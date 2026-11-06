@@ -63,6 +63,19 @@ protected:
     virtual std::shared_ptr<ProvServiceInterface> createProvClient(
         const std::string& socket_path);
 
+    // ============ 可测试性钩子（CR-024 修订）============
+    /// dev/test fake 可信时间 profile 的唯一判定入口：显式 provider=fake 且非生产。
+    /// 生产或其他 provider 一律走 composite/monitor；没有 accept_unverified/bypass。
+    static bool allowDevTestFakeTime(const std::string& provider, bool is_production) {
+        return provider == "fake" && !is_production;
+    }
+
+    /// 当前只读快照源（生产 monitor / dev-test fake），IPC 方法 24/25 单一读入口。
+    TrustedTimeSnapshotSource* timeSource() const {
+        if (trusted_time_monitor_) return trusted_time_monitor_.get();
+        return trusted_time_fake_source_.get();
+    }
+
 private:
     enum class InitStage {
         None,
@@ -90,9 +103,16 @@ private:
     tbox::fw::ipc::IpcConfig ipc_config_{};
 
     // TBOX-SEC-DSN-CR-017：可信时间装配（生产 composite；dev/test 可显式 fake）。
-    // adapter 由组合根持有，composite 以裸指针引用；析构顺序在 cleanup 内保证。
-    std::unique_ptr<PlatformTimeSource> trusted_time_platform_;
+    // CR-024：生产 composite 升级为 TrustedTimeMonitor（TIME client → adapter →
+    // composite → monitor → IPC/SDK/事件）。adapter/monitor 由组合根持有。
+    // CR-024 修订：dev/test `provider: fake` 与生产共用同一只读快照源契约
+    // （FakeTrustedTimeSnapshotSource），否则 IPC 方法 24/25 恒 NOT_IMPLEMENTED。
+    // 两条分支互斥，均有 is_production 约束；不新增任何生产放行口子。
+    std::shared_ptr<TimeSourceClient> trusted_time_client_;
+    std::unique_ptr<PlatformTimeAdapter> trusted_time_platform_;
     std::unique_ptr<HardwareRtcSource> trusted_time_rtc_;
+    std::unique_ptr<TrustedTimeMonitor> trusted_time_monitor_;
+    std::unique_ptr<FakeTrustedTimeSnapshotSource> trusted_time_fake_source_;
     std::shared_ptr<TrustedTimeProvider> trusted_time_provider_;
 };
 

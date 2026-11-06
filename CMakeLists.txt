@@ -54,6 +54,11 @@ find_package(nlohmann_json REQUIRED)
 # （BUILD TBOX_DEP_STAGING 注入 CMAKE_PREFIX_PATH；framework 亦用 CONFIG 消费）
 find_package(yaml-cpp CONFIG REQUIRED)
 
+# --- TIME client SDK（TBOX-SEC-DSN-CR-024 依赖装配）---
+# 消费 TIME 已发布 SDK（find_package(TboxTimeClient CONFIG)）；
+# 禁止 add_subdirectory(TIME)、私有头或 build-tree 库（TBOX-SEC-DSN-CR-024 §8）。
+find_package(TboxTimeClient CONFIG REQUIRED)
+
 # --- CURL 依赖已随 CloudClient 直连签发路径删除（DSN §2 选型：MES→OAPI 中继，TBOX 不直连公网） ---
 # SEC 不再使用 CURL；如需保留则按需恢复 find_package(CURL/ZLIB)。
 
@@ -155,6 +160,7 @@ target_link_libraries(TboxSecLib
         TBoxFramework::ipc
         TBoxFramework::application
         tbox::prov_client
+        tbox::time_client
         nlohmann_json::nlohmann_json
         OpenSSL::SSL
         OpenSSL::Crypto
@@ -337,6 +343,9 @@ if(GTest_FOUND)
         tests/test_business_key_integration.cpp
         tests/test_keyprov_kl1.cpp
         tests/test_keyprov_kl1_manifest.cpp
+        tests/test_trusted_time_monitor.cpp
+        tests/test_sec_time_ipc.cpp
+        tests/test_time_integration_e2e.cpp
     )
     add_executable(TboxSecTests ${TEST_SOURCES})
     target_link_libraries(TboxSecTests PRIVATE TboxSecLib tbox_sec_client GTest::GTest GTest::gmock GTest::Main)
@@ -345,6 +354,11 @@ if(GTest_FOUND)
         SEC_CONFIG_CHECKER_BIN="${CMAKE_CURRENT_BINARY_DIR}/sec_config_checker"
         SEC_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
         SEC_PROTO_SOURCE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/proto/security/keyprov/v1/key_provisioning.proto")
+    # TBOX-SEC-DSN-CR-024 Level B：真实 TIME daemon 进程联调（TIME 仓 build 产物或已安装二进制）
+    set(TIME_DAEMON_BIN "${CMAKE_CURRENT_SOURCE_DIR}/../iov-vehicle-tbox-time/build/tbox_time"
+        CACHE STRING "TIME daemon binary for Level B integration test")
+    target_compile_definitions(TboxSecTests PRIVATE
+        TIME_DAEMON_BIN="${TIME_DAEMON_BIN}")
     add_test(NAME TboxSecTests COMMAND TboxSecTests)
 endif()
 

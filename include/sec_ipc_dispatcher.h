@@ -6,6 +6,7 @@
 #include <string_view>
 #include <utility>
 #include <functional>
+#include <vector>
 
 namespace tbox {
 namespace sec {
@@ -14,6 +15,7 @@ class SecService;
 class TlsCredentialProvider;
 class BusinessKeyProvisioningService;
 class PeerCredentialResolver;
+class TrustedTimeSnapshotSource;
 struct PeerIdentity;
 
 /// SEC IPC 请求分发适配器
@@ -42,6 +44,18 @@ public:
         business_key_peer_service_ = peer_service;
     }
 
+    /// 注入可信时间只读快照源（TBOX-SEC-DSN-CR-024）；
+    /// 未注入时时间 method 返回 NOT_IMPLEMENTED。
+    /// 生产 = TrustedTimeMonitor；dev/test provider=fake 时 = FakeTrustedTimeSnapshotSource，
+    /// 两种实现遵循同一 wire 契约（§4 租约/§5 事件/token 语义），不得各写一套。
+    void setTrustedTimeSource(TrustedTimeSnapshotSource* source) {
+        time_source_ = source;
+    }
+    /// 授权的可信时间调用方 systemd unit 列表（ACL；默认 mqtt）
+    void setTrustedTimePeerServices(std::vector<std::string> peer_services) {
+        trusted_time_peer_services_ = std::move(peer_services);
+    }
+
     /// 注入订阅注册回调（由 SecService 接线到 framework-ipc Server::add_subscription）
     void setAddSubscriptionCallback(std::function<bool(int, uint32_t)> cb);
 
@@ -58,7 +72,9 @@ private:
     SecService* service_;
     TlsCredentialProvider* tls_provider_ = nullptr;
     BusinessKeyProvisioningService* business_key_service_ = nullptr;
+    TrustedTimeSnapshotSource* time_source_ = nullptr;
     std::string business_key_peer_service_ = "tbox-tsp.service";
+    std::vector<std::string> trusted_time_peer_services_ = {"tbox-mqtt.service"};
     std::shared_ptr<PeerCredentialResolver> peer_resolver_;
     std::function<bool(int, uint32_t)> add_subscription_fn_;
 
@@ -95,6 +111,10 @@ private:
     // KL1（TBOX-SEC-DSN-CR-023；additive 方法号 22/23）
     std::pair<int32_t, std::string> handle_import_wrapped_business_keys_kl1(std::string_view params, int client_fd);
     std::pair<int32_t, std::string> handle_get_keyprov_contract_snapshot(std::string_view params, int client_fd);
+
+    // 只读可信时间 handlers (TBOX-SEC-DSN-CR-024；方法号 24/25)
+    std::pair<int32_t, std::string> handle_get_trusted_time(std::string_view params, int client_fd);
+    std::pair<int32_t, std::string> handle_subscribe_trusted_time_changed(std::string_view params, int client_fd);
 };
 
 } // namespace sec

@@ -61,6 +61,10 @@ std::string error_code_to_string(ErrorCode code) {
         case ErrorCode::BUSINESS_KEY_OUTCOME_UNKNOWN: return "BUSINESS_KEY_OUTCOME_UNKNOWN";
         case ErrorCode::KL1_ADMISSION_REJECTED: return "KL1_ADMISSION_REJECTED";
         case ErrorCode::KL1_CAPABILITY_EPOCH_MISMATCH: return "KL1_CAPABILITY_EPOCH_MISMATCH";
+        case ErrorCode::TRUSTED_TIME_UNAVAILABLE: return "TRUSTED_TIME_UNAVAILABLE";
+        case ErrorCode::TRUSTED_TIME_TIMEOUT: return "TRUSTED_TIME_TIMEOUT";
+        case ErrorCode::TRUSTED_TIME_UNSUPPORTED: return "TRUSTED_TIME_UNSUPPORTED";
+        case ErrorCode::TRUSTED_TIME_MALFORMED: return "TRUSTED_TIME_MALFORMED";
         case ErrorCode::ACL_DENIED: return "ACL_DENIED";
         case ErrorCode::CONFIG_ERROR: return "CONFIG_ERROR";
         case ErrorCode::INTERNAL_ERROR: return "INTERNAL_ERROR";
@@ -127,6 +131,10 @@ std::string error_code_to_description(ErrorCode code) {
             return "KL1 admission rejected: lease expired (U>=E) for a new operation; not started, no side effects; not a strong NOT_FOUND";
         case ErrorCode::KL1_CAPABILITY_EPOCH_MISMATCH:
             return "KL1 capability epoch mismatch: caller epoch != current SEC epoch; not started, no side effects; not a strong NOT_FOUND";
+        case ErrorCode::TRUSTED_TIME_UNAVAILABLE: return "Trusted time service unreachable/not started";
+        case ErrorCode::TRUSTED_TIME_TIMEOUT: return "Trusted time query timeout";
+        case ErrorCode::TRUSTED_TIME_UNSUPPORTED: return "Trusted time contract/capability unsupported";
+        case ErrorCode::TRUSTED_TIME_MALFORMED: return "Trusted time response malformed or stale (request token rejected)";
         case ErrorCode::ACL_DENIED: return "Caller not authorized for this profile";
         case ErrorCode::CONFIG_ERROR: return "Configuration error";
         case ErrorCode::INTERNAL_ERROR: return "Internal error";

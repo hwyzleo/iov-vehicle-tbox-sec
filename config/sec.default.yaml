@@ -40,10 +40,24 @@ sec:
   # 不得 commit），绝不回退墙钟。dev/test 可经显式 profile 配置 provider=fake。
   trusted_time:
     provider: "composite"
+    peer_allowlist:
+      - tbox-mqtt.service
     platform:
       enabled: true
       max_freshness_ms: 300000
       max_uncertainty_ms: 2000
+      monitor_enabled: true
+      time_client:
+        socket_path: "/tmp/tbox-time.sock"
+        timeout_ms: 500
+      monitor_refresh_interval_ms: 500
+      lease_max_ms: 1000
+      cache_max_age_ms: 1000
+      auth:
+        require_evidence: true
+        policy_versions:
+          - "1"
+        approved_sources: []
     hardware_rtc:
       enabled: true
       require_provisioned: true

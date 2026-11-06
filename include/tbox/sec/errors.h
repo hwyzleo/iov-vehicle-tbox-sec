@@ -90,6 +90,14 @@ enum class ErrorCode : uint32_t {
                                         ///< TSP 重新 probe 快照、清零跨 epoch NF 稳定化计数、按原 rid 查询并判断
                                         ///< 能力与有效期；不能仅凭重新 probe 成功就自动重发 import。
 
+    // 只读可信时间（TBOX-SEC-DSN-CR-024；SEC-1031..1034，已核验全仓台账无占用）。
+    // Unknown/Untrusted 是**可查询业务状态**（envelope.trust_state/reason 表达），
+    // 以下仅覆盖传输/契约层错误，不把业务状态伪装为 IPC 错误。
+    TRUSTED_TIME_UNAVAILABLE = 1031,  ///< SEC-1031: 可信时间服务不可达/未启动
+    TRUSTED_TIME_TIMEOUT = 1032,      ///< SEC-1032: 可信时间查询超时
+    TRUSTED_TIME_UNSUPPORTED = 1033,  ///< SEC-1033: 契约版本/能力不支持（未知安全必需能力整体拒绝）
+    TRUSTED_TIME_MALFORMED = 1034,    ///< SEC-1034: 响应畸形/迟到（请求 token 拒绝）/无法解析
+
     // ACL errors（CR-019 让位 1021..1026 给业务密钥错误，ACL 顺延到 1027）
     ACL_DENIED = 1027,                        ///< 调用方未授权访问该 profile
 

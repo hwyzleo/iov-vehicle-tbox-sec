@@ -15,6 +15,8 @@
 #include "config.h"
 #include "store.h"
 #include "ipc_protocol.h"
+#include "tbox/sec/time.h"
+#include <nlohmann/json.hpp>
 
 #include <csignal>
 #include <chrono>
@@ -129,30 +131,71 @@ bool SecApplication::initialize() {
 
         const std::string provider = cfg->getString("sec.trusted_time.provider", "composite");
         const bool is_production = svc_config.get_is_production();
-        if (provider == "fake" && !is_production) {
+        if (allowDevTestFakeTime(provider, is_production)) {
             // dev/test 显式选择 fake：时间由显式 dev/test profile 注入，
             // 不继承生产配置（CR-017 §5）。开发 bring-up 默认取当前墙钟。
+            // 每次 now() 取当前墙钟（CR-024 修订）：坏初始时钟/NTP 调时后，
+            // 固定的启动快照会作废，进而误判证书有效期。
             TrustedTimeSample sample;
             sample.utc_now = std::chrono::system_clock::now();
             sample.trust_state = TimeTrustState::Trusted;
             sample.source = TimeSource::FakeTest;
             sample.reason = TimeReason::FakeTest;
-            trusted_time_provider_ = std::make_shared<FakeTrustedTimeProvider>(sample);
+            trusted_time_provider_ =
+                std::make_shared<FakeTrustedTimeProvider>(sample, /*track_wall_clock=*/true);
+            // CR-024 修订：fake 也必须提供 §4/§6 的只读快照源，否则 IPC 方法
+            // 24/25 恒 NOT_IMPLEMENTED(SEC-8004)，MQTT 时间门禁永远拿不到契约。
+            // 仅在「显式 provider=fake 且非生产」分支构造；生产无此路径。
+            tt_cfg.lease_max = std::chrono::milliseconds(
+                cfg->getInt("sec.trusted_time.platform.lease_max_ms", 1000));
+            trusted_time_fake_source_ = std::make_unique<FakeTrustedTimeSnapshotSource>(
+                trusted_time_provider_, tt_cfg);
             SecLogAdapter::service().warn(
                 "sec.trusted_time.fake_enabled",
-                "已启用 dev/test fake 可信时间，仅限非生产环境（证书注入据此判定有效期）");
+                "已启用 dev/test fake 可信时间，仅限非生产环境（证书注入与只读 IPC 均据此判定）",
+                {tbox::fw::log::Field("read_only_ipc",
+                     tbox::fw::log::FieldValue::makeBool(true)),
+                 tbox::fw::log::Field("lease_max_ms", tbox::fw::log::FieldValue::makeInt(
+                     static_cast<int64_t>(tt_cfg.lease_max.count())))});
         } else {
-            // production / 缺省：composite + 平台/RTC adapter。
-            // 平台接口未落地前 adapter 恒返回不可用 → 注入 fail-closed（CR-017 §9）。
-            trusted_time_platform_ = std::make_unique<PlatformTimeAdapter>();
+            // production / 缺省：TIME client → PlatformTimeAdapter → Composite → Monitor。
+            // TIME 未运行时非时间能力保持运行（CR-024 §5：不使用 Requires 连带杀死 SEC）。
+            // CR-024 扩展配置
+            tt_cfg.time_socket_path = cfg->getString(
+                "sec.trusted_time.platform.time_client.socket_path", "/tmp/tbox-time.sock");
+            tt_cfg.time_query_timeout = std::chrono::milliseconds(
+                cfg->getInt("sec.trusted_time.platform.time_client.timeout_ms", 500));
+            tt_cfg.monitor_refresh_interval = std::chrono::milliseconds(
+                cfg->getInt("sec.trusted_time.platform.monitor_refresh_interval_ms", 500));
+            tt_cfg.lease_max = std::chrono::milliseconds(
+                cfg->getInt("sec.trusted_time.platform.lease_max_ms", 1000));
+            tt_cfg.cache_max_age = std::chrono::milliseconds(
+                cfg->getInt("sec.trusted_time.platform.cache_max_age_ms", 1000));
+            tt_cfg.require_evidence = cfg->getBool(
+                "sec.trusted_time.platform.auth.require_evidence", true);
+            tt_cfg.monitor_enabled = cfg->getBool(
+                "sec.trusted_time.platform.monitor_enabled", true);
+            if (auto list = cfg->getStringList(
+                    "sec.trusted_time.platform.auth.policy_versions"); !list.empty()) {
+                tt_cfg.approved_policy_versions = list;
+            }
+            if (auto list = cfg->getStringList(
+                    "sec.trusted_time.platform.auth.approved_sources"); !list.empty()) {
+                tt_cfg.approved_sources = list;
+            }
+
+            trusted_time_client_ = makeTimeClientBridge(tt_cfg.time_socket_path);
+            trusted_time_platform_ =
+                std::make_unique<PlatformTimeAdapter>(trusted_time_client_);
             trusted_time_rtc_ = std::make_unique<HardwareRtcAdapter>();
-            trusted_time_provider_ = std::make_shared<CompositeTrustedTimeProvider>(
+            trusted_time_monitor_ = std::make_unique<TrustedTimeMonitor>(
                 trusted_time_platform_.get(), trusted_time_rtc_.get(), tt_cfg);
+            trusted_time_provider_ = trusted_time_monitor_->provider();
             SecLogAdapter::service().info(
-                "sec.trusted_time.composite",
-                "可信时间装配为 composite（平台→RTC）；平台接口未落地前证书注入 fail-closed",
-                {tbox::fw::log::Field("provider",
-                     tbox::fw::log::FieldValue::makeString(provider))});
+                "sec.trusted_time.monitor",
+                "可信时间装配为 TIME client → adapter → composite → monitor（未认证 NTP 仍拒绝）",
+                {tbox::fw::log::Field("socket",
+                     tbox::fw::log::FieldValue::makeString(tt_cfg.time_socket_path))});
         }
     }
 
@@ -195,6 +238,13 @@ bool SecApplication::initialize() {
             cfg->getString("sec.business_key_provisioning.peer_service", "tbox-tsp.service"));
     }
     dispatcher_->setPeerCredentialResolver(peer_resolver_);
+    // 注入可信时间只读快照源（TBOX-SEC-DSN-CR-024；方法号 24/25 路由 + ACL）。
+    // 生产 = TrustedTimeMonitor；dev/test provider=fake = FakeTrustedTimeSnapshotSource。
+    dispatcher_->setTrustedTimeSource(timeSource());
+    if (auto list = cfg->getStringList("sec.trusted_time.peer_allowlist");
+        !list.empty()) {
+        dispatcher_->setTrustedTimePeerServices(list);
+    }
     init_stage_ = InitStage::DispatcherReady;
 
     // ---- e. ipc::Server（传输与适配由组合根持有）----
@@ -214,6 +264,19 @@ bool SecApplication::initialize() {
         [server_ptr](uint32_t event_type, const std::string& payload_json) {
             server_ptr->push_event(event_type, payload_json);
         });
+
+    // 接线可信时间变化事件发布（TBOX-SEC-DSN-CR-024）：monitor 订阅者在状态
+    // 事实变化时推送；服务端按 client 订阅过滤（EventId::TRUSTED_TIME_CHANGED）。
+    if (auto* time_source = timeSource()) {
+        time_source->subscribe([server_ptr](const TrustedTimeResult& r) {
+            TrustedTimeEnvelope env = r.to_envelope();
+            nlohmann::json payload;
+            payload["envelope"] = trusted_time_envelope_to_json(env);
+            server_ptr->push_event(
+                static_cast<uint32_t>(ipc::EventId::TRUSTED_TIME_CHANGED),
+                payload.dump());
+        });
+    }
 
     // framework RequestHandler -> dispatcher
     auto* dispatcher_ptr = dispatcher_.get();
@@ -246,6 +309,12 @@ bool SecApplication::initialize() {
     }
     init_stage_ = InitStage::IpcStarted;
 
+    // 启动可信时间监测（server 就绪后）：TIME 未运行时失败不致命
+    // （非时间能力保持运行；监测循环按 2s 间隔有界重试连接，CR-024 §5/§8）。
+    if (auto* time_source = timeSource()) {
+        time_source->start();
+    }
+
     SecLogAdapter::ipc().info(
         "sec.ipc.server_started",
         "IPC server started (framework-ipc)",
@@ -257,6 +326,7 @@ bool SecApplication::initialize() {
 void SecApplication::rollbackInitialization() {
     // 逆序释放已完成的阶段（CR-011 §4.3）
     if (init_stage_ == InitStage::IpcStarted) {
+        if (auto* time_source = timeSource()) time_source->stop();
         if (ipc_server_) ipc_server_->stop();
         ipc_server_.reset();
         dispatcher_.reset();
@@ -264,6 +334,7 @@ void SecApplication::rollbackInitialization() {
         init_stage_ = InitStage::DispatcherReady;
     }
     if (init_stage_ == InitStage::DispatcherReady) {
+        if (auto* time_source = timeSource()) time_source->stop();
         dispatcher_.reset();
         peer_resolver_.reset();
         init_stage_ = InitStage::ServiceReady;
@@ -312,6 +383,12 @@ void SecApplication::cleanup() {
     // 1. Quiesce：拒绝新安全操作（getSeed/verifyKey/密钥生成/证书注入/TLS sign）
     if (security_service_) {
         security_service_->beginShutdown();
+    }
+    // 1.5 可信时间监测停机（CR-024 §5）：拒绝新授权、撤销缓存、取消轮询/订阅、
+    //     失效查询 token、关闭 TIME client（有界等待）。必须先于 ipc::Server::stop，
+    //     否则事件回调可能访问已析构的 server。
+    if (auto* time_source = timeSource()) {
+        time_source->stop();
     }
     // 2. Stop IPC：中断 accept/read，关闭连接与订阅，join 连接线程
     if (ipc_server_) {

@@ -45,11 +45,19 @@ enum class MethodId : uint32_t {
     // 无全局登记；SEC 自持协议契约为本文件；其他 TBOX 服务无引用）。
     IMPORT_WRAPPED_BUSINESS_KEYS_KL1 = 22,    ///< KL1 租约准入导入（带 admission_expire_at_ms/epoch/profile）
     GET_KEYPROV_CONTRACT_SNAPSHOT = 23,       ///< 查询 KL1 契约快照（epoch/contract/存储健康/双用途原子/租约准入；只读）
+
+    // 只读可信时间（TBOX-SEC-DSN-CR-024；additive，旧编号/旧布局不变）。
+    // 编号 24/25 已按 SEC 全仓台账核验无占用后登记（TIME 与 SEC 为不同服务命名空间，
+    // 不要求两者编号一致；MQTT 旧分析中的候选 MethodId=24/EventId=2 不得直接采用，
+    // 以实际登记为准）。
+    GET_TRUSTED_TIME = 24,                    ///< 查询可信时间（只读，返回 TrustedTimeEnvelope）
+    SUBSCRIBE_TRUSTED_TIME_CHANGED = 25,      ///< 订阅可信时间变化事件（只读）
 };
 
 /// SEC IPC 事件类型（与 framework-ipc EventHeader.event_type 一致）。
 enum class EventId : uint32_t {
     TLS_CREDENTIAL_CHANGED = 1,  ///< sec.tls_credential.changed
+    TRUSTED_TIME_CHANGED = 2,    ///< sec.trusted_time.changed（TBOX-SEC-DSN-CR-024）
 };
 
 /// TLS 凭据 profile 名称约定

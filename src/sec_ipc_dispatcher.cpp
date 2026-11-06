@@ -6,9 +6,11 @@
 #include "peer_credential.h"
 #include "business_key_provisioning.h"
 #include "canonical_encoding.h"
+#include "trusted_time.h"
 #include "tbox/sec/types.h"
 #include "tbox/sec/errors.h"
 #include "tbox/sec/business_key.h"
+#include "tbox/sec/time.h"
 #include "utils.h"
 #include <nlohmann/json.hpp>
 #include <chrono>
@@ -162,6 +164,12 @@ std::string SecIpcDispatcher::dispatch(uint32_t method_id,
                 break;
             case ipc::MethodId::GET_KEYPROV_CONTRACT_SNAPSHOT:
                 result = handle_get_keyprov_contract_snapshot(params_json, client_fd);
+                break;
+            case ipc::MethodId::GET_TRUSTED_TIME:
+                result = handle_get_trusted_time(params_json, client_fd);
+                break;
+            case ipc::MethodId::SUBSCRIBE_TRUSTED_TIME_CHANGED:
+                result = handle_subscribe_trusted_time_changed(params_json, client_fd);
                 break;
             default:
                 SecLogAdapter::ipc().warn(
@@ -1006,6 +1014,107 @@ std::pair<int32_t, std::string> SecIpcDispatcher::handle_get_keyprov_contract_sn
     KeyprovContractSnapshot snap = business_key_service_->contractSnapshot();
     nlohmann::json resp = snapshot_to_json(snap);
     resp["success"] = true;
+    return {static_cast<int32_t>(ErrorCode::SUCCESS), resp.dump()};
+}
+
+// ============================================================
+// 只读可信时间 handlers（TBOX-SEC-DSN-CR-024；方法号 24/25）
+// ============================================================
+
+std::pair<int32_t, std::string> SecIpcDispatcher::handle_get_trusted_time(
+    std::string_view params, int client_fd) {
+    if (!time_source_) {
+        nlohmann::json resp;
+        resp["success"] = false;
+        return {static_cast<int32_t>(ErrorCode::NOT_IMPLEMENTED), resp.dump()};
+    }
+    // ACL：只读可信时间能力按明确 peer allowlist 开放；身份无法确认拒绝。
+    PeerIdentity caller = resolvePeer(client_fd);
+    const bool allowed =
+        caller.valid &&
+        std::find(trusted_time_peer_services_.begin(),
+                  trusted_time_peer_services_.end(),
+                  caller.service_name) != trusted_time_peer_services_.end();
+    if (!allowed) {
+        SecLogAdapter::ipc().warn(
+            "sec.ipc.acl_denied",
+            "可信时间查询 ACL 拒绝",
+            {tbox::fw::log::Field("method_id", tbox::fw::log::FieldValue::makeInt(
+                 static_cast<int>(ipc::MethodId::GET_TRUSTED_TIME))),
+             tbox::fw::log::Field("peer_valid",
+                 tbox::fw::log::FieldValue::makeInt(caller.valid))});
+        nlohmann::json resp;
+        resp["envelope"] = trusted_time_envelope_to_json(TrustedTimeEnvelope{});
+        resp["envelope"]["error_class"] = "acl_denied";
+        resp["envelope"]["valid"] = false;
+        return {static_cast<int32_t>(ErrorCode::ACL_DENIED), resp.dump()};
+    }
+
+    uint64_t request_token = 0;
+    try {
+        auto j = nlohmann::json::parse(params);
+        request_token = j.value("request_token", 0ULL);
+    } catch (const nlohmann::json::exception&) {
+        nlohmann::json resp;
+        resp["envelope"] = trusted_time_envelope_to_json(TrustedTimeEnvelope{});
+        resp["envelope"]["error_class"] = "malformed";
+        return {static_cast<int32_t>(ErrorCode::TRUSTED_TIME_MALFORMED),
+                resp.dump()};
+    }
+
+    const TrustedTimeResult r = time_source_->get(request_token);
+    const TrustedTimeEnvelope env = r.to_envelope();
+    nlohmann::json resp;
+    resp["envelope"] = trusted_time_envelope_to_json(env);
+    // 业务状态（trusted/untrusted/unknown）是查询结果，传输层成功即 SUCCESS
+    return {static_cast<int32_t>(ErrorCode::SUCCESS), resp.dump()};
+}
+
+std::pair<int32_t, std::string>
+SecIpcDispatcher::handle_subscribe_trusted_time_changed(
+    std::string_view params, int client_fd) {
+    if (!time_source_) {
+        nlohmann::json resp;
+        resp["success"] = false;
+        return {static_cast<int32_t>(ErrorCode::NOT_IMPLEMENTED), resp.dump()};
+    }
+    // ACL：订阅与查询同一 allowlist。
+    PeerIdentity caller = resolvePeer(client_fd);
+    const bool allowed =
+        caller.valid &&
+        std::find(trusted_time_peer_services_.begin(),
+                  trusted_time_peer_services_.end(),
+                  caller.service_name) != trusted_time_peer_services_.end();
+    if (!allowed) {
+        SecLogAdapter::ipc().warn(
+            "sec.ipc.acl_denied",
+            "可信时间订阅 ACL 拒绝",
+            {tbox::fw::log::Field("method_id", tbox::fw::log::FieldValue::makeInt(
+                 static_cast<int>(ipc::MethodId::SUBSCRIBE_TRUSTED_TIME_CHANGED))),
+             tbox::fw::log::Field("peer_valid",
+                 tbox::fw::log::FieldValue::makeInt(caller.valid))});
+        nlohmann::json resp;
+        resp["envelope"] = trusted_time_envelope_to_json(TrustedTimeEnvelope{});
+        resp["envelope"]["error_class"] = "acl_denied";
+        resp["envelope"]["valid"] = false;
+        return {static_cast<int32_t>(ErrorCode::ACL_DENIED), resp.dump()};
+    }
+    // FW Server 不自动注册订阅：握手时显式登记 event_type（与 TIME subscribe 同构）
+    if (!add_subscription_fn_ ||
+        !add_subscription_fn_(client_fd,
+                              static_cast<uint32_t>(ipc::EventId::TRUSTED_TIME_CHANGED))) {
+        nlohmann::json resp;
+        resp["envelope"] = trusted_time_envelope_to_json(TrustedTimeEnvelope{});
+        resp["envelope"]["error_class"] = "unavailable";
+        return {static_cast<int32_t>(ErrorCode::TRUSTED_TIME_UNAVAILABLE),
+                resp.dump()};
+    }
+    // 订阅握手响应 = 当前快照（对账基线；SDK 先订阅缓冲再查询/对账）
+    const TrustedTimeResult r = time_source_->get(0);
+    nlohmann::json resp;
+    resp["envelope"] = trusted_time_envelope_to_json(r.to_envelope());
+    resp["event_type"] =
+        static_cast<uint32_t>(ipc::EventId::TRUSTED_TIME_CHANGED);
     return {static_cast<int32_t>(ErrorCode::SUCCESS), resp.dump()};
 }
 

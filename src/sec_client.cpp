@@ -839,5 +839,105 @@ ErrorCode SecClient::get_business_key_import_result_kl1(const std::string& reque
     return static_cast<ErrorCode>(status);
 }
 
+// ============================================================
+// 只读可信时间（TBOX-SEC-DSN-CR-024）
+// ============================================================
+
+// 订阅句柄实现：持有 framework Subscription 以维持独立连接生命周期
+struct TrustedTimeSubscription::Impl {
+    bool active = false;
+    std::function<void(const TrustedTimeEnvelope&)> callback;
+    ::tbox::fw::ipc::Subscription fw_sub;
+};
+
+TrustedTimeSubscription::TrustedTimeSubscription(std::shared_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+TrustedTimeSubscription::~TrustedTimeSubscription() { cancel(); }
+TrustedTimeSubscription::TrustedTimeSubscription(TrustedTimeSubscription&&) noexcept = default;
+TrustedTimeSubscription& TrustedTimeSubscription::operator=(TrustedTimeSubscription&&) noexcept = default;
+void TrustedTimeSubscription::cancel() {
+    if (impl_) {
+        impl_->active = false;
+        impl_->fw_sub.cancel();
+        impl_.reset();
+    }
+}
+bool TrustedTimeSubscription::isActive() const {
+    return impl_ && impl_->active;
+}
+
+TrustedTimeSubscription SecClient::subscribe_trusted_time_changed(
+    std::function<void(const TrustedTimeEnvelope&)> callback) {
+    auto sub_impl = std::make_shared<TrustedTimeSubscription::Impl>();
+    sub_impl->active = true;
+    sub_impl->callback = std::move(callback);
+
+    // 订阅使用独立 framework-ipc 连接（SUBSCRIBE 握手后进入 event-only）
+    sub_impl->fw_sub = impl_->subscribe(
+        static_cast<uint32_t>(ipc::MethodId::SUBSCRIBE_TRUSTED_TIME_CHANGED),
+        static_cast<uint32_t>(ipc::EventId::TRUSTED_TIME_CHANGED),
+        [sub_impl](uint32_t event_type, std::string_view payload_json) {
+            (void)event_type;
+            if (!sub_impl->active || !sub_impl->callback) return;
+            try {
+                auto j = nlohmann::json::parse(payload_json);
+                if (!j.contains("envelope")) return;
+                TrustedTimeEnvelope ev;
+                if (trusted_time_envelope_from_json(j["envelope"], &ev)) {
+                    sub_impl->callback(ev);
+                }
+            } catch (const std::exception&) {
+                // 忽略畸形事件
+            }
+        });
+
+    return TrustedTimeSubscription(sub_impl);
+}
+
+ErrorCode SecClient::get_trusted_time(uint64_t request_token,
+                                      TrustedTimeEnvelope& out) {
+    nlohmann::json params;
+    params["request_token"] = request_token;
+    auto [ok, status, response_json] = impl_->send_request(
+        static_cast<uint32_t>(ipc::MethodId::GET_TRUSTED_TIME), params.dump());
+    if (!ok) {
+        // 传输层失败（不可达/超时）：独立表达，不伪装为业务状态
+        out = TrustedTimeEnvelope{};
+        out.error_class = "unavailable";
+        return ErrorCode::TRUSTED_TIME_UNAVAILABLE;
+    }
+    if (status != 0) {
+        // 服务端业务错误（ACL 等）
+        out = TrustedTimeEnvelope{};
+        switch (static_cast<ErrorCode>(status)) {
+            case ErrorCode::ACL_DENIED:
+                out.error_class = "acl_denied";
+                break;
+            default:
+                out.error_class = "internal";
+                break;
+        }
+        return static_cast<ErrorCode>(status);
+    }
+    try {
+        auto j = nlohmann::json::parse(response_json);
+        if (!j.contains("envelope") ||
+            !trusted_time_envelope_from_json(j["envelope"], &out)) {
+            out = TrustedTimeEnvelope{};
+            out.error_class = "malformed";
+            return ErrorCode::TRUSTED_TIME_MALFORMED;
+        }
+        return ErrorCode::SUCCESS;
+    } catch (const std::exception&) {
+        out = TrustedTimeEnvelope{};
+        out.error_class = "malformed";
+        return ErrorCode::TRUSTED_TIME_MALFORMED;
+    }
+}
+
+ErrorCode SecClient::get_trusted_time(TrustedTimeEnvelope& out) {
+    return get_trusted_time(0, out);
+}
+
 } // namespace sec
 } // namespace tbox
